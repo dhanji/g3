@@ -73,6 +73,8 @@ struct TerminalState {
     status_blink: bool,
     /// Last status blink time
     last_status_blink: Instant,
+    /// Whether we're in processing mode (for cursor display)
+    is_processing: bool,
     /// Should exit
     should_exit: bool,
 }
@@ -99,6 +101,7 @@ impl TerminalState {
             provider_info: ("UNKNOWN".to_string(), "UNKNOWN".to_string()),
             status_blink: true,
             last_status_blink: Instant::now(),
+            is_processing: false,
             should_exit: false,
         }
     }
@@ -192,6 +195,13 @@ impl TerminalState {
     fn add_output(&mut self, text: &str) {
         let mut lines = text.lines();
 
+        // Remove any existing cursor from the last line before adding new content
+        if let Some(last) = self.output_history.last_mut() {
+            if last.ends_with('█') {
+                last.pop();
+            }
+        }
+
         // Handle the first line specially
         if let Some(first_line) = lines.next() {
             if let Some(last) = self.output_history.last_mut() {
@@ -206,6 +216,14 @@ impl TerminalState {
         // Push the remaining lines individually
         for line in lines {
             self.output_history.push(line.to_string());
+        }
+
+        // Always add cursor at the end if we're in PROCESSING mode
+        if self.is_processing {
+            if let Some(last) = self.output_history.last_mut() {
+                // Add a solid cursor at the end of the last line
+                last.push('█');
+            }
         }
 
         // Update scroll state
@@ -284,8 +302,21 @@ impl RetroTui {
                         TuiMessage::SystemStatus(status) => {
                             let was_processing = state.status_line == "PROCESSING";
                             state.status_line = status;
-                            if was_processing && state.status_line == "READY" {
+                            state.is_processing = state.status_line == "PROCESSING";
+                            
+                            // Remove cursor when exiting PROCESSING mode
+                            if was_processing && !state.is_processing {
+                                if let Some(last) = state.output_history.last_mut() {
+                                    if last.ends_with('█') {
+                                        last.pop();
+                                    }
+                                }
                                 state.manual_scroll = false; // Reset manual scroll
+                            } else if !was_processing && state.is_processing {
+                                // Add cursor when entering PROCESSING mode
+                                if let Some(last) = state.output_history.last_mut() {
+                                    last.push('█');
+                                }
                             }
                         }
                         TuiMessage::ContextUpdate {

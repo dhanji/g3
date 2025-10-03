@@ -194,9 +194,9 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
     let mut agent = Agent::new(config, ui_writer).await?;
 
     // Display initial system messages
-    tui.output("SYSTEM: G3 AI CODING AGENT ONLINE");
-    tui.output("SYSTEM: READY FOR INPUT");
-    tui.output("");
+    tui.output("SYSTEM: AGENT ONLINE\n\n");
+    tui.output("SYSTEM: READY FOR INPUT\n\n");
+    tui.output("\n\n");
 
     // Display provider and model information
     match agent.get_provider_info() {
