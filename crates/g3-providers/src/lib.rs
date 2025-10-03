@@ -87,10 +87,14 @@ pub mod anthropic;
 pub mod databricks;
 pub mod embedded;
 pub mod oauth;
+pub mod retry;
+pub mod retry_wrapper;
 
 pub use anthropic::AnthropicProvider;
 pub use databricks::DatabricksProvider;
 pub use embedded::EmbeddedProvider;
+pub use retry::{RetryConfig, execute_with_retry, is_retryable_error};
+pub use retry_wrapper::RetryProvider;
 
 /// Provider registry for managing multiple LLM providers
 pub struct ProviderRegistry {

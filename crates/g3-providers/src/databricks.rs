@@ -67,6 +67,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
+use crate::retry::{execute_with_retry, RetryConfig};
 
 use crate::{
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
@@ -139,6 +140,7 @@ pub struct DatabricksProvider {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    retry_config: RetryConfig,
 }
 
 impl DatabricksProvider {
@@ -166,7 +168,19 @@ impl DatabricksProvider {
             model,
             max_tokens: max_tokens.unwrap_or(50000),
             temperature: temperature.unwrap_or(0.1),
+            retry_config: RetryConfig::default(),
         })
+    }
+
+    /// Set a custom retry configuration for this provider
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
+    }
+
+    /// Get the current retry configuration
+    pub fn retry_config(&self) -> &RetryConfig {
+        &self.retry_config
     }
 
     pub async fn from_oauth(
@@ -192,6 +206,7 @@ impl DatabricksProvider {
             model,
             max_tokens: max_tokens.unwrap_or(50000),
             temperature: temperature.unwrap_or(0.1),
+            retry_config: RetryConfig::default(),
         })
     }
 
@@ -692,26 +707,36 @@ impl LLMProvider for DatabricksProvider {
             );
         }
 
-        let mut provider_clone = self.clone();
-        let response = provider_clone
-            .create_request_builder(false)
-            .await?
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Failed to send request to Databricks API: {}", e))?;
+        // Use retry logic for the API call
+        let response_text = execute_with_retry(
+            "Databricks completion request",
+            || async {
+                let mut provider_clone = self.clone();
+                let request_body = request_body.clone();
+                
+                let response = provider_clone
+                    .create_request_builder(false)
+                    .await?
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow!("Failed to send request to Databricks API: {}", e))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Databricks API error {}: {}", status, error_text));
-        }
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(anyhow!("Databricks API error {}: {}", status, error_text));
+                }
 
-        let response_text = response.text().await?;
-        debug!("Raw Databricks API response: {}", response_text);
+                let response_text = response.text().await?;
+                debug!("Raw Databricks API response: {}", response_text);
+                Ok(response_text)
+            },
+            &self.retry_config,
+        ).await?;
 
         let databricks_response: DatabricksResponse = serde_json::from_str(&response_text)
             .map_err(|e| {
@@ -799,23 +824,34 @@ impl LLMProvider for DatabricksProvider {
                 .unwrap_or_else(|_| "Failed to serialize".to_string())
         );
 
-        let mut provider_clone = self.clone();
-        let response = provider_clone
-            .create_request_builder(true)
-            .await?
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Failed to send streaming request to Databricks API: {}", e))?;
+        // Use retry logic for the streaming API call
+        let response = execute_with_retry(
+            "Databricks streaming request",
+            || async {
+                let mut provider_clone = self.clone();
+                let request_body = request_body.clone();
+                
+                let response = provider_clone
+                    .create_request_builder(true)
+                    .await?
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow!("Failed to send streaming request to Databricks API: {}", e))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Databricks API error {}: {}", status, error_text));
-        }
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(anyhow!("Databricks API error {}: {}", status, error_text));
+                }
+                
+                Ok(response)
+            },
+            &self.retry_config,
+        ).await?;
 
         let stream = response.bytes_stream();
         let (tx, rx) = mpsc::channel(100);
@@ -846,7 +882,7 @@ impl LLMProvider for DatabricksProvider {
 
 // Databricks API request/response structures
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct DatabricksRequest {
     messages: Vec<DatabricksMessage>,
     max_tokens: u32,
@@ -856,20 +892,20 @@ struct DatabricksRequest {
     stream: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct DatabricksTool {
     r#type: String,
     function: DatabricksFunction,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct DatabricksFunction {
     name: String,
     description: String,
     parameters: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DatabricksMessage {
     role: String,
     content: Option<String>, // Make content optional since tool calls might not have content
@@ -877,14 +913,14 @@ struct DatabricksMessage {
     tool_calls: Option<Vec<DatabricksToolCall>>, // Add tool_calls field for responses
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DatabricksToolCall {
     id: String,
     r#type: String,
     function: DatabricksToolCallFunction,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DatabricksToolCallFunction {
     name: String,
     arguments: String, // This will be a JSON string that needs parsing

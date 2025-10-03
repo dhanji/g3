@@ -115,6 +115,7 @@ use crate::{
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+use crate::retry::{execute_with_retry, RetryConfig};
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -123,6 +124,7 @@ pub struct AnthropicProvider {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    retry_config: RetryConfig,
 }
 
 impl AnthropicProvider {
@@ -133,7 +135,7 @@ impl AnthropicProvider {
         temperature: Option<f32>,
     ) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(120))  // Increased timeout to reduce timeout errors
             .build()
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
@@ -147,7 +149,19 @@ impl AnthropicProvider {
             model,
             max_tokens: max_tokens.unwrap_or(4096),
             temperature: temperature.unwrap_or(0.1),
+            retry_config: RetryConfig::default(),
         })
+    }
+
+    /// Set a custom retry configuration for this provider
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
+    }
+
+    /// Get the current retry configuration
+    pub fn retry_config(&self) -> &RetryConfig {
+        &self.retry_config
     }
 
     fn create_request_builder(&self, streaming: bool) -> RequestBuilder {
@@ -270,13 +284,19 @@ impl AnthropicProvider {
         mut stream: impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Unpin,
         tx: mpsc::Sender<Result<CompletionChunk>>,
     ) {
+        use tokio::time::Duration;
         let mut buffer = String::new();
         let mut current_tool_calls: Vec<ToolCall> = Vec::new();
         let mut partial_tool_json = String::new(); // Accumulate partial JSON for tool calls
+        let mut consecutive_errors = 0;
+        let max_consecutive_errors = 3;
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
+                    // Reset error counter on successful chunk
+                    consecutive_errors = 0;
+                    
                     let chunk_str = match std::str::from_utf8(&chunk) {
                         Ok(s) => s,
                         Err(e) => {
@@ -450,9 +470,28 @@ impl AnthropicProvider {
                     }
                 }
                 Err(e) => {
-                    error!("Stream error: {}", e);
-                    let _ = tx.send(Err(anyhow!("Stream error: {}", e))).await;
-                    return;
+                    consecutive_errors += 1;
+                    let error_str = e.to_string();
+                    
+                    // Check if this is a retryable streaming error
+                    let is_retryable = error_str.contains("timed out") ||
+                        error_str.contains("timeout") ||
+                        error_str.contains("connection reset") ||
+                        error_str.contains("connection closed");
+                    
+                    if is_retryable && consecutive_errors < max_consecutive_errors {
+                        warn!(
+                            "Retryable stream error (attempt {}/{}): {}. Continuing...",
+                            consecutive_errors, max_consecutive_errors, e
+                        );
+                        // Add a small delay before continuing
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    } else {
+                        error!("Fatal stream error after {} consecutive errors: {}", consecutive_errors, e);
+                        let _ = tx.send(Err(anyhow!("Stream error: {}", e))).await;
+                        return;
+                    }
                 }
             }
         }
@@ -489,26 +528,36 @@ impl LLMProvider for AnthropicProvider {
         debug!("Sending request to Anthropic API: model={}, max_tokens={}, temperature={}", 
                request_body.model, request_body.max_tokens, request_body.temperature);
 
-        let response = self
-            .create_request_builder(false)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Failed to send request to Anthropic API: {}", e))?;
+        // Use retry logic for the API call
+        let anthropic_response = execute_with_retry(
+            "Anthropic completion request",
+            || async {
+                let request_body = request_body.clone();
+                let response = self
+                    .create_request_builder(false)
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow!("Failed to send request to Anthropic API: {}", e))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Anthropic API error {}: {}", status, error_text));
-        }
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(anyhow!("Anthropic API error {}: {}", status, error_text));
+                }
 
-        let anthropic_response: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| anyhow!("Failed to parse Anthropic response: {}", e))?;
+                let anthropic_response: AnthropicResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| anyhow!("Failed to parse Anthropic response: {}", e))?;
+                
+                Ok(anthropic_response)
+            },
+            &self.retry_config,
+        ).await?;
 
         // Extract text content from the response
         let content = anthropic_response
@@ -562,21 +611,31 @@ impl LLMProvider for AnthropicProvider {
         // Debug: Log the full request body
         debug!("Full request body: {}", serde_json::to_string_pretty(&request_body).unwrap_or_else(|_| "Failed to serialize".to_string()));
 
-        let response = self
-            .create_request_builder(true)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Failed to send streaming request to Anthropic API: {}", e))?;
+        // Use retry logic for the streaming API call
+        let response = execute_with_retry(
+            "Anthropic streaming request",
+            || async {
+                let request_body = request_body.clone();
+                let response = self
+                    .create_request_builder(true)
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow!("Failed to send streaming request to Anthropic API: {}", e))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Anthropic API error {}: {}", status, error_text));
-        }
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(anyhow!("Anthropic API error {}: {}", status, error_text));
+                }
+                
+                Ok(response)
+            },
+            &self.retry_config,
+        ).await?;
 
         let stream = response.bytes_stream();
         let (tx, rx) = mpsc::channel(100);
@@ -606,7 +665,7 @@ impl LLMProvider for AnthropicProvider {
 
 // Anthropic API request/response structures
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
@@ -619,14 +678,14 @@ struct AnthropicRequest {
     stream: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicTool {
     name: String,
     description: String,
     input_schema: AnthropicToolInputSchema,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicToolInputSchema {
     #[serde(rename = "type")]
     schema_type: String,
@@ -635,13 +694,13 @@ struct AnthropicToolInputSchema {
     required: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnthropicMessage {
     role: String,
     content: Vec<AnthropicContent>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum AnthropicContent {
     #[serde(rename = "text")]
