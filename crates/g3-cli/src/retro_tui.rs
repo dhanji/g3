@@ -72,6 +72,8 @@ struct TerminalState {
     cursor_blink: bool,
     /// Tool activity history (left side of activity box)
     tool_activity: Vec<String>,
+    /// Track if tool activity should auto-scroll
+    tool_activity_auto_scroll: bool,
     /// Tool activity scroll offset
     tool_activity_scroll: usize,
     /// Last known visible height of output area
@@ -113,6 +115,7 @@ impl TerminalState {
             scroll_offset: 0,
             cursor_blink: true,
             tool_activity: Vec::new(),
+            tool_activity_auto_scroll: true,
             tool_activity_scroll: 0,
             last_visible_height: 0, // Will be set on first draw
             manual_scroll: false,
@@ -148,7 +151,15 @@ impl TerminalState {
         for line in content.lines() {
             self.tool_activity.push(line.to_string());
         }
-        self.tool_activity_scroll = 0; // Reset scroll when new content arrives
+        
+        // Auto-scroll to bottom of tool activity if auto-scroll is enabled
+        if self.tool_activity_auto_scroll {
+            // Use the actual height of the tool detail area (8 lines total, minus 2 for borders = 6)
+            let visible_height = 6;
+            if self.tool_activity.len() > visible_height { 
+                self.tool_activity_scroll = self.tool_activity.len().saturating_sub(visible_height);
+            }
+        }
         
         // Auto-scroll to bottom only if user hasn't manually scrolled
         if !self.manual_scroll {
@@ -207,7 +218,13 @@ impl TerminalState {
             self.tool_activity.push(line.to_string());
         }
         
-        self.tool_activity_scroll = 0; // Reset scroll when new content arrives
+        // Auto-scroll to bottom of tool activity if auto-scroll is enabled
+        if self.tool_activity_auto_scroll {
+            let visible_height = 6; // Tool detail area is 8 lines minus 2 for borders
+            if self.tool_activity.len() > visible_height {
+                self.tool_activity_scroll = self.tool_activity.len().saturating_sub(visible_height);
+            }
+        }
     }
 
     /// Add text to output history
@@ -664,6 +681,8 @@ impl RetroTui {
         tool_activity: &[String],
         scroll_offset: usize,
     ) {
+        // Note: scroll_offset is managed by the state and auto-scrolls to show latest content when new data arrives
+        
         // Split the activity area into left and right halves
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -674,7 +693,8 @@ impl RetroTui {
             .split(area);
         
         // Draw left half - Tool Activity
-        let visible_height = chunks[0].height.saturating_sub(2) as usize; // Account for borders
+        // Calculate actual visible height accounting for borders
+        let visible_height = chunks[0].height.saturating_sub(2).max(1) as usize;
         let total_lines = tool_activity.len();
         
         // Calculate scroll position
@@ -972,6 +992,43 @@ impl RetroTui {
             
             // When scrolling to end, disable manual scroll so auto-scroll resumes
             state.manual_scroll = false;
+        }
+    }
+    
+    /// Scroll tool activity up
+    pub fn tool_scroll_up(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.tool_activity_scroll > 0 {
+                state.tool_activity_auto_scroll = false;
+                state.tool_activity_scroll -= 1;
+            }
+        }
+    }
+    
+    /// Scroll tool activity down
+    pub fn tool_scroll_down(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            let total_lines = state.tool_activity.len();
+            let visible_height = 6; // Tool detail area height minus borders
+            
+            if total_lines > visible_height {
+                let max_scroll = total_lines.saturating_sub(visible_height);
+                if state.tool_activity_scroll < max_scroll {
+                    state.tool_activity_auto_scroll = false;
+                    state.tool_activity_scroll = (state.tool_activity_scroll + 1).min(max_scroll);
+                }
+            }
+        }
+    }
+    
+    /// Reset tool activity scroll to auto-scroll mode
+    pub fn tool_scroll_auto(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.tool_activity_auto_scroll = true;
+            let visible_height = 6;
+            if state.tool_activity.len() > visible_height {
+                state.tool_activity_scroll = state.tool_activity.len().saturating_sub(visible_height);
+            }
         }
     }
 }
