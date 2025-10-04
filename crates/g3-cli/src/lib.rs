@@ -208,9 +208,6 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
         }
     }
 
-    tui.output("");
-    tui.output("");
-
     // Track multiline input
     let mut multiline_buffer = String::new();
     let mut in_multiline = false;

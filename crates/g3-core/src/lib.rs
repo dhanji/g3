@@ -2219,7 +2219,7 @@ fn filter_json_tool_calls(content: &str) -> String {
         }
 
         // Check if this looks like the start of a JSON tool call (larger chunks)
-        let pattern = Regex::new(r#"\{\s*"tool"\s*:"#).unwrap();
+        let pattern = Regex::new(r#"\s*\{\s*"tool"\s*:"#).unwrap();
         if pattern.is_match(trimmed) {
             // This might be the start of a JSON tool call
             // Enter suppression mode preemptively

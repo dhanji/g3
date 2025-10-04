@@ -185,7 +185,7 @@ impl UiWriter for RetroTuiWriter {
     }
 
     fn print_agent_prompt(&self) {
-        self.tui.output("💬 ");
+        self.tui.output("\n💬 ");
     }
 
     fn print_agent_response(&self, content: &str) {
