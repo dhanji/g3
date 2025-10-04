@@ -40,6 +40,16 @@ pub enum TuiMessage {
         caption: String,
         content: String,
     },
+    ToolDetailUpdate {
+        name: String,
+        content: String,
+    },
+    ToolComplete {
+        name: String,
+        success: bool,
+        duration_ms: u128,
+        caption: String,
+    },
     SystemStatus(String),
     ContextUpdate {
         used: u32,
@@ -60,6 +70,10 @@ struct TerminalState {
     scroll_offset: usize,
     /// Cursor blink state
     cursor_blink: bool,
+    /// Tool activity history (left side of activity box)
+    tool_activity: Vec<String>,
+    /// Tool activity scroll offset
+    tool_activity_scroll: usize,
     /// Last known visible height of output area
     last_visible_height: usize,
     /// User has manually scrolled (disable auto-scroll)
@@ -80,6 +94,8 @@ struct TerminalState {
     is_processing: bool,
     /// Should exit
     should_exit: bool,
+    /// Track the last tool header line index for updating it
+    last_tool_header_index: Option<usize>,
 }
 
 impl TerminalState {
@@ -96,6 +112,8 @@ impl TerminalState {
             ],
             scroll_offset: 0,
             cursor_blink: true,
+            tool_activity: Vec::new(),
+            tool_activity_scroll: 0,
             last_visible_height: 0, // Will be set on first draw
             manual_scroll: false,
             last_blink: Instant::now(),
@@ -106,82 +124,31 @@ impl TerminalState {
             last_status_blink: Instant::now(),
             is_processing: false,
             should_exit: false,
+            last_tool_header_index: None,
         }
     }
 
-    /// Format tool call output with a box
+    /// Format tool call output
     fn format_tool_output(&mut self, tool_name: &str, caption: &str, content: &str) {
-        // Calculate box width (use a reasonable width, accounting for terminal size)
-        let box_width = 80;
-        let border_char = "─";
-        let corner_tl = "┌";
-        let corner_tr = "┐";
-        let corner_bl = "└";
-        let corner_br = "┘";
-        let vertical = "│";
-
-        // Add top border
-        self.output_history.push(format!(
-            "{}{}{}",
-            corner_tl,
-            border_char.repeat(box_width - 2),
-            corner_tr
-        ));
-
-        // Add header with tool name (will be styled with green background in draw)
+        // Add tool header bar to main output
         let header_text = format!(" {} | {}", tool_name.to_uppercase(), caption);
-        let padding = box_width - 2 - header_text.len();
-        self.output_history.push(format!(
-            "{}[TOOL_HEADER]{}{}{}",
-            vertical,
-            header_text,
-            " ".repeat(padding),
-            vertical
-        ));
-
-        // Add separator between header and content
-        self.output_history.push(format!(
-            "{}{}{}",
-            "├",
-            border_char.repeat(box_width - 2),
-            "┤"
-        ));
-
-        // Add content lines
+        
+        // Add marker for special styling
+        self.output_history.push(format!("[TOOL_HEADER]{}", header_text));
+        
+        // Track the index of this tool header for later updates
+        self.last_tool_header_index = Some(self.output_history.len() - 1);
+        
+        self.output_history.push(String::new()); // Empty line after header  
+        
+        // Add the actual tool content to the tool detail panel
+        self.tool_activity.clear(); // Clear previous activity
+        self.tool_activity.push(format!("[{}] {}", tool_name.to_uppercase(), caption));
+        self.tool_activity.push(String::new());
         for line in content.lines() {
-            // Wrap long lines if needed
-            let max_content_width = box_width - 4; // Account for borders and padding
-            if line.len() <= max_content_width {
-                self.output_history.push(format!(
-                    "{} {:<width$} {}",
-                    vertical,
-                    line,
-                    vertical,
-                    width = max_content_width
-                ));
-            } else {
-                // Simple word wrapping for long lines
-                for chunk in line.chars().collect::<Vec<_>>().chunks(max_content_width) {
-                    let chunk_str: String = chunk.iter().collect();
-                    self.output_history.push(format!(
-                        "{} {:<width$} {}",
-                        vertical,
-                        chunk_str,
-                        vertical,
-                        width = max_content_width
-                    ));
-                }
-            }
+            self.tool_activity.push(line.to_string());
         }
-
-        // Add bottom border
-        self.output_history.push(format!(
-            "{}{}{}",
-            corner_bl,
-            border_char.repeat(box_width - 2),
-            corner_br
-        ));
-        self.output_history.push(String::new()); // Empty line after box
+        self.tool_activity_scroll = 0; // Reset scroll when new content arrives
         
         // Auto-scroll to bottom only if user hasn't manually scrolled
         if !self.manual_scroll {
@@ -201,6 +168,46 @@ impl TerminalState {
                 self.scroll_offset = 0;
             }
         }
+    }
+
+    /// Update tool header with completion status and timing
+    fn update_tool_completion(&mut self, name: &str, success: bool, duration_ms: u128, caption: &str) {
+        // Find and update the last tool header in place
+        if let Some(index) = self.last_tool_header_index {
+            if index < self.output_history.len() {
+                // Format the timing info
+                let timing = if duration_ms < 1000 {
+                    format!("{}ms", duration_ms)
+                } else {
+                    format!("{:.2}s", duration_ms as f64 / 1000.0)
+                };
+                
+                // Create the updated header with status marker and timing
+                let status_marker = if success { "[SUCCESS]" } else { "[FAILED]" };
+                let header_text = format!(" {} | {} | {}", name.to_uppercase(), caption, timing);
+                
+                // Replace the existing header line with the updated one
+                self.output_history[index] = format!("{}{}", status_marker, header_text);
+                
+                // Clear the tracking index
+                self.last_tool_header_index = None;
+            }
+        }
+    }
+
+    /// Update tool detail panel without changing the header
+    fn update_tool_detail(&mut self, name: &str, content: &str) {
+        // Update the tool detail panel with the complete content
+        self.tool_activity.clear();
+        self.tool_activity.push(format!("[{}] Complete", name.to_uppercase()));
+        self.tool_activity.push(String::new());
+        
+        // Add all the content lines
+        for line in content.lines() {
+            self.tool_activity.push(line.to_string());
+        }
+        
+        self.tool_activity_scroll = 0; // Reset scroll when new content arrives
     }
 
     /// Add text to output history
@@ -319,6 +326,20 @@ impl RetroTui {
                         } => {
                             state.format_tool_output(&name, &caption, &content);
                         }
+                        TuiMessage::ToolDetailUpdate {
+                            name,
+                            content,
+                        } => {
+                            state.update_tool_detail(&name, &content);
+                        }
+                        TuiMessage::ToolComplete {
+                            name,
+                            success,
+                            duration_ms,
+                            caption,
+                        } => {
+                            state.update_tool_completion(&name, success, duration_ms, &caption);
+                        }
                         TuiMessage::SystemStatus(status) => {
                             let was_processing = state.status_line == "PROCESSING";
                             state.status_line = status;
@@ -418,7 +439,8 @@ impl RetroTui {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(5), // Header/input area
-                    Constraint::Min(10),   // Main output area
+                    Constraint::Min(10),   // Main output area (will be further split)
+                    Constraint::Length(8), // Activity area
                     Constraint::Length(1), // Status bar
                 ])
                 .split(size);
@@ -448,11 +470,14 @@ impl RetroTui {
 
             // Draw main output area
             Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset);
+            
+            // Draw activity area (tool output)
+            Self::draw_activity_area(f, chunks[2], &state.tool_activity, state.tool_activity_scroll);
 
             // Draw status bar
             Self::draw_status_bar(
                 f,
-                chunks[2],
+                chunks[3],
                 &state.status_line,
                 state.context_info,
                 &state.provider_info,
@@ -521,14 +546,36 @@ impl RetroTui {
             .take(visible_height)
             .map(|line| {
                 // Check if this is a tool header line
-                if line.contains("[TOOL_HEADER]") {
+                if line.starts_with("[TOOL_HEADER]") {
                     // Extract the actual header text
                     let cleaned = line.replace("[TOOL_HEADER]", "");
-                    // Style with green background and black text
+                    // Style with amber background and black text
+                    return Line::from(Span::styled(
+                        format!(" {}", cleaned),
+                        Style::default()
+                            .bg(TERMINAL_AMBER) 
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else if line.starts_with("[SUCCESS]") {
+                    // Extract the actual header text
+                    let cleaned = line.replace("[SUCCESS]", "");
+                    // Style with green background for successful tool completion
                     return Line::from(Span::styled(
                         format!(" {}", cleaned),
                         Style::default()
                             .bg(TERMINAL_GREEN)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else if line.starts_with("[FAILED]") {
+                    // Extract the actual header text
+                    let cleaned = line.replace("[FAILED]", "");
+                    // Style with red background for failed tool completion
+                    return Line::from(Span::styled(
+                        format!(" {}", cleaned),
+                        Style::default()
+                            .bg(TERMINAL_RED)
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     ));
@@ -608,6 +655,88 @@ impl RetroTui {
                 &mut scrollbar_state,
             );
         }
+    }
+
+    /// Draw the activity area with tool output
+    fn draw_activity_area(
+        f: &mut Frame,
+        area: Rect,
+        tool_activity: &[String],
+        scroll_offset: usize,
+    ) {
+        // Split the activity area into left and right halves
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50), // Left half for tool output
+                Constraint::Percentage(50), // Right half (reserved for future use)
+            ])
+            .split(area);
+        
+        // Draw left half - Tool Activity
+        let visible_height = chunks[0].height.saturating_sub(2) as usize; // Account for borders
+        let total_lines = tool_activity.len();
+        
+        // Calculate scroll position
+        let scroll = if total_lines <= visible_height {
+            0
+        } else {
+            scroll_offset.min(total_lines.saturating_sub(visible_height))
+        };
+        
+        // Get visible lines for tool activity
+        let visible_lines: Vec<Line> = if tool_activity.is_empty() {
+            vec![Line::from(Span::styled(
+                " No tool activity yet",
+                Style::default().fg(TERMINAL_DIM_GREEN).add_modifier(Modifier::ITALIC),
+            ))]
+        } else {
+            tool_activity
+                .iter()
+                .skip(scroll)
+                .take(visible_height)
+                .map(|line| {
+                    // Style the header lines differently
+                    let style = if line.starts_with('[') && line.contains(']') {
+                        Style::default().fg(TERMINAL_CYAN).add_modifier(Modifier::BOLD)
+                    } else if line.is_empty() {
+                        Style::default()
+                    } else {
+                        Style::default().fg(TERMINAL_GREEN)
+                    };
+                    Line::from(Span::styled(format!(" {}", line), style))
+                })
+                .collect()
+        };
+        
+        let tool_output = Paragraph::new(visible_lines)
+            .block(
+                Block::default()
+                    .title(" TOOL DETAIL ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
+                    .style(Style::default().bg(TERMINAL_BG)),
+            )
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(tool_output, chunks[0]);
+        
+        // Draw right half - Activity
+        let reserved = Paragraph::new(vec![Line::from(Span::styled(
+            " Activity log will appear here",
+            Style::default().fg(TERMINAL_DIM_GREEN).add_modifier(Modifier::ITALIC),
+        ))])
+        .block(
+            Block::default()
+                .title(" ACTIVITY ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
+                .style(Style::default().bg(TERMINAL_BG)),
+        );
+        
+        f.render_widget(reserved, chunks[1]);
     }
 
     /// Draw the status bar
@@ -703,6 +832,24 @@ impl RetroTui {
             name: name.to_string(),
             caption: caption.to_string(),
             content: content.to_string(),
+        });
+    }
+
+    /// Update tool detail panel without changing the header
+    pub fn update_tool_detail(&self, name: &str, content: &str) {
+        let _ = self.tx.send(TuiMessage::ToolDetailUpdate {
+            name: name.to_string(),
+            content: content.to_string(),
+        });
+    }
+
+    /// Send tool completion status to the terminal
+    pub fn tool_complete(&self, name: &str, success: bool, duration_ms: u128, caption: &str) {
+        let _ = self.tx.send(TuiMessage::ToolComplete {
+            name: name.to_string(),
+            success,
+            duration_ms,
+            caption: caption.to_string(),
         });
     }
 

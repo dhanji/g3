@@ -1,6 +1,7 @@
 use crate::retro_tui::RetroTui;
 use g3_core::ui_writer::UiWriter;
 use std::io::{self, Write};
+use std::time::Instant;
 use std::sync::Mutex;
 
 /// Console implementation of UiWriter that prints to stdout
@@ -87,6 +88,8 @@ pub struct RetroTuiWriter {
     tui: RetroTui,
     current_tool_name: Mutex<Option<String>>,
     current_tool_output: Mutex<Vec<String>>,
+    current_tool_start: Mutex<Option<Instant>>,
+    current_tool_caption: Mutex<String>,
 }
 
 impl RetroTuiWriter {
@@ -95,6 +98,8 @@ impl RetroTuiWriter {
             tui,
             current_tool_name: Mutex::new(None),
             current_tool_output: Mutex::new(Vec::new()),
+            current_tool_start: Mutex::new(None),
+            current_tool_caption: Mutex::new(String::new()),
         }
     }
 }
@@ -129,12 +134,16 @@ impl UiWriter for RetroTuiWriter {
 
     fn print_tool_header(&self, tool_name: &str) {
         // Start collecting tool output
+        *self.current_tool_start.lock().unwrap() = Some(Instant::now());
         *self.current_tool_name.lock().unwrap() = Some(tool_name.to_string());
         self.current_tool_output.lock().unwrap().clear();
         self.current_tool_output
             .lock()
             .unwrap()
             .push(format!("Tool: {}", tool_name));
+        
+        // Initialize caption
+        *self.current_tool_caption.lock().unwrap() = String::new();
     }
 
     fn print_tool_arg(&self, key: &str, value: &str) {
@@ -142,9 +151,31 @@ impl UiWriter for RetroTuiWriter {
             .lock()
             .unwrap()
             .push(format!("{}: {}", key, value));
+        
+        // Build caption from first argument (usually the most important one)
+        let mut caption = self.current_tool_caption.lock().unwrap();
+        if caption.is_empty() && (key == "file_path" || key == "command" || key == "path") {
+            // Truncate long values for the caption
+            let truncated = if value.len() > 50 { format!("{}...", &value[..47]) } else { value.to_string() };
+            *caption = truncated;
+        }
     }
 
     fn print_tool_output_header(&self) {
+        // This is called right before tool execution starts
+        // Send the initial tool header to the TUI now
+        if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
+            let caption = self.current_tool_caption.lock().unwrap().clone();
+            let caption = if caption.is_empty() { "Executing...".to_string() } else { caption };
+            
+            // Send the tool output with initial header
+            self.tui.tool_output(
+                tool_name,
+                &caption,
+                ""
+            );
+        }
+        
         self.current_tool_output.lock().unwrap().push(String::new());
         self.current_tool_output
             .lock()
@@ -173,15 +204,36 @@ impl UiWriter for RetroTuiWriter {
             .unwrap()
             .push(format!("⚡️ {}", duration_str));
 
-        // Now send the complete tool output as a box
+        // Calculate the actual duration
+        let duration_ms = if let Some(start) = *self.current_tool_start.lock().unwrap() {
+            start.elapsed().as_millis()
+        } else {
+            0
+        };
+        
+        // Get the tool name and caption
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let content = self.current_tool_output.lock().unwrap().join("\n");
-            self.tui.tool_output(tool_name, "...", &content);
+            let caption = self.current_tool_caption.lock().unwrap().clone();
+            let caption = if caption.is_empty() { "Completed".to_string() } else { caption };
+            
+            // Update the tool detail panel with the complete output without adding a new header
+            // This keeps the original header in place to be updated by tool_complete
+            self.tui.update_tool_detail(tool_name, &content);
+            
+            // Determine success based on whether there's an error in the output
+            // This is a simple heuristic - you might want to make this more sophisticated
+            let success = !content.contains("error") && !content.contains("Error") && !content.contains("ERROR");
+            
+            // Send the completion status to update the header
+            self.tui.tool_complete(tool_name, success, duration_ms, &caption);
         }
 
         // Clear the buffers
         *self.current_tool_name.lock().unwrap() = None;
         self.current_tool_output.lock().unwrap().clear();
+        *self.current_tool_start.lock().unwrap() = None;
+        *self.current_tool_caption.lock().unwrap() = String::new();
     }
 
     fn print_agent_prompt(&self) {
