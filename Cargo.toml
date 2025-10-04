@@ -5,7 +5,7 @@ members = [
     "crates/g3-providers",
     "crates/g3-config",
     "crates/g3-execution"
-]
+, "tmp"]
 resolver = "2"
 
 [workspace.dependencies]
