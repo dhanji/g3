@@ -10,7 +10,7 @@ x ui abstraction from core
   - generates status messages "ruffling feathers..."
   - project description?
 - treesitter + friends
-- error where it just gives up turn
+x error where it just gives up turn
 - "project" behaviors (read readme first)
 - advance project mgmt
   - git for reverting

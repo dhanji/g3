@@ -490,7 +490,7 @@ impl RetroTui {
             // IMPORTANT: Update the last known visible height BEFORE drawing
             // This ensures auto-scroll calculations use the correct height
             let old_height = state.last_visible_height;
-            // Calculate the actual visible height accounting for borders (2 lines)
+            // Calculate the actual visible height accounting for padding (2 lines)
             let new_visible_height = chunks[1].height.saturating_sub(2) as usize;
             
             // Only update if we have a valid height
@@ -560,8 +560,8 @@ impl RetroTui {
         output_history: &[String],
         scroll_offset: usize,
     ) {
-        // Calculate visible lines
-        let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+        // Calculate visible lines (no borders now, but padding takes 2 lines)
+        let visible_height = area.height.saturating_sub(2) as usize; // Account for padding
         let total_lines = output_history.len();
 
         // Calculate the proper scroll position
@@ -665,10 +665,10 @@ impl RetroTui {
         let output = Paragraph::new(visible_lines)
             .block(
                 Block::default()
-                    .title(" SYSTEM OUTPUT ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
+                    // Remove borders but keep the block for spacing
+                    .borders(Borders::NONE)
+                    // Add padding to maintain the same spacing as borders would provide
+                    .padding(ratatui::widgets::Padding::new(1, 1, 1, 1))
                     .style(Style::default().bg(TERMINAL_BG)),
             )
             .wrap(Wrap { trim: false });
@@ -691,8 +691,8 @@ impl RetroTui {
             f.render_stateful_widget(
                 scrollbar,
                 area.inner(ratatui::layout::Margin {
-                    vertical: 1,
-                    horizontal: 0,
+                    vertical: 0,  // No borders, so no vertical margin needed
+                    horizontal: 0, // Keep horizontal margin at 0
                 }),
                 &mut scrollbar_state,
             );
