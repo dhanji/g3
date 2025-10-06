@@ -1469,8 +1469,19 @@ The tool will execute immediately and you'll receive the result (success or erro
                             // Stream finished - check if we should continue or return
                             if !tool_executed {
                                 // No tools were executed in this iteration
-                                // Check if we got any response at all
-                                if current_response.is_empty() && full_response.is_empty() {
+                                // Check if we got any meaningful response at all
+                                // We need to check the parser's text buffer as well, since the LLM
+                                // might have responded with text but no final_output tool call
+                                let text_content = parser.get_text_content();
+                                let has_text_response = !text_content.trim().is_empty() || !current_response.trim().is_empty();
+                                
+                                // If we have text in the parser buffer but not in current_response,
+                                // we should add it to the response
+                                if !text_content.trim().is_empty() && current_response.is_empty() {
+                                    current_response = filter_json_tool_calls(text_content).trim().to_string();
+                                }
+                                
+                                if !has_text_response && full_response.is_empty() {
                                     // Log detailed error information before failing
                                     error!(
                                         "=== STREAM ERROR: No content or tool calls received ==="
@@ -1608,7 +1619,17 @@ The tool will execute immediately and you'll receive the result (success or erro
 
             // If we get here and no tool was executed, we're done
             if !tool_executed {
-                if current_response.is_empty() && full_response.is_empty() {
+                // Check if we have any text in the parser that wasn't added to current_response
+                let text_content = parser.get_text_content();
+                if !text_content.trim().is_empty() && current_response.is_empty() {
+                    // The LLM responded with text but didn't call final_output
+                    // Add the text to the response
+                    current_response = filter_json_tool_calls(text_content).trim().to_string();
+                }
+                
+                let has_response = !current_response.is_empty() || !full_response.is_empty();
+                
+                if !has_response {
                     warn!(
                         "Loop exited without any response after {} iterations",
                         iteration_count
