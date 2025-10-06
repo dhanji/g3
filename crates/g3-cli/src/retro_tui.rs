@@ -71,6 +71,10 @@ struct TerminalState {
     scroll_offset: usize,
     /// Cursor blink state
     cursor_blink: bool,
+    /// Animation state for activity area (0.0 = hidden, 1.0 = fully shown)
+    activity_animation: f32,
+    /// Target animation state
+    activity_animation_target: f32,
     /// Tool activity history (left side of activity box)
     tool_activity: Vec<String>,
     /// Track if tool activity should auto-scroll
@@ -121,6 +125,8 @@ impl TerminalState {
             ],
             scroll_offset: 0,
             cursor_blink: true,
+            activity_animation: 0.0,
+            activity_animation_target: 0.0,
             tool_activity: Vec::new(),
             tool_activity_auto_scroll: true,
             tool_activity_scroll: 0,
@@ -371,6 +377,8 @@ impl RetroTui {
                             let was_processing = state.status_line == "PROCESSING";
                             state.status_line = status;
                             state.is_processing = state.status_line == "PROCESSING";
+                            // Set animation target based on processing state
+                            state.activity_animation_target = if state.is_processing { 1.0 } else { 0.0 };
                             
                             // Remove cursor when exiting PROCESSING mode
                             if was_processing && !state.is_processing {
@@ -439,6 +447,18 @@ impl RetroTui {
                             state.last_status_blink = Instant::now();
                         }
                     }
+                    
+                    // Update activity area animation
+                    let animation_speed = 0.15; // Adjust for faster/slower animation
+                    if (state.activity_animation - state.activity_animation_target).abs() > 0.01 {
+                        // Smoothly interpolate towards target
+                        state.activity_animation += (state.activity_animation_target - state.activity_animation) * animation_speed;
+                        // Clamp to valid range
+                        state.activity_animation = state.activity_animation.clamp(0.0, 1.0);
+                    } else {
+                        // Snap to target when close enough
+                        state.activity_animation = state.activity_animation_target;
+                    }
                 }
 
                 // Redraw at ~60fps
@@ -476,16 +496,31 @@ impl RetroTui {
         terminal.draw(|f| {
             let size = f.area();
             
-            // Create main layout - header, input, output
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(5), // Header/input area
-                    Constraint::Min(10),   // Main output area (will be further split)
-                    Constraint::Length(8), // Activity area
-                    Constraint::Length(1), // Status bar
-                ])
-                .split(size);
+            // Calculate activity area height based on animation (0 to 8)
+            let activity_height = (8.0 * state.activity_animation).round() as u16;
+            
+            // Create main layout - dynamically adjust based on whether activity area is shown
+            let chunks = if activity_height > 0 {
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(5), // Header/input area
+                        Constraint::Min(10),   // Main output area (will be further split)
+                        Constraint::Length(activity_height), // Activity area (animated)
+                        Constraint::Length(1), // Status bar
+                    ])
+                    .split(size)
+            } else {
+                // When activity area is hidden, give more space to output
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(5), // Header/input area
+                        Constraint::Min(10),   // Main output area gets all remaining space
+                        Constraint::Length(1), // Status bar
+                    ])
+                    .split(size)
+            };
 
             // IMPORTANT: Update the last known visible height BEFORE drawing
             // This ensures auto-scroll calculations use the correct height
@@ -513,13 +548,22 @@ impl RetroTui {
             // Draw main output area
             Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset);
             
-            // Draw activity area (tool output)
-            Self::draw_activity_area(f, chunks[2], state);
+            // Draw activity area only if it's visible (during animation or when shown)
+            if activity_height > 0 {
+                // Apply fade effect by adjusting opacity through color intensity
+                let opacity = state.activity_animation;
+                Self::draw_activity_area(f, chunks[2], state, opacity);
+            }
 
-            // Draw status bar
+            // Draw status bar - use the last chunk which is either index 2 or 3
+            let status_bar_chunk = if activity_height > 0 {
+                chunks[3]
+            } else {
+                chunks[2]
+            };
             Self::draw_status_bar(
                 f,
-                chunks[3],
+                status_bar_chunk,
                 &state.status_line,
                 state.context_info,
                 &state.provider_info,
@@ -704,8 +748,22 @@ impl RetroTui {
         f: &mut Frame,
         area: Rect,
         state: &TerminalState,
+        opacity: f32,
     ) {
         // Note: scroll_offset is managed by the state and auto-scrolls to show latest content when new data arrives
+        
+        // Apply fade effect by adjusting colors based on opacity
+        let fade_color = |color: Color| -> Color {
+            match color {
+                Color::Rgb(r, g, b) => {
+                    let faded_r = ((r as f32 * opacity) as u8).max(0);
+                    let faded_g = ((g as f32 * opacity) as u8).max(0);
+                    let faded_b = ((b as f32 * opacity) as u8).max(0);
+                    Color::Rgb(faded_r, faded_g, faded_b)
+                }
+                _ => color,
+            }
+        };
         
         // Split the activity area into left and right halves
         let chunks = Layout::default()
@@ -732,7 +790,7 @@ impl RetroTui {
         let visible_lines: Vec<Line> = if state.tool_activity.is_empty() {
             vec![Line::from(Span::styled(
                 " No tool activity yet",
-                Style::default().fg(TERMINAL_DIM_GREEN).add_modifier(Modifier::ITALIC),
+                Style::default().fg(fade_color(TERMINAL_DIM_GREEN)).add_modifier(Modifier::ITALIC),
             ))]
         } else {
             state.tool_activity
@@ -742,11 +800,11 @@ impl RetroTui {
                 .map(|line| {
                     // Style the header lines differently
                     let style = if line.starts_with('[') && line.contains(']') {
-                        Style::default().fg(TERMINAL_CYAN).add_modifier(Modifier::BOLD)
+                        Style::default().fg(fade_color(TERMINAL_CYAN)).add_modifier(Modifier::BOLD)
                     } else if line.is_empty() {
                         Style::default()
                     } else {
-                        Style::default().fg(TERMINAL_GREEN)
+                        Style::default().fg(fade_color(TERMINAL_GREEN))
                     };
                     Line::from(Span::styled(format!(" {}", line), style))
                 })
@@ -759,7 +817,7 @@ impl RetroTui {
                     .title(" TOOL DETAIL ")
                     .title_alignment(Alignment::Center)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
+                    .border_style(Style::default().fg(fade_color(TERMINAL_DIM_GREEN)))
                     .style(Style::default().bg(TERMINAL_BG)),
             )
             .wrap(Wrap { trim: false });
@@ -767,7 +825,7 @@ impl RetroTui {
         f.render_widget(tool_output, chunks[0]);
         
         // Draw right half - Token Chart
-        Self::draw_token_chart(f, chunks[1], &state.token_rate_history, state.is_processing);
+        Self::draw_token_chart(f, chunks[1], &state.token_rate_history, state.is_processing, opacity);
     }
     
     /// Draw a line chart showing tokens received over time
@@ -776,13 +834,27 @@ impl RetroTui {
         area: Rect,
         token_history: &VecDeque<(f64, f64)>,
         is_processing: bool,
+        opacity: f32,
     ) {
+        // Apply fade effect by adjusting colors based on opacity
+        let fade_color = |color: Color| -> Color {
+            match color {
+                Color::Rgb(r, g, b) => {
+                    let faded_r = ((r as f32 * opacity) as u8).max(0);
+                    let faded_g = ((g as f32 * opacity) as u8).max(0);
+                    let faded_b = ((b as f32 * opacity) as u8).max(0);
+                    Color::Rgb(faded_r, faded_g, faded_b)
+                }
+                _ => color,
+            }
+        };
+        
         // Create the chart block
         let block = Block::default()
             .title(" TOKENS RECEIVED ")
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
+            .border_style(Style::default().fg(fade_color(TERMINAL_DIM_GREEN)))
             .style(Style::default().bg(TERMINAL_BG));
         
         // Calculate inner area for chart
@@ -795,7 +867,7 @@ impl RetroTui {
         if token_history.is_empty() || inner.width < 10 || inner.height < 3 {
             let placeholder = Paragraph::new(vec![Line::from(Span::styled(
                 " Waiting for token data...",
-                Style::default().fg(TERMINAL_DIM_GREEN).add_modifier(Modifier::ITALIC),
+                Style::default().fg(fade_color(TERMINAL_DIM_GREEN)).add_modifier(Modifier::ITALIC),
             ))])
             .alignment(Alignment::Center);
             f.render_widget(placeholder, inner);
@@ -826,9 +898,9 @@ impl RetroTui {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:>5.0}", max_tokens),
-                Style::default().fg(TERMINAL_AMBER),
+                Style::default().fg(fade_color(TERMINAL_AMBER)),
             ),
-            Span::styled(" ┤", Style::default().fg(TERMINAL_DIM_GREEN)),
+            Span::styled(" ┤", Style::default().fg(fade_color(TERMINAL_DIM_GREEN))),
         ]));
         
         // Draw the sparkline chart
@@ -851,16 +923,16 @@ impl RetroTui {
                 }
             }
             
-            let color = if is_processing { TERMINAL_CYAN } else { TERMINAL_GREEN };
+            let color = if is_processing { fade_color(TERMINAL_CYAN) } else { fade_color(TERMINAL_GREEN) };
             lines.push(Line::from(Span::styled(chart_line, Style::default().fg(color))));
             
             // Add bottom axis
             lines.push(Line::from(vec![
-                Span::styled("    0", Style::default().fg(TERMINAL_AMBER)),
-                Span::styled(" └", Style::default().fg(TERMINAL_DIM_GREEN)),
+                Span::styled("    0", Style::default().fg(fade_color(TERMINAL_AMBER))),
+                Span::styled(" └", Style::default().fg(fade_color(TERMINAL_DIM_GREEN))),
                 Span::styled(
                     format!("{}T (seconds)", "─".repeat(chart_width.saturating_sub(15))),
-                    Style::default().fg(TERMINAL_DIM_GREEN),
+                    Style::default().fg(fade_color(TERMINAL_DIM_GREEN)),
                 ),
             ]));
         }
