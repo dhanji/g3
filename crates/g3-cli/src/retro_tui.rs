@@ -65,6 +65,8 @@ pub enum TuiMessage {
 struct TerminalState {
     /// Current input buffer
     input_buffer: String,
+    /// Cursor position in input buffer (for editing)
+    cursor_position: usize,
     /// Output history
     output_history: Vec<String>,
     /// Scroll position in output
@@ -115,6 +117,7 @@ impl TerminalState {
     fn new() -> Self {
         Self {
             input_buffer: String::new(),
+            cursor_position: 0,
             output_history: vec![
                 "WEYLAND-YUTANI SYSTEMS".to_string(),
                 "MU/TH/UR 6000 - INTERFACE 2.4.1".to_string(),
@@ -380,6 +383,12 @@ impl RetroTui {
                             // Set animation target based on processing state
                             state.activity_animation_target = if state.is_processing { 1.0 } else { 0.0 };
                             
+                            // Clear input buffer when entering PROCESSING mode
+                            if !was_processing && state.is_processing {
+                                state.input_buffer.clear();
+                                state.cursor_position = 0;
+                            }
+                            
                             // Remove cursor when exiting PROCESSING mode
                             if was_processing && !state.is_processing {
                                 if let Some(last) = state.output_history.last_mut() {
@@ -543,7 +552,7 @@ impl RetroTui {
             }
             
             // Draw header/input area
-            Self::draw_input_area(f, chunks[0], &state.input_buffer, state.cursor_blink);
+            Self::draw_input_area(f, chunks[0], &state.input_buffer, state.cursor_position, state.cursor_blink, state.is_processing);
 
             // Draw main output area
             Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset);
@@ -575,15 +584,63 @@ impl RetroTui {
     }
 
     /// Draw the input area with prompt
-    fn draw_input_area(f: &mut Frame, area: Rect, input_buffer: &str, cursor_blink: bool) {
-        // Show the actual input buffer content with prompt
-        let input_text = if cursor_blink {
-            format!("g3> {}█", input_buffer)
+    fn draw_input_area(f: &mut Frame, area: Rect, input_buffer: &str, cursor_position: usize, cursor_blink: bool, is_processing: bool) {
+        let prompt = "g3> ";
+        let prompt_len = prompt.len();
+        
+        // Calculate available width for text (accounting for borders and prompt)
+        let available_width = area.width.saturating_sub(2).saturating_sub(prompt_len as u16) as usize;
+        
+        // Don't show cursor if processing
+        let show_cursor = !is_processing && cursor_blink;
+        
+        // Build the display text with cursor at the right position
+        let mut display_text = String::new();
+        display_text.push_str(prompt);
+        
+        if input_buffer.is_empty() {
+            // Empty buffer - just show cursor if applicable
+            if show_cursor {
+                display_text.push('█');
+            }
         } else {
-            format!("g3> {} ", input_buffer)
-        };
+            // Calculate which part of the buffer to show (handle wrapping)
+            let total_cursor_pos = cursor_position;
+            
+            // Determine the window into the buffer we should show
+            let window_start = if total_cursor_pos > available_width - 1 {
+                // Cursor is beyond the visible area, scroll the view
+                total_cursor_pos - (available_width - 1)
+            } else {
+                0
+            };
+            
+            // Get the visible portion of the buffer
+            let visible_buffer: String = input_buffer
+                .chars()
+                .skip(window_start)
+                .take(available_width)
+                .collect();
+            
+            // Insert cursor at the appropriate position in the visible text
+            let visible_cursor_pos = cursor_position.saturating_sub(window_start);
+            
+            for (i, ch) in visible_buffer.chars().enumerate() {
+                if i == visible_cursor_pos && show_cursor {
+                    display_text.push('█');
+                    // Don't add the character under the cursor if we're showing the block cursor
+                } else {
+                    display_text.push(ch);
+                }
+            }
+            
+            // If cursor is at the end and we're showing it
+            if visible_cursor_pos == visible_buffer.len() && show_cursor {
+                display_text.push('█');
+            }
+        }
 
-        let input = Paragraph::new(input_text)
+        let input = Paragraph::new(display_text)
             .style(Style::default().fg(TERMINAL_GREEN))
             .block(
                 Block::default()
@@ -1092,9 +1149,119 @@ impl RetroTui {
     pub fn update_input(&self, input: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.input_buffer = input.to_string();
+            // Keep cursor at end when updating the whole buffer
+            state.cursor_position = input.len();
         }
     }
 
+    /// Move cursor left
+    pub fn cursor_left(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.cursor_position > 0 {
+                state.cursor_position -= 1;
+            }
+        }
+    }
+    
+    /// Move cursor right
+    pub fn cursor_right(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.cursor_position < state.input_buffer.len() {
+                state.cursor_position += 1;
+            }
+        }
+    }
+    
+    /// Move cursor to beginning of line (Ctrl-A)
+    pub fn cursor_home(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cursor_position = 0;
+        }
+    }
+    
+    /// Move cursor to end of line (Ctrl-E)
+    pub fn cursor_end(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cursor_position = state.input_buffer.len();
+        }
+    }
+    
+    /// Delete word before cursor (Ctrl-W)
+    pub fn delete_word(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.cursor_position > 0 {
+                // Find the start of the word to delete
+                let mut word_start = state.cursor_position;
+                let chars: Vec<char> = state.input_buffer.chars().collect();
+                
+                // Skip trailing spaces
+                while word_start > 0 && chars[word_start - 1].is_whitespace() {
+                    word_start -= 1;
+                }
+                
+                // Find word boundary
+                while word_start > 0 && !chars[word_start - 1].is_whitespace() {
+                    word_start -= 1;
+                }
+                
+                // Remove the word
+                let before = state.input_buffer.chars().take(word_start).collect::<String>();
+                let after = state.input_buffer.chars().skip(state.cursor_position).collect::<String>();
+                state.input_buffer = format!("{}{}", before, after);
+                state.cursor_position = word_start;
+            }
+        }
+    }
+    
+    /// Delete from cursor to end of line (Ctrl-K)
+    pub fn delete_to_end(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.input_buffer = state.input_buffer.chars().take(state.cursor_position).collect();
+        }
+    }
+    
+    /// Get current input buffer and cursor position
+    pub fn get_input_state(&self) -> (String, usize) {
+        if let Ok(state) = self.state.lock() {
+            (state.input_buffer.clone(), state.cursor_position)
+        } else {
+            (String::new(), 0)
+        }
+    }
+    
+    /// Insert character at cursor position
+    pub fn insert_char(&self, ch: char) {
+        if let Ok(mut state) = self.state.lock() {
+            let before = state.input_buffer.chars().take(state.cursor_position).collect::<String>();
+            let after = state.input_buffer.chars().skip(state.cursor_position).collect::<String>();
+            state.input_buffer = format!("{}{}{}", before, ch, after);
+            state.cursor_position += 1;
+        }
+    }
+    
+    /// Delete character at cursor position (Delete key)
+    pub fn delete_char(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.cursor_position < state.input_buffer.len() {
+                let before = state.input_buffer.chars().take(state.cursor_position).collect::<String>();
+                let after = state.input_buffer.chars().skip(state.cursor_position + 1).collect::<String>();
+                state.input_buffer = format!("{}{}", before, after);
+            }
+        }
+    }
+    
+    /// Delete character before cursor (Backspace)
+    pub fn backspace(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.cursor_position > 0 {
+                let before = state.input_buffer.chars().take(state.cursor_position - 1).collect::<String>();
+                let after = state.input_buffer.chars().skip(state.cursor_position).collect::<String>();
+                state.input_buffer = format!("{}{}", before, after);
+                state.cursor_position -= 1;
+            }
+        }
+    }
+    
     /// Handle scrolling
     pub fn scroll_up(&self) {
         if let Ok(mut state) = self.state.lock() {

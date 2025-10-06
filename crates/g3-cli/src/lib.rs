@@ -211,7 +211,6 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
     // Track multiline input
     let mut multiline_buffer = String::new();
     let mut in_multiline = false;
-    let mut input_buffer = String::new();
 
     // Main event loop
     loop {
@@ -222,9 +221,6 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
             context.total_tokens,
             context.percentage_used(),
         );
-
-        // Update the displayed input buffer
-        tui.update_input(&input_buffer);
 
         // Poll for keyboard events
         if event::poll(Duration::from_millis(50))? {
@@ -238,8 +234,48 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                         tui.exit();
                         break;
                     }
+                    // Emacs/bash-like shortcuts
+                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.cursor_home();
+                    }
+                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.cursor_end();
+                    }
+                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.delete_word();
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.delete_to_end();
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Delete from beginning to cursor (similar to Ctrl-K but opposite direction)
+                        let (input_buffer, cursor_pos) = tui.get_input_state();
+                        if cursor_pos > 0 {
+                            let after = input_buffer.chars().skip(cursor_pos).collect::<String>();
+                            tui.update_input(&after);
+                            tui.cursor_home();
+                        }
+                    }
+                    KeyCode::Left => {
+                        tui.cursor_left();
+                    }
+                    KeyCode::Right => {
+                        tui.cursor_right();
+                    }
+                    KeyCode::Home => {
+                        tui.cursor_home();
+                    }
+                    KeyCode::End => {
+                        tui.cursor_end();
+                    }
+                    KeyCode::Delete => {
+                        tui.delete_char();
+                    }
                     KeyCode::Enter => {
+                        let (input_buffer, _) = tui.get_input_state();
                         if !input_buffer.is_empty() {
+                            // Clear the input for next command
+                            tui.update_input("");
                             let trimmed = input_buffer.trim_end();
 
                             // Check if line ends with backslash for continuation
@@ -249,7 +285,6 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                                 multiline_buffer.push_str(without_backslash);
                                 multiline_buffer.push('\n');
                                 in_multiline = true;
-                                input_buffer.clear();
                                 tui.status("MULTILINE INPUT");
                                 continue;
                             }
@@ -265,8 +300,6 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                             } else {
                                 input_buffer.clone()
                             };
-
-                            input_buffer.clear();
 
                             let input = final_input.trim().to_string();
                             if input.is_empty() {
@@ -305,10 +338,10 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                         }
                     }
                     KeyCode::Char(c) => {
-                        input_buffer.push(c);
+                        tui.insert_char(c);
                     }
                     KeyCode::Backspace => {
-                        input_buffer.pop();
+                        tui.backspace();
                     }
                     KeyCode::Up => {
                         tui.scroll_up();
@@ -322,11 +355,11 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                     KeyCode::PageDown => {
                         tui.scroll_page_down();
                     }
-                    KeyCode::Home => {
-                        tui.scroll_home();
+                    KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.scroll_home(); // Ctrl+Home for scrolling to top
                     }
-                    KeyCode::End => {
-                        tui.scroll_end();
+                    KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        tui.scroll_end(); // Ctrl+End for scrolling to bottom
                     }
                     _ => {}
                 }
