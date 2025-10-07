@@ -36,6 +36,7 @@ mod tests {
                 }
             },
             &context,
+            false, // not autonomous mode
         )
         .await;
 
@@ -68,6 +69,7 @@ mod tests {
                 }
             },
             &context,
+            false, // not autonomous mode
         )
         .await;
 
@@ -99,6 +101,7 @@ mod tests {
                 }
             },
             &context,
+            false, // not autonomous mode
         )
         .await;
 
@@ -125,9 +128,9 @@ mod tests {
 
     #[test]
     fn test_retry_delay_increases() {
-        let delay1 = calculate_retry_delay(1);
-        let delay2 = calculate_retry_delay(2);
-        let delay3 = calculate_retry_delay(3);
+        let delay1 = calculate_retry_delay(1, false);
+        let delay2 = calculate_retry_delay(2, false);
+        let delay3 = calculate_retry_delay(3, false);
 
         // Delays should generally increase (though jitter can affect this)
         // We'll test the base delays without jitter

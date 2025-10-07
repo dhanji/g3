@@ -11,16 +11,29 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// Maximum number of retry attempts for recoverable errors
-const MAX_RETRY_ATTEMPTS: u32 = 3;
+/// Maximum number of retry attempts for recoverable errors (default mode)
+const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 3;
+
+/// Maximum number of retry attempts for autonomous mode
+const AUTONOMOUS_MAX_RETRY_ATTEMPTS: u32 = 6;
 
 /// Base delay for exponential backoff (in milliseconds)
 const BASE_RETRY_DELAY_MS: u64 = 1000;
 
-/// Maximum delay between retries (in milliseconds)
-const MAX_RETRY_DELAY_MS: u64 = 10000;
+/// Maximum delay between retries (in milliseconds) for default mode
+const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 10000;
 
-/// Jitter factor (0.0 to 1.0) to randomize retry delays
+/// Maximum delay between retries (in milliseconds) for autonomous mode
+/// Spread over 10 minutes (600 seconds) with 6 retries
+const AUTONOMOUS_MAX_RETRY_DELAY_MS: u64 = 120000; // 2 minutes max per retry
+
+/// Total time budget for autonomous mode retries (10 minutes)
+const AUTONOMOUS_RETRY_BUDGET_MS: u64 = 600000;
+
+/// Jitter factor (0.0 to 1.0) to randomize retry delays (default)
+const DEFAULT_JITTER_FACTOR: f64 = 0.3;
+
+/// Jitter factor for autonomous mode (higher for better distribution)
 const JITTER_FACTOR: f64 = 0.3;
 
 /// Error context information for detailed logging
@@ -209,13 +222,39 @@ pub fn classify_error(error: &anyhow::Error) -> ErrorType {
     ErrorType::NonRecoverable
 }
 
-/// Calculate retry delay with exponential backoff and jitter
-pub fn calculate_retry_delay(attempt: u32) -> Duration {
+/// Calculate retry delay for autonomous mode with better distribution over 10 minutes
+fn calculate_autonomous_retry_delay(attempt: u32) -> Duration {
     use rand::Rng;
+    let mut rng = rand::thread_rng();
+    
+    // Distribute 6 retries over 10 minutes (600 seconds)
+    // Base delays: 10s, 30s, 60s, 120s, 180s, 200s = 600s total
+    let base_delays_ms = [10000, 30000, 60000, 120000, 180000, 200000];
+    let base_delay = base_delays_ms.get(attempt.saturating_sub(1) as usize).unwrap_or(&200000);
+    
+    // Add jitter of ±30% to prevent thundering herd
+    let jitter = (*base_delay as f64 * 0.3 * rng.gen::<f64>()) as u64;
+    let final_delay = if rng.gen_bool(0.5) {
+        base_delay + jitter
+    } else {
+        base_delay.saturating_sub(jitter)
+    };
+    
+    Duration::from_millis(final_delay)
+}
+
+/// Calculate retry delay with exponential backoff and jitter
+pub fn calculate_retry_delay(attempt: u32, is_autonomous: bool) -> Duration {
+    if is_autonomous {
+        return calculate_autonomous_retry_delay(attempt);
+    }
+    
+    use rand::Rng;
+    let max_retry_delay_ms = if is_autonomous { AUTONOMOUS_MAX_RETRY_DELAY_MS } else { DEFAULT_MAX_RETRY_DELAY_MS };
     
     // Exponential backoff: delay = base * 2^attempt
     let base_delay = BASE_RETRY_DELAY_MS * (2_u64.pow(attempt.saturating_sub(1)));
-    let capped_delay = base_delay.min(MAX_RETRY_DELAY_MS);
+    let capped_delay = base_delay.min(max_retry_delay_ms);
     
     // Add jitter to prevent thundering herd
     let mut rng = rand::thread_rng();
@@ -234,6 +273,7 @@ pub async fn retry_with_backoff<F, Fut, T>(
     operation_name: &str,
     mut operation: F,
     context: &ErrorContext,
+    is_autonomous: bool,
 ) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -257,10 +297,11 @@ where
             }
             Err(error) => {
                 let error_type = classify_error(&error);
+                let max_attempts = if is_autonomous { AUTONOMOUS_MAX_RETRY_ATTEMPTS } else { DEFAULT_MAX_RETRY_ATTEMPTS };
                 
                 match error_type {
                     ErrorType::Recoverable(recoverable_type) => {
-                        if attempt >= MAX_RETRY_ATTEMPTS {
+                        if attempt >= max_attempts {
                             error!(
                                 "Operation '{}' failed after {} attempts. Giving up.",
                                 operation_name, attempt
@@ -269,10 +310,10 @@ where
                             return Err(error);
                         }
                         
-                        let delay = calculate_retry_delay(attempt);
+                        let delay = calculate_retry_delay(attempt, is_autonomous);
                         warn!(
                             "Recoverable error ({:?}) in '{}' (attempt {}/{}). Retrying in {:?}...",
-                            recoverable_type, operation_name, attempt, MAX_RETRY_ATTEMPTS, delay
+                            recoverable_type, operation_name, attempt, max_attempts, delay
                         );
                         warn!("Error details: {}", error);
                         
@@ -380,9 +421,9 @@ mod tests {
     #[test]
     fn test_retry_delay_calculation() {
         // Test that delays increase exponentially
-        let delay1 = calculate_retry_delay(1);
-        let delay2 = calculate_retry_delay(2);
-        let delay3 = calculate_retry_delay(3);
+        let delay1 = calculate_retry_delay(1, false);
+        let delay2 = calculate_retry_delay(2, false);
+        let delay3 = calculate_retry_delay(3, false);
         
         // Due to jitter, we can't test exact values, but the base should increase
         assert!(delay1.as_millis() >= (BASE_RETRY_DELAY_MS as f64 * 0.7) as u128);
@@ -395,8 +436,28 @@ mod tests {
         assert!(delay3.as_millis() >= delay2.as_millis());
         
         // Test max cap
-        let delay_max = calculate_retry_delay(10);
-        assert!(delay_max.as_millis() <= (MAX_RETRY_DELAY_MS as f64 * 1.3) as u128);
+        let delay_max = calculate_retry_delay(10, false);
+        assert!(delay_max.as_millis() <= (DEFAULT_MAX_RETRY_DELAY_MS as f64 * 1.3) as u128);
+    }
+
+    #[test]
+    fn test_autonomous_retry_delay_calculation() {
+        // Test autonomous mode delays are distributed over 10 minutes
+        let delay1 = calculate_retry_delay(1, true);
+        let delay2 = calculate_retry_delay(2, true);
+        let delay3 = calculate_retry_delay(3, true);
+        let delay4 = calculate_retry_delay(4, true);
+        let delay5 = calculate_retry_delay(5, true);
+        let delay6 = calculate_retry_delay(6, true);
+        
+        // Base delays should be around: 10s, 30s, 60s, 120s, 180s, 200s
+        // With ±30% jitter
+        assert!(delay1.as_millis() >= 7000 && delay1.as_millis() <= 13000);
+        assert!(delay2.as_millis() >= 21000 && delay2.as_millis() <= 39000);
+        assert!(delay3.as_millis() >= 42000 && delay3.as_millis() <= 78000);
+        assert!(delay4.as_millis() >= 84000 && delay4.as_millis() <= 156000);
+        assert!(delay5.as_millis() >= 126000 && delay5.as_millis() <= 234000);
+        assert!(delay6.as_millis() >= 140000 && delay6.as_millis() <= 260000);
     }
 
     #[test]

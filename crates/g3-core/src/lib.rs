@@ -338,10 +338,19 @@ pub struct Agent<W: UiWriter> {
     session_id: Option<String>,
     tool_call_metrics: Vec<(String, Duration, bool)>, // (tool_name, duration, success)
     ui_writer: W,
+    is_autonomous: bool,
 }
 
 impl<W: UiWriter> Agent<W> {
     pub async fn new(config: Config, ui_writer: W) -> Result<Self> {
+        Self::new_with_mode(config, ui_writer, false).await
+    }
+
+    pub async fn new_autonomous(config: Config, ui_writer: W) -> Result<Self> {
+        Self::new_with_mode(config, ui_writer, true).await
+    }
+
+    async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool) -> Result<Self> {
         let mut providers = ProviderRegistry::new();
 
         // Only register providers that are configured AND selected as the default provider
@@ -431,6 +440,7 @@ impl<W: UiWriter> Agent<W> {
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
+            is_autonomous,
         })
     }
 
@@ -954,7 +964,7 @@ The tool will execute immediately and you'll receive the result (success or erro
         use crate::error_handling::{calculate_retry_delay, classify_error, ErrorType};
 
         let mut attempt = 0;
-        const MAX_ATTEMPTS: u32 = 3;
+        let max_attempts = if self.is_autonomous { 6 } else { 3 };
 
         loop {
             attempt += 1;
@@ -974,12 +984,12 @@ The tool will execute immediately and you'll receive the result (success or erro
                     );
                     return Ok(stream);
                 }
-                Err(e) if attempt < MAX_ATTEMPTS => {
+                Err(e) if attempt < max_attempts => {
                     if matches!(classify_error(&e), ErrorType::Recoverable(_)) {
-                        let delay = calculate_retry_delay(attempt);
+                        let delay = calculate_retry_delay(attempt, self.is_autonomous);
                         warn!(
                             "Recoverable error on attempt {}/{}: {}. Retrying in {:?}...",
-                            attempt, MAX_ATTEMPTS, e, delay
+                            attempt, max_attempts, e, delay
                         );
                         tokio::time::sleep(delay).await;
                     } else {

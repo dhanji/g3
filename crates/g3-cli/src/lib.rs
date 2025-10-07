@@ -133,7 +133,11 @@ pub async fn run() -> Result<()> {
 
     // Initialize agent
     let ui_writer = ConsoleUiWriter::new();
-    let mut agent = Agent::new(config.clone(), ui_writer).await?;
+    let mut agent = if cli.autonomous {
+        Agent::new_autonomous(config.clone(), ui_writer).await?
+    } else {
+        Agent::new(config.clone(), ui_writer).await?
+    };
 
     // Execute task, autonomous mode, or start interactive mode
     if cli.autonomous {
@@ -700,7 +704,7 @@ async fn run_autonomous(
         // Create a new agent instance for coach mode to ensure fresh context
         let config = g3_config::Config::load(None)?;
         let ui_writer = ConsoleUiWriter::new();
-        let mut coach_agent = Agent::new(config, ui_writer).await?;
+        let mut coach_agent = Agent::new_autonomous(config, ui_writer).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;
