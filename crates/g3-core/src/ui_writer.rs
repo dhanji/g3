@@ -41,6 +41,9 @@ pub trait UiWriter: Send + Sync {
     /// Print agent response inline (for streaming)
     fn print_agent_response(&self, content: &str);
     
+    /// Notify that an SSE event was received (including pings)
+    fn notify_sse_received(&self);
+    
     /// Flush any buffered output
     fn flush(&self);
 }
@@ -62,5 +65,6 @@ impl UiWriter for NullUiWriter {
     fn print_tool_timing(&self, _duration_str: &str) {}
     fn print_agent_prompt(&self) {}
     fn print_agent_response(&self, _content: &str) {}
+    fn notify_sse_received(&self) {}
     fn flush(&self) {}
 }

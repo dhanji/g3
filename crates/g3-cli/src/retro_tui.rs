@@ -57,6 +57,7 @@ pub enum TuiMessage {
         total: u32,
         percentage: f32,
     },
+    SSEReceived, // New message type for SSE events (including pings)
     Error(String),
     Exit,
 }
@@ -105,10 +106,14 @@ struct TerminalState {
     should_exit: bool,
     /// Track the last tool header line index for updating it
     last_tool_header_index: Option<usize>,
-    /// Token rate tracking for chart
-    token_rate_history: VecDeque<(f64, f64)>, // (time_seconds, tokens_per_second)
+    /// Token rate tracking for wave animation
+    token_wave_history: VecDeque<f64>, // Wave animation values for tokens
+    /// SSE rate tracking for wave animation
+    sse_wave_history: VecDeque<f64>, // Wave animation values for SSEs
     /// Start time for token tracking
     session_start: Instant,
+    /// SSE counter (including pings)
+    sse_count: u32,
     /// Last token count for rate calculation
     last_token_count: u32,
 }
@@ -144,9 +149,11 @@ impl TerminalState {
             is_processing: false,
             should_exit: false,
             last_tool_header_index: None,
-            token_rate_history: VecDeque::with_capacity(60), // Keep last 60 data points
+            token_wave_history: VecDeque::with_capacity(40), // Keep 40 points for wave animation
+            sse_wave_history: VecDeque::with_capacity(40), // Keep 40 points for wave animation
             session_start: Instant::now(),
             last_token_count: 0,
+            sse_count: 0,
         }
     }
 
@@ -411,20 +418,36 @@ impl RetroTui {
                         } => {
                             state.context_info = (used, total, percentage);
                             
-                            // Update token rate history for the chart
-                            let elapsed = state.session_start.elapsed().as_secs_f64();
-                            
-                            // Calculate tokens per second since last update
+                            // Update token wave animation
                             let tokens_since_last = used.saturating_sub(state.last_token_count) as f64;
-                            let rate = if tokens_since_last > 0.0 { tokens_since_last } else { 0.0 };
                             
-                            state.token_rate_history.push_back((elapsed, rate));
+                            // Add a wave point based on token rate (normalized 0-1)
+                            let wave_value = (tokens_since_last / 100.0).min(1.0); // Normalize to 0-1
+                            state.token_wave_history.push_back(wave_value);
                             
-                            // Keep only last 60 data points (about 1 minute of history at 1 update/sec)
-                            while state.token_rate_history.len() > 60 {
-                                state.token_rate_history.pop_front();
+                            // Keep only last 40 data points for smooth animation
+                            while state.token_wave_history.len() > 40 {
+                                state.token_wave_history.pop_front();
                             }
+                            
                             state.last_token_count = used;
+                        }
+                        TuiMessage::SSEReceived => {
+                            state.sse_count += 1;
+                            
+                            // Add a pulse to the SSE wave animation
+                            state.sse_wave_history.push_back(1.0); // Full pulse for each SSE
+                            
+                            // Decay older values for smooth animation
+                            for i in 0..state.sse_wave_history.len().saturating_sub(1) {
+                                if let Some(val) = state.sse_wave_history.get_mut(i) {
+                                    *val *= 0.85; // Decay factor
+                                }
+                            }
+                            
+                            while state.sse_wave_history.len() > 40 {
+                                state.sse_wave_history.pop_front();
+                            }
                         }
                         TuiMessage::Error(err) => {
                             state.add_output(&format!("ERROR: {}", err));
@@ -881,16 +904,16 @@ impl RetroTui {
         
         f.render_widget(tool_output, chunks[0]);
         
-        // Draw right half - Token Chart
-        Self::draw_token_chart(f, chunks[1], &state.token_rate_history, state.is_processing, opacity);
+        // Draw right half - Activity graphs with wave animations
+        Self::draw_activity_graphs(f, chunks[1], &state.token_wave_history, &state.sse_wave_history, opacity);
     }
     
-    /// Draw a line chart showing tokens received over time
-    fn draw_token_chart(
+    /// Draw activity graphs with wave animations for tokens and SSEs
+    fn draw_activity_graphs(
         f: &mut Frame,
         area: Rect,
-        token_history: &VecDeque<(f64, f64)>,
-        is_processing: bool,
+        token_wave: &VecDeque<f64>,
+        sse_wave: &VecDeque<f64>,
         opacity: f32,
     ) {
         // Apply fade effect by adjusting colors based on opacity
@@ -908,7 +931,7 @@ impl RetroTui {
         
         // Create the chart block
         let block = Block::default()
-            .title(" TOKENS RECEIVED ")
+            .title(" ACTIVITY ")
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(fade_color(TERMINAL_DIM_GREEN)))
@@ -920,82 +943,89 @@ impl RetroTui {
         // Render the block first
         f.render_widget(block, area);
         
-        // If no data or area too small, show placeholder
-        if token_history.is_empty() || inner.width < 10 || inner.height < 3 {
-            let placeholder = Paragraph::new(vec![Line::from(Span::styled(
-                " Waiting for token data...",
-                Style::default().fg(fade_color(TERMINAL_DIM_GREEN)).add_modifier(Modifier::ITALIC),
-            ))])
-            .alignment(Alignment::Center);
-            f.render_widget(placeholder, inner);
+        // If area too small, don't render graphs
+        if inner.width < 10 || inner.height < 4 {
             return;
         }
         
-        // Calculate cumulative tokens for Y axis
-        let mut cumulative_tokens: Vec<(f64, f64)> = Vec::new();
-        let mut total = 0.0;
-        for (time, rate) in token_history.iter() {
-            total += rate;
-            cumulative_tokens.push((*time, total));
+        // Split the inner area into two graphs (top and bottom)
+        let graph_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50), // Top graph for tokens
+                Constraint::Percentage(50), // Bottom graph for SSEs
+            ])
+            .split(inner);
+        
+        // Draw token wave graph (top)
+        Self::draw_wave_graph(
+            f,
+            graph_chunks[0],
+            token_wave,
+            "TOKENS",
+            fade_color(TERMINAL_CYAN),
+            fade_color(TERMINAL_DIM_GREEN),
+            opacity,
+        );
+        
+        // Draw SSE wave graph (bottom)
+        Self::draw_wave_graph(
+            f,
+            graph_chunks[1],
+            sse_wave,
+            "SSE",
+            fade_color(TERMINAL_GREEN),
+            fade_color(TERMINAL_DIM_GREEN),
+            opacity,
+        );
+    }
+    
+    /// Draw a single wave animation graph
+    fn draw_wave_graph(
+        f: &mut Frame,
+        area: Rect,
+        wave_data: &VecDeque<f64>,
+        label: &str,
+        wave_color: Color,
+        axis_color: Color,
+        _opacity: f32,
+    ) {
+        let width = area.width as usize;
+        let height = area.height as usize;
+        
+        if height < 2 || width < 5 {
+            return;
         }
         
-        // Find max for scaling
-        let max_tokens = cumulative_tokens
-            .iter()
-            .map(|(_, tokens)| *tokens)
-            .fold(10.0, f64::max); // Minimum scale of 10 tokens
+        // Wave characters for smooth animation
+        let wave_chars = vec!['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         
-        let chart_height = inner.height as usize;
-        let chart_width = inner.width as usize;
+        // Build the wave line
+        let mut wave_line = String::new();
+        wave_line.push_str(&format!("{:<6}", label)); // Left-aligned label
         
-        // Create sparkline visualization
-        let mut lines: Vec<Line> = Vec::new();
+        // Calculate how many data points to show
+        let display_width = width.saturating_sub(6); // Account for label
         
-        // Add Y-axis label at top
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:>5.0}", max_tokens),
-                Style::default().fg(fade_color(TERMINAL_AMBER)),
-            ),
-            Span::styled(" ┤", Style::default().fg(fade_color(TERMINAL_DIM_GREEN))),
-        ]));
-        
-        // Draw the sparkline chart
-        if chart_height > 3 && !cumulative_tokens.is_empty() {
-            let sparkline_chars = vec!['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-            let mut chart_line = String::from("     │");
+        // Generate wave visualization
+        for i in 0..display_width {
+            let idx = wave_data.len().saturating_sub(display_width) + i;
             
-            // Sample the data to fit the width
-            let sample_step = cumulative_tokens.len() as f64 / (chart_width - 7) as f64;
-            
-            for x in 0..(chart_width - 7) {
-                let idx = (x as f64 * sample_step) as usize;
-                if idx < cumulative_tokens.len() {
-                    let (_, tokens) = cumulative_tokens[idx];
-                    let normalized = (tokens / max_tokens).min(1.0);
-                    let char_idx = ((normalized * 7.0) as usize).min(7);
-                    chart_line.push(sparkline_chars[char_idx]);
-                } else {
-                    chart_line.push(' ');
-                }
+            if idx < wave_data.len() {
+                let value = wave_data[idx].min(1.0).max(0.0);
+                let char_idx = ((value * 7.0) as usize).min(7);
+                wave_line.push(wave_chars[char_idx]);
+            } else {
+                wave_line.push(wave_chars[0]); // Baseline
             }
-            
-            let color = if is_processing { fade_color(TERMINAL_CYAN) } else { fade_color(TERMINAL_GREEN) };
-            lines.push(Line::from(Span::styled(chart_line, Style::default().fg(color))));
-            
-            // Add bottom axis
-            lines.push(Line::from(vec![
-                Span::styled("    0", Style::default().fg(fade_color(TERMINAL_AMBER))),
-                Span::styled(" └", Style::default().fg(fade_color(TERMINAL_DIM_GREEN))),
-                Span::styled(
-                    format!("{}T (seconds)", "─".repeat(chart_width.saturating_sub(15))),
-                    Style::default().fg(fade_color(TERMINAL_DIM_GREEN)),
-                ),
-            ]));
         }
         
-        let chart_paragraph = Paragraph::new(lines);
-        f.render_widget(chart_paragraph, inner);
+        // Create the wave line with color
+        let wave_paragraph = Paragraph::new(vec![
+            Line::from(Span::styled(wave_line, Style::default().fg(wave_color))),
+        ]);
+        
+        f.render_widget(wave_paragraph, area);
     }
     
     /// Draw the status bar
@@ -1133,6 +1163,11 @@ impl RetroTui {
         if let Ok(mut state) = self.state.lock() {
             state.provider_info = (provider.to_string(), model.to_string());
         }
+    }
+
+    /// Notify that an SSE was received (including pings)
+    pub fn sse_received(&self) {
+        let _ = self.tx.send(TuiMessage::SSEReceived);
     }
 
     /// Send error message

@@ -1232,6 +1232,9 @@ The tool will execute immediately and you'll receive the result (success or erro
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
+                        // Notify UI about SSE received (including pings)
+                        self.ui_writer.notify_sse_received();
+                        
                         // Store raw chunk for debugging (limit to first 20 and last 5)
                         if chunks_received < 20 || chunk.finished {
                             raw_chunks.push(format!(

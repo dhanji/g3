@@ -78,6 +78,10 @@ impl UiWriter for ConsoleUiWriter {
         let _ = io::stdout().flush();
     }
 
+    fn notify_sse_received(&self) {
+        // No-op for console - we don't track SSEs in console mode
+    }
+
     fn flush(&self) {
         let _ = io::stdout().flush();
     }
@@ -242,6 +246,11 @@ impl UiWriter for RetroTuiWriter {
 
     fn print_agent_response(&self, content: &str) {
         self.tui.output(content);
+    }
+
+    fn notify_sse_received(&self) {
+        // Notify the TUI that an SSE was received
+        self.tui.sse_received();
     }
 
     fn flush(&self) {
