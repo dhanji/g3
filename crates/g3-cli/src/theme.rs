@@ -36,6 +36,9 @@ pub struct ColorTheme {
     
     /// Bright/punchy text color
     pub terminal_white: ColorValue,
+    
+    /// Success status color (for tool completions)
+    pub terminal_success: ColorValue,
 }
 
 /// Represents a color value that can be serialized/deserialized
@@ -104,6 +107,7 @@ impl ColorTheme {
             terminal_pale_blue: ColorValue::Rgb { r: 173, g: 234, b: 251 },
             terminal_dark_amber: ColorValue::Rgb { r: 204, g: 119, b: 34 },
             terminal_white: ColorValue::Rgb { r: 218, g: 218, b: 219 },
+            terminal_success: ColorValue::Rgb { r: 136, g: 244, b: 152 }, // Same as terminal_green for retro theme
         }
     }
     
@@ -120,6 +124,7 @@ impl ColorTheme {
             terminal_pale_blue: ColorValue::Rgb { r: 189, g: 147, b: 249 }, // Dracula purple
             terminal_dark_amber: ColorValue::Rgb { r: 255, g: 121, b: 198 }, // Dracula pink
             terminal_white: ColorValue::Rgb { r: 248, g: 248, b: 242 }, // Dracula foreground
+            terminal_success: ColorValue::Rgb { r: 80, g: 250, b: 123 }, // Dracula green for success
         }
     }
     
@@ -176,6 +181,7 @@ pub fn create_example_themes() -> Result<()> {
         terminal_pale_blue: ColorValue::Rgb { r: 0, g: 255, b: 200 },
         terminal_dark_amber: ColorValue::Rgb { r: 0, g: 150, b: 0 },
         terminal_white: ColorValue::Rgb { r: 200, g: 255, b: 200 },
+        terminal_success: ColorValue::Rgb { r: 0, g: 255, b: 0 }, // Bright green for Matrix theme
     };
     matrix_theme.to_file(themes_dir.join("matrix.json"))?;
     

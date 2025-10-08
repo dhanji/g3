@@ -251,6 +251,17 @@ impl TerminalState {
 
     /// Parse markdown and convert to styled lines
     fn parse_markdown_line(&self, line: &str) -> Line {
+        // Skip parsing for special status lines to preserve their formatting
+        if line.starts_with("[SUCCESS]") || 
+           line.starts_with("[FAILED]") || 
+           line.starts_with("[TOOL_HEADER]") {
+            // These should be handled elsewhere, but as a safety check
+            return Line::from(Span::styled(
+                format!(" {}", line),
+                Style::default().fg(self.theme.terminal_green.to_color()),
+            ));
+        }
+
         let mut spans = Vec::new();
         let mut chars = line.chars().peekable();
         let mut current_text = String::new();
@@ -875,7 +886,7 @@ impl RetroTui {
                     return Line::from(Span::styled(
                         format!(" {}", cleaned),
                         Style::default()
-                            .bg(theme.terminal_green.to_color())
+                            .bg(theme.terminal_success.to_color())  // Use dedicated success color
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     ));
@@ -916,6 +927,16 @@ impl RetroTui {
                     return Line::from(Span::styled(
                         format!(" {}", line),
                         Style::default().fg(theme.terminal_dim_green.to_color()),
+                    ));
+                }
+
+                // Don't apply markdown parsing to tool status lines - preserve their original styling
+                if line.starts_with("[SUCCESS]") || line.starts_with("[FAILED]") || line.starts_with("[TOOL_HEADER]") {
+                    // These are already handled above, this shouldn't be reached
+                    // but just in case, return the line as-is with appropriate color
+                    return Line::from(Span::styled(
+                        format!(" {}", line),
+                        Style::default().fg(theme.terminal_green.to_color()),
                     ));
                 }
 
