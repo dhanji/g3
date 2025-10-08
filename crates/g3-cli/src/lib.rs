@@ -690,8 +690,8 @@ async fn run_autonomous(
             )
         } else {
             format!(
-                "You are G3 in implementation mode. You need to address the coach's feedback and improve your implementation.\n\nORIGINAL REQUIREMENTS:\n{}\n\nCOACH FEEDBACK TO ADDRESS:\n{}\n\nPlease make the necessary improvements to address the coach's feedback while ensuring all original requirements are met.",
-                requirements, coach_feedback
+                "You are G3 in implementation mode. Address the following specific feedback from the coach:\n\n{}\n\nContext: You are improving an implementation based on these requirements:\n{}\n\nFocus on fixing the issues mentioned in the coach feedback above.",
+                coach_feedback, requirements
             )
         };
 
@@ -731,7 +731,7 @@ async fn run_autonomous(
 
         // Coach mode: critique the implementation
         let coach_prompt = format!(
-            "You are G3 in coach mode. Your role is to critique and review implementations against requirements.
+            "You are G3 in coach mode. Your role is to critique and review implementations against requirements and provide concise, actionable feedback.
 
 REQUIREMENTS:
 {}
@@ -743,12 +743,19 @@ Review the current state of the project and provide a concise critique focusing 
 3. What requirements are missing or incorrect
 4. Specific improvements needed to satisfy requirements
 
-IMPORTANT: You MUST use the final_output tool to provide your feedback.
+CRITICAL INSTRUCTIONS:
+1. You MUST use the final_output tool to provide your feedback
+2. The summary in final_output should be CONCISE and ACTIONABLE
+3. Focus ONLY on what needs to be fixed or improved
+4. Do NOT include your analysis process, file contents, or compilation output in the summary
 
-If the implementation correctly meets all requirements, call final_output with summary: 'IMPLEMENTATION_APPROVED'
-If improvements are needed, call final_output with specific actionable feedback as the summary.
+If the implementation correctly meets all requirements and compiles without errors:
+- Call final_output with summary: 'IMPLEMENTATION_APPROVED'
 
-Be thorough but don't be overly critical. APPROVE the implementation if it doesn't have compile errors, glaring omissions and generally fits the bill.",
+If improvements are needed:
+- Call final_output with a brief summary listing ONLY the specific issues to fix
+
+Remember: Be thorough in your review but concise in your feedback. APPROVE if the implementation works and generally fits the requirements.",
             requirements
         );
 
@@ -760,20 +767,53 @@ Be thorough but don't be overly critical. APPROVE the implementation if it doesn
         output.print("🎓 Coach review completed");
         
         // Extract the actual feedback text from the coach result
-        // The coach_result might contain timing information at the end (⏱️ ... | 💭 ...)
-        // We need to extract just the feedback content
-        let coach_feedback_text = if let Some(timing_pos) = coach_result.rfind("\n⏱️") {
-            coach_result[..timing_pos].trim().to_string()
-        } else {
-            coach_result.trim().to_string()
+        // IMPORTANT: We only want the final_output summary, not the entire conversation
+        // The coach_result contains the full conversation including file reads, analysis, etc.
+        // We need to extract ONLY the final_output content
+        
+        let coach_feedback_text = {
+            // Look for the final_output content in the coach's response
+            // In autonomous mode, the final_output is returned without the "=> " prefix
+            // The coach result should end with the summary content from final_output
+            
+            // First, remove any timing information at the end
+            let content_without_timing = if let Some(timing_pos) = coach_result.rfind("\n⏱️") {
+                &coach_result[..timing_pos]
+            } else {
+                &coach_result
+            };
+            
+            // The final_output content is typically the last substantial text in the response
+            // after all tool executions. Look for it after the last tool execution marker
+            // or take the last paragraph if no clear markers
+            
+            // Split by double newlines to find the last substantial block
+            let blocks: Vec<&str> = content_without_timing.split("\n\n").collect();
+            
+            // Find the last non-empty block that isn't just whitespace
+            let final_block = blocks.iter()
+                .rev()
+                .find(|block| !block.trim().is_empty())
+                .map(|block| block.trim().to_string())
+                .unwrap_or_else(|| {
+                    // Fallback: if we can't find a clear block, take the whole thing
+                    // but this shouldn't happen if the coach properly calls final_output
+                    content_without_timing.trim().to_string()
+                });
+            
+            final_block
         };
+        
+        // Log the size of the feedback for debugging
+        info!(
+            "Coach feedback extracted: {} characters (from {} total)",
+            coach_feedback_text.len(),
+            coach_result.len()
+        );
         
         // Check if we got empty feedback (this can happen if the coach doesn't call final_output)
         if coach_feedback_text.is_empty() {
             output.print("⚠️ Coach did not provide feedback. This may be a model issue.");
-            output.print("   Retrying with a more explicit prompt...");
-            
-            // For now, we'll treat empty feedback as needing improvements
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
             turn += 1;
             continue;
