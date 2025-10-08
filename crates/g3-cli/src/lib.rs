@@ -11,9 +11,11 @@ use tracing::{error, info};
 mod retro_tui;
 mod tui;
 mod ui_writer_impl;
+mod theme;
 use retro_tui::RetroTui;
 use tui::SimpleOutput;
 use ui_writer_impl::{ConsoleUiWriter, RetroTuiWriter};
+use theme::ColorTheme;
 
 #[derive(Parser)]
 #[command(name = "g3")]
@@ -54,6 +56,10 @@ pub struct Cli {
     /// Use retro terminal UI (inspired by 80s sci-fi)
     #[arg(long)]
     pub retro: bool,
+
+    /// Color theme for retro mode (default, dracula, or path to theme file)
+    #[arg(long, value_name = "THEME")]
+    pub theme: Option<String>,
 }
 
 pub async fn run() -> Result<()> {
@@ -171,7 +177,7 @@ pub async fn run() -> Result<()> {
 
         if cli.retro {
             // Use retro terminal UI
-            run_interactive_retro(config, cli.show_prompt, cli.show_code).await?;
+            run_interactive_retro(config, cli.show_prompt, cli.show_code, cli.theme).await?;
         } else {
             // Use standard terminal UI
             let output = SimpleOutput::new();
@@ -183,15 +189,24 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: bool) -> Result<()> {
+async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: bool, theme_name: Option<String>) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
 
     // Set environment variable to suppress println in other crates
     std::env::set_var("G3_RETRO_MODE", "1");
 
+    // Load the color theme
+    let theme = match ColorTheme::load(theme_name.as_deref()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to load theme: {}. Using default.", e);
+            ColorTheme::default()
+        }
+    };
+
     // Initialize the retro terminal UI
-    let tui = RetroTui::start().await?;
+    let tui = RetroTui::start(theme).await?;
 
     // Create agent with RetroTuiWriter
     let ui_writer = RetroTuiWriter::new(tui.clone());
@@ -266,10 +281,10 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                     KeyCode::Right => {
                         tui.cursor_right();
                     }
-                    KeyCode::Home => {
+                    KeyCode::Home if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         tui.cursor_home();
                     }
-                    KeyCode::End => {
+                    KeyCode::End if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         tui.cursor_end();
                     }
                     KeyCode::Delete => {

@@ -18,16 +18,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use std::collections::VecDeque;
 
-// Retro sci-fi color scheme inspired by Alien terminals
-const TERMINAL_GREEN: Color = Color::Rgb(136, 244, 152); // Mid green
-const TERMINAL_AMBER: Color = Color::Rgb(242, 204, 148); // Softer amber for warnings
-const TERMINAL_DIM_GREEN: Color = Color::Rgb(154, 174, 135); // softer vintage green for borders
-const TERMINAL_BG: Color = Color::Rgb(0, 10, 0); // Very dark green background
-const TERMINAL_CYAN: Color = Color::Rgb(0, 255, 255); // Cyan for highlights
-const TERMINAL_RED: Color = Color::Rgb(239, 119, 109); // Red for errors or negative diffs
-const TERMINAL_PALE_BLUE: Color = Color::Rgb(173, 234, 251); // Pale blue for READY status
-const TERMINAL_DARK_AMBER: Color = Color::Rgb(204, 119, 34); // Dark amber for PROCESSING status
-const TERMINAL_WHITE: Color = Color::Rgb(218, 218, 219); // Dimmer white for punchy text
+use crate::theme::ColorTheme;
+
+// Color theme will be loaded dynamically
 
 // Scrolling configuration
 const SCROLL_PAST_END_BUFFER: usize = 10; // Extra lines to allow scrolling past the end
@@ -64,6 +57,8 @@ pub enum TuiMessage {
 
 /// Shared state for the retro terminal
 struct TerminalState {
+    /// Color theme
+    theme: ColorTheme,
     /// Current input buffer
     input_buffer: String,
     /// Cursor position in input buffer (for editing)
@@ -119,8 +114,9 @@ struct TerminalState {
 }
 
 impl TerminalState {
-    fn new() -> Self {
+    fn new(theme: ColorTheme) -> Self {
         Self {
+            theme,
             input_buffer: String::new(),
             cursor_position: 0,
             output_history: vec![
@@ -332,7 +328,7 @@ pub struct RetroTui {
 
 impl RetroTui {
     /// Create and start the retro terminal UI
-    pub async fn start() -> Result<Self> {
+    pub async fn start(theme: ColorTheme) -> Result<Self> {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -343,7 +339,7 @@ impl RetroTui {
         // Create message channel
         let (tx, mut rx) = mpsc::unbounded_channel::<TuiMessage>();
 
-        let state = Arc::new(Mutex::new(TerminalState::new()));
+        let state = Arc::new(Mutex::new(TerminalState::new(theme)));
         let terminal = Arc::new(Mutex::new(terminal));
 
         // Clone for the background task
@@ -575,16 +571,16 @@ impl RetroTui {
             }
             
             // Draw header/input area
-            Self::draw_input_area(f, chunks[0], &state.input_buffer, state.cursor_position, state.cursor_blink, state.is_processing);
+            Self::draw_input_area(f, chunks[0], &state.input_buffer, state.cursor_position, state.cursor_blink, state.is_processing, &state.theme);
 
             // Draw main output area
-            Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset);
+            Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset, &state.theme);
             
             // Draw activity area only if it's visible (during animation or when shown)
             if activity_height > 0 {
                 // Apply fade effect by adjusting opacity through color intensity
                 let opacity = state.activity_animation;
-                Self::draw_activity_area(f, chunks[2], state, opacity);
+                Self::draw_activity_area(f, chunks[2], state, opacity, &state.theme);
             }
 
             // Draw status bar - use the last chunk which is either index 2 or 3
@@ -600,6 +596,7 @@ impl RetroTui {
                 state.context_info,
                 &state.provider_info,
                 state.status_blink,
+                &state.theme,
             );
         })?;
 
@@ -607,7 +604,7 @@ impl RetroTui {
     }
 
     /// Draw the input area with prompt
-    fn draw_input_area(f: &mut Frame, area: Rect, input_buffer: &str, cursor_position: usize, cursor_blink: bool, is_processing: bool) {
+    fn draw_input_area(f: &mut Frame, area: Rect, input_buffer: &str, cursor_position: usize, cursor_blink: bool, is_processing: bool, theme: &ColorTheme) {
         let prompt = "g3> ";
         let prompt_len = prompt.len();
         
@@ -664,14 +661,14 @@ impl RetroTui {
         }
 
         let input = Paragraph::new(display_text)
-            .style(Style::default().fg(TERMINAL_GREEN))
+            .style(Style::default().fg(theme.terminal_green.to_color()))
             .block(
                 Block::default()
                     .title(" COMMAND INPUT ")
                     .title_alignment(Alignment::Center)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(TERMINAL_DIM_GREEN))
-                    .style(Style::default().bg(TERMINAL_BG)),
+                    .border_style(Style::default().fg(theme.terminal_dim_green.to_color()))
+                    .style(Style::default().bg(theme.terminal_bg.to_color())),
             );
 
         f.render_widget(input, area);
@@ -683,6 +680,7 @@ impl RetroTui {
         area: Rect,
         output_history: &[String],
         scroll_offset: usize,
+        theme: &ColorTheme,
     ) {
         // Calculate visible lines (no borders now, but padding takes 2 lines)
         let visible_height = area.height.saturating_sub(2) as usize; // Account for padding
@@ -719,7 +717,7 @@ impl RetroTui {
                     return Line::from(Span::styled(
                         format!(" {}", cleaned),
                         Style::default()
-                            .bg(TERMINAL_AMBER) 
+                            .bg(theme.terminal_amber.to_color()) 
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     ));
@@ -730,7 +728,7 @@ impl RetroTui {
                     return Line::from(Span::styled(
                         format!(" {}", cleaned),
                         Style::default()
-                            .bg(TERMINAL_GREEN)
+                            .bg(theme.terminal_green.to_color())
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     ));
@@ -741,7 +739,7 @@ impl RetroTui {
                     return Line::from(Span::styled(
                         format!(" {}", cleaned),
                         Style::default()
-                            .bg(TERMINAL_RED)
+                            .bg(theme.terminal_red.to_color())
                             .fg(Color::Black)
                             .add_modifier(Modifier::BOLD),
                     ));
@@ -755,31 +753,31 @@ impl RetroTui {
                 {
                     return Line::from(Span::styled(
                         format!(" {}", line),
-                        Style::default().fg(TERMINAL_DIM_GREEN),
+                        Style::default().fg(theme.terminal_dim_green.to_color()),
                     ));
                 }
                 // Apply different colors based on content
                 let style = if line.starts_with("ERROR:") {
                     Style::default()
-                        .fg(TERMINAL_RED)
+                        .fg(theme.terminal_red.to_color())
                         .add_modifier(Modifier::BOLD)
                 } else if line.starts_with('>') {
-                    Style::default().fg(TERMINAL_CYAN)
+                    Style::default().fg(theme.terminal_cyan.to_color())
                 } else if line.starts_with("SYSTEM:")
                     || line.starts_with("WEYLAND")
                     || line.starts_with("MU/TH/UR")
                 {
                     Style::default()
-                        .fg(TERMINAL_AMBER)
+                        .fg(theme.terminal_amber.to_color())
                         .add_modifier(Modifier::BOLD)
                 } else if line.starts_with("SYSTEM INITIALIZED")
                     || line.starts_with("AWAITING COMMAND")
                 {
                     Style::default()
-                        .fg(TERMINAL_DIM_GREEN)
+                        .fg(theme.terminal_dim_green.to_color())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(TERMINAL_GREEN)
+                    Style::default().fg(theme.terminal_green.to_color())
                 };
 
                 Line::from(Span::styled(format!(" {}", line), style))
@@ -793,7 +791,7 @@ impl RetroTui {
                     .borders(Borders::NONE)
                     // Add padding to maintain the same spacing as borders would provide
                     .padding(ratatui::widgets::Padding::new(1, 1, 1, 1))
-                    .style(Style::default().bg(TERMINAL_BG)),
+                    .style(Style::default().bg(theme.terminal_bg.to_color())),
             )
             .wrap(Wrap { trim: false });
 
@@ -806,7 +804,7 @@ impl RetroTui {
                 .end_symbol(Some("▼"))
                 .track_symbol(Some("│"))
                 .thumb_symbol("█")
-                .style(Style::default().fg(TERMINAL_DIM_GREEN));
+                .style(Style::default().fg(theme.terminal_dim_green.to_color()));
 
             let mut scrollbar_state = ScrollbarState::new(total_lines)
                 .position(scroll)
@@ -829,6 +827,7 @@ impl RetroTui {
         area: Rect,
         state: &TerminalState,
         opacity: f32,
+        theme: &ColorTheme,
     ) {
         // Note: scroll_offset is managed by the state and auto-scrolls to show latest content when new data arrives
         
@@ -870,7 +869,7 @@ impl RetroTui {
         let visible_lines: Vec<Line> = if state.tool_activity.is_empty() {
             vec![Line::from(Span::styled(
                 " No tool activity yet",
-                Style::default().fg(fade_color(TERMINAL_DIM_GREEN)).add_modifier(Modifier::ITALIC),
+                Style::default().fg(fade_color(theme.terminal_dim_green.to_color())).add_modifier(Modifier::ITALIC),
             ))]
         } else {
             state.tool_activity
@@ -880,11 +879,11 @@ impl RetroTui {
                 .map(|line| {
                     // Style the header lines differently
                     let style = if line.starts_with('[') && line.contains(']') {
-                        Style::default().fg(fade_color(TERMINAL_CYAN)).add_modifier(Modifier::BOLD)
+                        Style::default().fg(fade_color(theme.terminal_cyan.to_color())).add_modifier(Modifier::BOLD)
                     } else if line.is_empty() {
                         Style::default()
                     } else {
-                        Style::default().fg(fade_color(TERMINAL_GREEN))
+                        Style::default().fg(fade_color(theme.terminal_green.to_color()))
                     };
                     Line::from(Span::styled(format!(" {}", line), style))
                 })
@@ -897,15 +896,15 @@ impl RetroTui {
                     .title(" TOOL DETAIL ")
                     .title_alignment(Alignment::Center)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(fade_color(TERMINAL_DIM_GREEN)))
-                    .style(Style::default().bg(TERMINAL_BG)),
+                    .border_style(Style::default().fg(fade_color(theme.terminal_dim_green.to_color())))
+                    .style(Style::default().bg(theme.terminal_bg.to_color())),
             )
             .wrap(Wrap { trim: false });
         
         f.render_widget(tool_output, chunks[0]);
         
         // Draw right half - Activity graphs with wave animations
-        Self::draw_activity_graphs(f, chunks[1], &state.token_wave_history, &state.sse_wave_history, opacity);
+        Self::draw_activity_graphs(f, chunks[1], &state.token_wave_history, &state.sse_wave_history, opacity, theme);
     }
     
     /// Draw activity graphs with wave animations for tokens and SSEs
@@ -915,6 +914,7 @@ impl RetroTui {
         token_wave: &VecDeque<f64>,
         sse_wave: &VecDeque<f64>,
         opacity: f32,
+        theme: &ColorTheme,
     ) {
         // Apply fade effect by adjusting colors based on opacity
         let fade_color = |color: Color| -> Color {
@@ -934,8 +934,8 @@ impl RetroTui {
             .title(" ACTIVITY ")
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fade_color(TERMINAL_DIM_GREEN)))
-            .style(Style::default().bg(TERMINAL_BG));
+            .border_style(Style::default().fg(fade_color(theme.terminal_dim_green.to_color())))
+            .style(Style::default().bg(theme.terminal_bg.to_color()));
         
         // Calculate inner area for chart
         let inner = block.inner(area);
@@ -963,8 +963,8 @@ impl RetroTui {
             graph_chunks[0],
             token_wave,
             "TOKENS",
-            fade_color(TERMINAL_CYAN),
-            fade_color(TERMINAL_DIM_GREEN),
+            fade_color(theme.terminal_cyan.to_color()),
+            fade_color(theme.terminal_dim_green.to_color()),
             opacity,
         );
         
@@ -974,8 +974,8 @@ impl RetroTui {
             graph_chunks[1],
             sse_wave,
             "SSE",
-            fade_color(TERMINAL_GREEN),
-            fade_color(TERMINAL_DIM_GREEN),
+            fade_color(theme.terminal_green.to_color()),
+            fade_color(theme.terminal_dim_green.to_color()),
             opacity,
         );
     }
@@ -987,7 +987,7 @@ impl RetroTui {
         wave_data: &VecDeque<f64>,
         label: &str,
         wave_color: Color,
-        axis_color: Color,
+        _axis_color: Color,
         _opacity: f32,
     ) {
         let width = area.width as usize;
@@ -1038,6 +1038,7 @@ impl RetroTui {
         context_info: (u32, u32, f32),
         provider_info: &(String, String),
         status_blink: bool,
+        theme: &ColorTheme,
     ) {
         let (used, total, percentage) = context_info;
 
@@ -1052,15 +1053,15 @@ impl RetroTui {
         let (status_color, status_text) = if status_line == "PROCESSING" {
             // Blink the PROCESSING status
             if status_blink {
-                (TERMINAL_DARK_AMBER, status_line)
+                (theme.terminal_dark_amber.to_color(), status_line)
             } else {
-                (TERMINAL_BG, "         ") // Hide text by matching background
+                (theme.terminal_bg.to_color(), "         ") // Hide text by matching background
             }
         } else if status_line == "READY" {
-            (TERMINAL_PALE_BLUE, status_line)
+            (theme.terminal_pale_blue.to_color(), status_line)
         } else {
             // Default to amber for other statuses
-            (TERMINAL_AMBER, status_line)
+            (theme.terminal_amber.to_color(), status_line)
         };
 
         // Build the status line with different colored spans
@@ -1068,7 +1069,7 @@ impl RetroTui {
             Span::styled(
                 " STATUS: ",
                 Style::default()
-                    .fg(TERMINAL_AMBER)
+                    .fg(theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -1080,25 +1081,25 @@ impl RetroTui {
             Span::styled(
                 " | CONTEXT: ",
                 Style::default()
-                    .fg(TERMINAL_AMBER)
+                    .fg(theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{} {:.1}% ({}/{})", meter, percentage, used, total),
                 Style::default()
-                    .fg(TERMINAL_AMBER)
+                    .fg(theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " | ",
                 Style::default()
-                    .fg(TERMINAL_AMBER)
+                    .fg(theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{} ", model),
                 Style::default()
-                    .fg(TERMINAL_AMBER)
+                    .fg(theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
         ];
@@ -1106,7 +1107,7 @@ impl RetroTui {
         let status_line = Line::from(status_spans);
 
         let status = Paragraph::new(status_line)
-            .style(Style::default().bg(TERMINAL_BG))
+            .style(Style::default().bg(theme.terminal_bg.to_color()))
             .alignment(Alignment::Left);
 
         f.render_widget(status, area);
