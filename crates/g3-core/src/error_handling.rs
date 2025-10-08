@@ -6,7 +6,7 @@
 //! - Detailed error logging with context information
 //! - Request/response capture for debugging
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -27,11 +27,7 @@ const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 10000;
 /// Spread over 10 minutes (600 seconds) with 6 retries
 const AUTONOMOUS_MAX_RETRY_DELAY_MS: u64 = 120000; // 2 minutes max per retry
 
-/// Total time budget for autonomous mode retries (10 minutes)
-const AUTONOMOUS_RETRY_BUDGET_MS: u64 = 600000;
-
-/// Jitter factor (0.0 to 1.0) to randomize retry delays (default)
-const DEFAULT_JITTER_FACTOR: f64 = 0.3;
+// Removed unused constants AUTONOMOUS_RETRY_BUDGET_MS and DEFAULT_JITTER_FACTOR
 
 /// Jitter factor for autonomous mode (higher for better distribution)
 const JITTER_FACTOR: f64 = 0.3;

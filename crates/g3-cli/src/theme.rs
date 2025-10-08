@@ -87,13 +87,6 @@ impl ColorTheme {
         Ok(theme)
     }
     
-    /// Save a theme to a JSON file
-    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
-        fs::write(path, content)?;
-        Ok(())
-    }
-    
     /// Get the default retro sci-fi theme (inspired by Alien terminals)
     pub fn default() -> Self {
         ColorTheme {
@@ -151,41 +144,4 @@ impl ColorTheme {
             }
         }
     }
-}
-
-/// Create example theme files in the user's config directory
-pub fn create_example_themes() -> Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let themes_dir = home.join(".config").join("g3").join("themes");
-    
-    // Create directory if it doesn't exist
-    fs::create_dir_all(&themes_dir)?;
-    
-    // Save default theme
-    let default_theme = ColorTheme::default();
-    default_theme.to_file(themes_dir.join("retro.json"))?;
-    
-    // Save Dracula theme
-    let dracula_theme = ColorTheme::dracula();
-    dracula_theme.to_file(themes_dir.join("dracula.json"))?;
-    
-    // Create a custom example theme (Matrix-inspired)
-    let matrix_theme = ColorTheme {
-        name: "Matrix".to_string(),
-        terminal_green: ColorValue::Rgb { r: 0, g: 255, b: 0 },
-        terminal_amber: ColorValue::Rgb { r: 0, g: 200, b: 0 },
-        terminal_dim_green: ColorValue::Rgb { r: 0, g: 100, b: 0 },
-        terminal_bg: ColorValue::Rgb { r: 0, g: 0, b: 0 },
-        terminal_cyan: ColorValue::Rgb { r: 0, g: 255, b: 128 },
-        terminal_red: ColorValue::Rgb { r: 255, g: 0, b: 0 },
-        terminal_pale_blue: ColorValue::Rgb { r: 0, g: 255, b: 200 },
-        terminal_dark_amber: ColorValue::Rgb { r: 0, g: 150, b: 0 },
-        terminal_white: ColorValue::Rgb { r: 200, g: 255, b: 200 },
-        terminal_success: ColorValue::Rgb { r: 0, g: 255, b: 0 }, // Bright green for Matrix theme
-    };
-    matrix_theme.to_file(themes_dir.join("matrix.json"))?;
-    
-    println!("Example theme files created in: {}", themes_dir.display());
-    
-    Ok(())
 }

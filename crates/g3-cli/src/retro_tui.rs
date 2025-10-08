@@ -106,7 +106,7 @@ struct TerminalState {
     /// SSE rate tracking for wave animation
     sse_wave_history: VecDeque<f64>, // Wave animation values for SSEs
     /// Start time for token tracking
-    session_start: Instant,
+    _session_start: Instant,  // Prefixed with _ to indicate it's intentionally unused for now
     /// SSE counter (including pings)
     sse_count: u32,
     /// Last token count for rate calculation
@@ -147,7 +147,7 @@ impl TerminalState {
             last_tool_header_index: None,
             token_wave_history: VecDeque::with_capacity(40), // Keep 40 points for wave animation
             sse_wave_history: VecDeque::with_capacity(40), // Keep 40 points for wave animation
-            session_start: Instant::now(),
+            _session_start: Instant::now(),
             last_token_count: 0,
             sse_count: 0,
         }
@@ -458,18 +458,6 @@ impl TerminalState {
                 self.scroll_offset = 0;
             }
         }
-    }
-
-    /// Add padding lines to ensure content can be scrolled fully into view
-    fn add_padding(&mut self) {
-        // Add enough blank lines to ensure the last content can be scrolled into view
-        // This is a workaround for the scrolling calculation issues
-        let padding_lines = 5; // Add 5 blank lines for padding
-        for _ in 0..padding_lines {
-            self.output_history.push(String::new());
-        }
-        // Reset scroll to show the actual content (not the padding)
-        // This keeps the view focused on the last real content
     }
 }
 
@@ -1569,43 +1557,6 @@ impl RetroTui {
             
             // When scrolling to end, disable manual scroll so auto-scroll resumes
             state.manual_scroll = false;
-        }
-    }
-    
-    /// Scroll tool activity up
-    pub fn tool_scroll_up(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            if state.tool_activity_scroll > 0 {
-                state.tool_activity_auto_scroll = false;
-                state.tool_activity_scroll -= 1;
-            }
-        }
-    }
-    
-    /// Scroll tool activity down
-    pub fn tool_scroll_down(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            let total_lines = state.tool_activity.len();
-            let visible_height = 6; // Tool detail area height minus borders
-            
-            if total_lines > visible_height {
-                let max_scroll = total_lines.saturating_sub(visible_height);
-                if state.tool_activity_scroll < max_scroll {
-                    state.tool_activity_auto_scroll = false;
-                    state.tool_activity_scroll = (state.tool_activity_scroll + 1).min(max_scroll);
-                }
-            }
-        }
-    }
-    
-    /// Reset tool activity scroll to auto-scroll mode
-    pub fn tool_scroll_auto(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.tool_activity_auto_scroll = true;
-            let visible_height = 6;
-            if state.tool_activity.len() > visible_height {
-                state.tool_activity_scroll = state.tool_activity.len().saturating_sub(visible_height);
-            }
         }
     }
 }
