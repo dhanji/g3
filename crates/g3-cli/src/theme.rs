@@ -111,7 +111,7 @@ impl ColorTheme {
     pub fn dracula() -> Self {
         ColorTheme {
             name: "Dracula".to_string(),
-            terminal_green: ColorValue::Rgb { r: 80, g: 250, b: 123 },  // Dracula green
+            terminal_green: ColorValue::Rgb { r: 248, g: 248, b: 242 }, // Use Dracula foreground (white) for main text
             terminal_amber: ColorValue::Rgb { r: 255, g: 184, b: 108 }, // Dracula orange
             terminal_dim_green: ColorValue::Rgb { r: 98, g: 114, b: 164 }, // Dracula comment
             terminal_bg: ColorValue::Rgb { r: 40, g: 42, b: 54 },      // Dracula background
