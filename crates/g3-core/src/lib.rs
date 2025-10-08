@@ -1385,7 +1385,13 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 full_response.push_str(final_display_content);
                                 if let Some(summary) = tool_call.args.get("summary") {
                                     if let Some(summary_str) = summary.as_str() {
-                                        full_response.push_str(&format!("\n\n=> {}", summary_str));
+                                        // Don't add the "=> " prefix in autonomous mode
+                                        // as it interferes with coach feedback parsing
+                                        if !self.is_autonomous {
+                                            full_response.push_str(&format!("\n\n=> {}", summary_str));
+                                        } else {
+                                            full_response.push_str(&format!("\n\n{}", summary_str));
+                                        }
                                     }
                                 }
                                 self.ui_writer.println("");

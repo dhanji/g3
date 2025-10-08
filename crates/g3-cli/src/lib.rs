@@ -743,11 +743,12 @@ Review the current state of the project and provide a concise critique focusing 
 3. What requirements are missing or incorrect
 4. Specific improvements needed to satisfy requirements
 
-If the implementation correctly meets all requirements, respond with: 'IMPLEMENTATION_APPROVED'
-If improvements are needed, provide specific actionable feedback. Be thorough but don't be overly critical. APPROVE the
-implementation if it doesn't have compile errors, glaring omissions and generally fits the bill.
+IMPORTANT: You MUST use the final_output tool to provide your feedback.
 
-Keep your response concise and focused on actionable items.",
+If the implementation correctly meets all requirements, call final_output with summary: 'IMPLEMENTATION_APPROVED'
+If improvements are needed, call final_output with specific actionable feedback as the summary.
+
+Be thorough but don't be overly critical. APPROVE the implementation if it doesn't have compile errors, glaring omissions and generally fits the bill.",
             requirements
         );
 
@@ -757,10 +758,31 @@ Keep your response concise and focused on actionable items.",
             .await?;
 
         output.print("🎓 Coach review completed");
-        output.print(&format!("Coach feedback: {}", coach_result));
+        
+        // Extract the actual feedback text from the coach result
+        // The coach_result might contain timing information at the end (⏱️ ... | 💭 ...)
+        // We need to extract just the feedback content
+        let coach_feedback_text = if let Some(timing_pos) = coach_result.rfind("\n⏱️") {
+            coach_result[..timing_pos].trim().to_string()
+        } else {
+            coach_result.trim().to_string()
+        };
+        
+        // Check if we got empty feedback (this can happen if the coach doesn't call final_output)
+        if coach_feedback_text.is_empty() {
+            output.print("⚠️ Coach did not provide feedback. This may be a model issue.");
+            output.print("   Retrying with a more explicit prompt...");
+            
+            // For now, we'll treat empty feedback as needing improvements
+            coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
+            turn += 1;
+            continue;
+        }
+        
+        output.print(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
-        if coach_result.contains("IMPLEMENTATION_APPROVED") {
+        if coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
             output.print("✅ Coach approved the implementation!");
             implementation_approved = true;
@@ -775,7 +797,7 @@ Keep your response concise and focused on actionable items.",
         }
 
         // Store coach feedback for next iteration
-        coach_feedback = coach_result;
+        coach_feedback = coach_feedback_text;
         turn += 1;
 
         output.print("🔄 Coach provided feedback for next iteration");
