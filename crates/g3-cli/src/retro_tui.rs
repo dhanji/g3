@@ -249,6 +249,150 @@ impl TerminalState {
         }
     }
 
+    /// Parse markdown and convert to styled lines
+    fn parse_markdown_line(&self, line: &str) -> Line {
+        let mut spans = Vec::new();
+        let mut chars = line.chars().peekable();
+        let mut current_text = String::new();
+        
+        // Check for headers first
+        if line.starts_with("### ") {
+            return Line::from(Span::styled(
+                format!(" {}", &line[4..]),
+                Style::default()
+                    .fg(self.theme.terminal_cyan.to_color())
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ));
+        } else if line.starts_with("## ") {
+            return Line::from(Span::styled(
+                format!(" {}", &line[3..]),
+                Style::default()
+                    .fg(self.theme.terminal_amber.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if line.starts_with("# ") {
+            return Line::from(Span::styled(
+                format!(" {}", &line[2..]),
+                Style::default()
+                    .fg(self.theme.terminal_green.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        
+        // Check for code block markers
+        if line.starts_with("```") {
+            return Line::from(Span::styled(
+                format!(" {}", line),
+                Style::default()
+                    .fg(self.theme.terminal_dim_green.to_color())
+                    .bg(Color::Rgb(40, 42, 54)), // Dark background for code blocks
+            ));
+        }
+        
+        // Add leading space
+        spans.push(Span::raw(" "));
+        
+        // Parse inline formatting
+        while let Some(ch) = chars.next() {
+            if ch == '*' {
+                // Check for bold (**) or italic (*)
+                if chars.peek() == Some(&'*') {
+                    chars.next(); // consume second *
+                    // Save current text
+                    if !current_text.is_empty() {
+                        spans.push(Span::styled(
+                            current_text.clone(),
+                            Style::default().fg(self.theme.terminal_green.to_color()),
+                        ));
+                        current_text.clear();
+                    }
+                    // Find closing **
+                    let mut bold_text = String::new();
+                    while let Some(ch) = chars.next() {
+                        if ch == '*' && chars.peek() == Some(&'*') {
+                            chars.next(); // consume second *
+                            break;
+                        }
+                        bold_text.push(ch);
+                    }
+                    spans.push(Span::styled(
+                        bold_text,
+                        Style::default()
+                            .fg(self.theme.terminal_amber.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    // Handle italic (*)
+                    if !current_text.is_empty() {
+                        spans.push(Span::styled(
+                            current_text.clone(),
+                            Style::default().fg(self.theme.terminal_green.to_color()),
+                        ));
+                        current_text.clear();
+                    }
+                    // Find closing *
+                    let mut italic_text = String::new();
+                    while let Some(ch) = chars.next() {
+                        if ch == '*' {
+                            break;
+                        }
+                        italic_text.push(ch);
+                    }
+                    spans.push(Span::styled(
+                        italic_text,
+                        Style::default()
+                            .fg(self.theme.terminal_cyan.to_color())
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            } else if ch == '`' {
+                // Handle inline code
+                if !current_text.is_empty() {
+                    spans.push(Span::styled(
+                        current_text.clone(),
+                        Style::default().fg(self.theme.terminal_green.to_color()),
+                    ));
+                    current_text.clear();
+                }
+                // Find closing `
+                let mut code_text = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == '`' {
+                        break;
+                    }
+                    code_text.push(ch);
+                }
+                spans.push(Span::styled(
+                    code_text,
+                    Style::default()
+                        .fg(self.theme.terminal_cyan.to_color())
+                        .bg(Color::Rgb(40, 42, 54)),
+                ));
+            } else {
+                current_text.push(ch);
+            }
+        }
+        
+        // Add any remaining text
+        if !current_text.is_empty() {
+            spans.push(Span::styled(
+                current_text,
+                Style::default().fg(self.theme.terminal_green.to_color()),
+            ));
+        }
+        
+        // Return the line with all spans
+        if spans.len() > 1 { // More than just the leading space
+            Line::from(spans)
+        } else {
+            // Fallback to plain text if no formatting found
+            Line::from(Span::styled(
+                format!(" {}", line),
+                Style::default().fg(self.theme.terminal_green.to_color()),
+            ))
+        }
+    }
+
     /// Add text to output history
     fn add_output(&mut self, text: &str) {
         let mut lines = text.lines();
@@ -574,7 +718,7 @@ impl RetroTui {
             Self::draw_input_area(f, chunks[0], &state.input_buffer, state.cursor_position, state.cursor_blink, state.is_processing, &state.theme);
 
             // Draw main output area
-            Self::draw_output_area(f, chunks[1], &state.output_history, state.scroll_offset, &state.theme);
+            Self::draw_output_area(f, chunks[1], state, &state.output_history, state.scroll_offset, &state.theme);
             
             // Draw activity area only if it's visible (during animation or when shown)
             if activity_height > 0 {
@@ -678,6 +822,7 @@ impl RetroTui {
     fn draw_output_area(
         f: &mut Frame,
         area: Rect,
+        state: &TerminalState,
         output_history: &[String],
         scroll_offset: usize,
         theme: &ColorTheme,
@@ -702,6 +847,8 @@ impl RetroTui {
                 scroll_offset
             }
         };
+
+        let mut in_code_block = false;
 
         // Get visible lines
         let visible_lines: Vec<Line> = output_history
@@ -745,6 +892,21 @@ impl RetroTui {
                     ));
                 }
 
+                // Check for code block boundaries
+                if line.starts_with("```") {
+                    in_code_block = !in_code_block;
+                }
+
+                // If we're in a code block, style it appropriately
+                if in_code_block && !line.starts_with("```") {
+                    return Line::from(Span::styled(
+                        format!(" {}", line),
+                        Style::default()
+                            .fg(theme.terminal_cyan.to_color())
+                            .bg(Color::Rgb(40, 42, 54)),
+                    ));
+                }
+
                 // Check if this is a box border line
                 if line.starts_with("┌")
                     || line.starts_with("└")
@@ -756,7 +918,14 @@ impl RetroTui {
                         Style::default().fg(theme.terminal_dim_green.to_color()),
                     ));
                 }
-                // Apply different colors based on content
+
+                // Check if line contains markdown formatting
+                if line.contains("**") || line.contains('`') || line.starts_with('#') {
+                    // Use the markdown parser
+                    return state.parse_markdown_line(line);
+                }
+
+                // Apply different colors based on content (existing logic)
                 let style = if line.starts_with("ERROR:") {
                     Style::default()
                         .fg(theme.terminal_red.to_color())
