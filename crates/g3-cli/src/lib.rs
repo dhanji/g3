@@ -5,6 +5,7 @@ use g3_core::{project::Project, ui_writer::UiWriter, Agent};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -119,6 +120,10 @@ pub async fn run() -> Result<()> {
         std::env::current_dir()?
     };
 
+    // Check if we're in a project directory and read README if available
+    // This should happen in both interactive and autonomous modes
+    let readme_content = read_project_readme(&workspace_dir);
+
     // Create project model
     let project = if cli.autonomous {
         Project::new_autonomous(workspace_dir.clone())?
@@ -140,9 +145,9 @@ pub async fn run() -> Result<()> {
     // Initialize agent
     let ui_writer = ConsoleUiWriter::new();
     let mut agent = if cli.autonomous {
-        Agent::new_autonomous(config.clone(), ui_writer).await?
+        Agent::new_autonomous_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
     } else {
-        Agent::new(config.clone(), ui_writer).await?
+        Agent::new_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
     };
 
     // Execute task, autonomous mode, or start interactive mode
@@ -177,19 +182,58 @@ pub async fn run() -> Result<()> {
 
         if cli.retro {
             // Use retro terminal UI
-            run_interactive_retro(config, cli.show_prompt, cli.show_code, cli.theme).await?;
+            run_interactive_retro(config, cli.show_prompt, cli.show_code, cli.theme, readme_content).await?;
         } else {
             // Use standard terminal UI
             let output = SimpleOutput::new();
             output.print(&format!("📁 Workspace: {}", project.workspace().display()));
-            run_interactive(agent, cli.show_prompt, cli.show_code).await?;
+            run_interactive(agent, cli.show_prompt, cli.show_code, readme_content).await?;
         }
     }
 
     Ok(())
 }
 
-async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: bool, theme_name: Option<String>) -> Result<()> {
+/// Check if we're in a project directory and read README if available
+fn read_project_readme(workspace_dir: &Path) -> Option<String> {
+    // Check if we're in a project directory (contains .g3 or .git)
+    let is_project_dir = workspace_dir.join(".g3").exists() || workspace_dir.join(".git").exists();
+    
+    if !is_project_dir {
+        return None;
+    }
+    
+    // Look for README files in common formats
+    let readme_names = [
+        "README.md",
+        "README.MD",
+        "readme.md",
+        "Readme.md",
+        "README",
+        "README.txt",
+        "README.rst",
+    ];
+    
+    for readme_name in &readme_names {
+        let readme_path = workspace_dir.join(readme_name);
+        if readme_path.exists() {
+            match std::fs::read_to_string(&readme_path) {
+                Ok(content) => {
+                    // Return the content with a note about which file was read
+                    return Some(format!("📚 Project README (from {}):\n\n{}", readme_name, content));
+                }
+                Err(e) => {
+                    // Log the error but continue looking for other README files
+                    error!("Failed to read {}: {}", readme_path.display(), e);
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: bool, theme_name: Option<String>, readme_content: Option<String>) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
 
@@ -210,10 +254,15 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
 
     // Create agent with RetroTuiWriter
     let ui_writer = RetroTuiWriter::new(tui.clone());
-    let mut agent = Agent::new(config, ui_writer).await?;
+    let mut agent = Agent::new_with_readme(config, ui_writer, readme_content.clone()).await?;
 
     // Display initial system messages
     tui.output("SYSTEM: AGENT ONLINE\n\n");
+    
+    // Display message if README was loaded
+    if readme_content.is_some() {
+        tui.output("SYSTEM: PROJECT README LOADED INTO CONTEXT\n\n");
+    }
     tui.output("SYSTEM: READY FOR INPUT\n\n");
     tui.output("\n\n");
 
@@ -397,6 +446,7 @@ async fn run_interactive<W: UiWriter>(
     mut agent: Agent<W>,
     show_prompt: bool,
     show_code: bool,
+    readme_content: Option<String>,
 ) -> Result<()> {
     let output = SimpleOutput::new();
 
@@ -406,6 +456,12 @@ async fn run_interactive<W: UiWriter>(
         "I solve problems by writing and executing code. Tell me what you need to accomplish!",
     );
     output.print("");
+
+    // Display message if README was loaded
+    if readme_content.is_some() {
+        output.print("📚 Project README loaded into context");
+        output.print("");
+    }
 
     // Display provider and model information
     match agent.get_provider_info() {

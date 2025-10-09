@@ -383,11 +383,23 @@ impl<W: UiWriter> Agent<W> {
         Self::new_with_mode(config, ui_writer, false).await
     }
 
+    pub async fn new_with_readme(config: Config, ui_writer: W, readme_content: Option<String>) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, false, readme_content).await
+    }
+
+    pub async fn new_autonomous_with_readme(config: Config, ui_writer: W, readme_content: Option<String>) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, true, readme_content).await
+    }
+
     pub async fn new_autonomous(config: Config, ui_writer: W) -> Result<Self> {
         Self::new_with_mode(config, ui_writer, true).await
     }
 
     async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None).await
+    }
+
+    async fn new_with_mode_and_readme(config: Config, ui_writer: W, is_autonomous: bool, readme_content: Option<String>) -> Result<Self> {
         let mut providers = ProviderRegistry::new();
 
         // Only register providers that are configured AND selected as the default provider
@@ -469,7 +481,17 @@ impl<W: UiWriter> Agent<W> {
 
         // Determine context window size based on active provider
         let context_length = Self::determine_context_length(&config, &providers)?;
-        let context_window = ContextWindow::new(context_length);
+        let mut context_window = ContextWindow::new(context_length);
+
+        // If README content is provided, add it as the first system message
+        if let Some(readme) = readme_content {
+            let readme_message = Message {
+                role: MessageRole::System,
+                content: readme,
+            };
+            context_window.add_message(readme_message);
+            info!("Added project README to context window");
+        }
 
         Ok(Self {
             providers,
