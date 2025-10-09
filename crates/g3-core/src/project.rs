@@ -81,6 +81,48 @@ impl Project {
         self.requirements_path.is_some()
     }
     
+    /// Check if implementation files exist in the workspace
+    pub fn has_implementation_files(&self) -> bool {
+        self.check_dir_for_implementation_files(&self.workspace_dir)
+    }
+    
+    /// Recursively check a directory for implementation files
+    fn check_dir_for_implementation_files(&self, dir: &Path) -> bool {
+        // Common source file extensions
+        let extensions = vec![
+            "swift", "rs", "py", "js", "ts", "java", "cpp", "c",
+            "go", "rb", "php", "cs", "kt", "scala", "m", "h"
+        ];
+        
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                
+                if path.is_file() {
+                    // Check if it's a source file
+                    if let Some(ext) = path.extension() {
+                        if let Some(ext_str) = ext.to_str() {
+                            if extensions.contains(&ext_str) {
+                                return true;
+                            }
+                        }
+                    }
+                } else if path.is_dir() {
+                    // Skip hidden directories and common non-source directories
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if !name.starts_with('.') && name != "logs" && name != "target" && name != "node_modules" {
+                            // Recursively check subdirectories
+                            if self.check_dir_for_implementation_files(&path) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    
     /// Read the requirements file content
     pub fn read_requirements(&self) -> Result<Option<String>> {
         if let Some(ref path) = self.requirements_path {

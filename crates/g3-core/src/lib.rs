@@ -1,6 +1,11 @@
 pub mod error_handling;
 pub mod project;
 pub mod ui_writer;
+pub mod task_result;
+pub use task_result::TaskResult;
+
+#[cfg(test)]
+mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
 
 #[cfg(test)]
@@ -565,7 +570,7 @@ impl<W: UiWriter> Agent<W> {
         description: &str,
         language: Option<&str>,
         _auto_execute: bool,
-    ) -> Result<String> {
+    ) -> Result<TaskResult> {
         self.execute_task_with_options(description, language, false, false, false)
             .await
     }
@@ -577,7 +582,7 @@ impl<W: UiWriter> Agent<W> {
         _auto_execute: bool,
         show_prompt: bool,
         show_code: bool,
-    ) -> Result<String> {
+    ) -> Result<TaskResult> {
         self.execute_task_with_timing(
             description,
             language,
@@ -597,7 +602,7 @@ impl<W: UiWriter> Agent<W> {
         show_prompt: bool,
         show_code: bool,
         show_timing: bool,
-    ) -> Result<String> {
+    ) -> Result<TaskResult> {
         // Create a cancellation token that never cancels for backward compatibility
         let cancellation_token = CancellationToken::new();
         self.execute_task_with_timing_cancellable(
@@ -621,7 +626,7 @@ impl<W: UiWriter> Agent<W> {
         show_code: bool,
         show_timing: bool,
         cancellation_token: CancellationToken,
-    ) -> Result<String> {
+    ) -> Result<TaskResult> {
         // Execute the task directly without splitting
         self.execute_single_task(
             description,
@@ -640,7 +645,7 @@ impl<W: UiWriter> Agent<W> {
         _show_code: bool,
         show_timing: bool,
         cancellation_token: CancellationToken,
-    ) -> Result<String> {
+    ) -> Result<TaskResult> {
         // Generate session ID based on the initial prompt if this is a new session
         if self.session_id.is_none() {
             self.session_id = Some(self.generate_session_id(description));
@@ -778,7 +783,7 @@ The tool will execute immediately and you'll receive the result (success or erro
         // Time the LLM call with cancellation support and streaming
         let llm_start = Instant::now();
         let result = tokio::select! {
-            result = self.stream_completion(request) => result,
+            result = self.stream_completion(request, show_timing) => result,
             _ = cancellation_token.cancelled() => {
                 // Save context window on cancellation
                 self.save_context_window("cancelled");
@@ -786,8 +791,8 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
         };
 
-        let (response_content, think_time) = match result {
-            Ok(content) => content,
+        let task_result = match result {
+            Ok(result) => result,
             Err(e) => {
                 // Save context window on error
                 self.save_context_window("error");
@@ -795,7 +800,8 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
         };
 
-        let llm_duration = llm_start.elapsed();
+        let response_content = task_result.response.clone();
+        let _llm_duration = llm_start.elapsed();
 
         // Create a mock usage for now (we'll need to track this during streaming)
         let mock_usage = g3_providers::Usage {
@@ -822,18 +828,8 @@ The tool will execute immediately and you'll receive the result (success or erro
         // Save context window at the end of successful interaction
         self.save_context_window("completed");
 
-        // With streaming tool execution, we don't need separate code execution
-        // The tools are already executed during streaming
-        if show_timing {
-            let timing_summary = format!(
-                "\n⏱️ {} | 💭 {}",
-                Self::format_duration(llm_duration),
-                Self::format_duration(think_time)
-            );
-            Ok(format!("{}\n{}", response_content, timing_summary))
-        } else {
-            Ok(response_content)
-        }
+        // Return the task result which already includes timing if needed
+        Ok(task_result)
     }
 
     /// Generate a session ID based on the initial prompt
@@ -919,8 +915,9 @@ The tool will execute immediately and you'll receive the result (success or erro
     async fn stream_completion(
         &mut self,
         request: CompletionRequest,
-    ) -> Result<(String, Duration)> {
-        self.stream_completion_with_tools(request).await
+        show_timing: bool,
+    ) -> Result<TaskResult> {
+        self.stream_completion_with_tools(request, show_timing).await
     }
 
     /// Create tool definitions for native tool calling providers
@@ -1076,7 +1073,8 @@ The tool will execute immediately and you'll receive the result (success or erro
     async fn stream_completion_with_tools(
         &mut self,
         mut request: CompletionRequest,
-    ) -> Result<(String, Duration)> {
+        show_timing: bool,
+    ) -> Result<TaskResult> {
         use crate::error_handling::ErrorContext;
         use tokio_stream::StreamExt;
 
@@ -1473,9 +1471,17 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     }
                                 }
                                 self.ui_writer.println("");
-                                let ttft =
+                                let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                                return Ok((full_response, ttft));
+                                
+                                // Add timing if needed
+                                let final_response = if show_timing {
+                                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                                } else {
+                                    full_response
+                                };
+                                
+                                return Ok(TaskResult::new(final_response, self.context_window.clone()));
                             }
 
                             // Closure marker with timing
@@ -1680,9 +1686,17 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 }
 
                                 self.ui_writer.println("");
-                                let ttft =
+                                let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                                return Ok((full_response, ttft));
+                                
+                                // Add timing if needed
+                                let final_response = if show_timing {
+                                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                                } else {
+                                    full_response
+                                };
+                                
+                                return Ok(TaskResult::new(final_response, self.context_window.clone()));
                             }
                             break; // Tool was executed, break to continue outer loop
                         }
@@ -1747,16 +1761,32 @@ The tool will execute immediately and you'll receive the result (success or erro
                     self.ui_writer.println("");
                 }
 
-                let ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                return Ok((full_response, ttft));
+                let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
+                
+                // Add timing if needed
+                let final_response = if show_timing {
+                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                } else {
+                    full_response
+                };
+                
+                return Ok(TaskResult::new(final_response, self.context_window.clone()));
             }
 
             // Continue the loop to start a new stream with updated context
         }
 
         // If we exit the loop due to max iterations
-        let ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
-        Ok((full_response, ttft))
+        let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
+        
+        // Add timing if needed
+        let final_response = if show_timing {
+            format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+        } else {
+            full_response
+        };
+        
+        Ok(TaskResult::new(final_response, self.context_window.clone()))
     }
 
     async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String> {

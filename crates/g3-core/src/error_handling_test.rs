@@ -2,8 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::error_handling::*;
-    use anyhow::anyhow;
+    use crate::error_handling::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -28,7 +27,7 @@ mod tests {
                     let count = counter.fetch_add(1, Ordering::SeqCst);
                     if count < 2 {
                         // Fail with recoverable error on first two attempts
-                        Err(anyhow!("Rate limit exceeded"))
+                        Err(anyhow::anyhow!("Rate limit exceeded"))
                     } else {
                         // Succeed on third attempt
                         Ok("Success")
@@ -65,7 +64,7 @@ mod tests {
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                     // Always fail with non-recoverable error
-                    Err(anyhow!("Invalid API key"))
+                    Err(anyhow::anyhow!("Invalid API key"))
                 }
             },
             &context,
@@ -97,7 +96,7 @@ mod tests {
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                     // Always fail with recoverable error
-                    Err(anyhow!("Network connection failed"))
+                    Err(anyhow::anyhow!("Network connection failed"))
                 }
             },
             &context,

@@ -206,7 +206,12 @@ pub fn classify_error(error: &anyhow::Error) -> ErrorType {
         return ErrorType::Recoverable(RecoverableError::ModelBusy);
     }
 
-    if error_str.contains("timeout") || error_str.contains("timed out") {
+    // Enhanced timeout detection - check for various timeout patterns
+    if error_str.contains("timeout") || 
+       error_str.contains("timed out") || 
+       error_str.contains("operation timed out") ||
+       error_str.contains("request or response body error") ||  // Common timeout pattern
+       error_str.contains("stream error") && error_str.contains("timed out") {
         return ErrorType::Recoverable(RecoverableError::Timeout);
     }
 

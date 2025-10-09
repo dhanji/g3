@@ -9,6 +9,7 @@ use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
 mod retro_tui;
 mod tui;
 mod ui_writer_impl;
@@ -173,7 +174,7 @@ pub async fn run() -> Result<()> {
         let result = agent
             .execute_task_with_timing(&task, None, false, cli.show_prompt, cli.show_code, true)
             .await?;
-        output.print_markdown(&result);
+        output.print_markdown(&result.response);
     } else {
         // Interactive mode (default)
         if !cli.retro {
@@ -382,25 +383,55 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                             // Execute the task
                             tui.output(&format!("> {}", input));
                             tui.status("PROCESSING");
-
-                            match agent
-                                .execute_task_with_timing(
-                                    &input,
-                                    None,
-                                    false,
-                                    show_prompt,
-                                    show_code,
-                                    true,
-                                )
-                                .await
-                            {
-                                Ok(response) => {
-                                    tui.output(&response);
-                                    tui.status("READY");
-                                }
-                                Err(e) => {
-                                    tui.error(&format!("Task execution failed: {}", e));
-                                    tui.status("ERROR");
+                            
+                            const MAX_TIMEOUT_RETRIES: u32 = 3;
+                            let mut attempt = 0;
+                            
+                            loop {
+                                attempt += 1;
+                                
+                                match agent
+                                    .execute_task_with_timing(
+                                        &input,
+                                        None,
+                                        false,
+                                        show_prompt,
+                                        show_code,
+                                        true,
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        if attempt > 1 {
+                                            tui.output(&format!("SYSTEM: REQUEST SUCCEEDED AFTER {} ATTEMPTS", attempt));
+                                        }
+                                        tui.output(&result.response);
+                                        tui.status("READY");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        // Check if this is a timeout error that we should retry
+                                        let error_type = classify_error(&e);
+                                        
+                                        if matches!(error_type, ErrorType::Recoverable(RecoverableError::Timeout)) && attempt < MAX_TIMEOUT_RETRIES {
+                                            // Calculate retry delay with exponential backoff
+                                            let delay_ms = 1000 * (2_u64.pow(attempt - 1));
+                                            let delay = std::time::Duration::from_millis(delay_ms);
+                                            
+                                            tui.output(&format!("SYSTEM: TIMEOUT ERROR (ATTEMPT {}/{}). RETRYING IN {:?}...", 
+                                                attempt, MAX_TIMEOUT_RETRIES, delay));
+                                            tui.status("RETRYING");
+                                            
+                                            // Wait before retrying
+                                            tokio::time::sleep(delay).await;
+                                            continue;
+                                        }
+                                        
+                                        // For non-timeout errors or after max retries
+                                        tui.error(&format!("Task execution failed: {}", e));
+                                        tui.status("ERROR");
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -597,6 +628,8 @@ async fn execute_task<W: UiWriter>(
     show_code: bool,
     output: &SimpleOutput,
 ) {
+    const MAX_TIMEOUT_RETRIES: u32 = 3;
+    let mut attempt = 0;
     // Show thinking indicator immediately
     output.print("🤔 Thinking...");
     // Note: flush is handled internally by println
@@ -605,53 +638,91 @@ async fn execute_task<W: UiWriter>(
     let cancellation_token = CancellationToken::new();
     let cancel_token_clone = cancellation_token.clone();
 
-    // Execute task with cancellation support
-    let execution_result = tokio::select! {
-        result = agent.execute_task_with_timing_cancellable(
-            input, None, false, show_prompt, show_code, true, cancellation_token
-        ) => {
-            result
-        }
-        _ = tokio::signal::ctrl_c() => {
-            cancel_token_clone.cancel();
-            output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
-            return;
-        }
-    };
+    loop {
+        attempt += 1;
+        
+        // Execute task with cancellation support
+        let execution_result = tokio::select! {
+            result = agent.execute_task_with_timing_cancellable(
+                input, None, false, show_prompt, show_code, true, cancellation_token.clone()
+            ) => {
+                result
+            }
+            _ = tokio::signal::ctrl_c() => {
+                cancel_token_clone.cancel();
+                output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
+                return;
+            }
+        };
 
-    match execution_result {
-        Ok(response) => output.print_markdown(&response),
-        Err(e) => {
-            if e.to_string().contains("cancelled") {
-                output.print("⚠️  Operation cancelled by user");
-            } else {
-                // Enhanced error logging with detailed information
-                error!("=== TASK EXECUTION ERROR ===");
-                error!("Error: {}", e);
-
-                // Log error chain
-                let mut source = e.source();
-                let mut depth = 1;
-                while let Some(err) = source {
-                    error!("  Caused by [{}]: {}", depth, err);
-                    source = err.source();
-                    depth += 1;
+        match execution_result {
+            Ok(result) => {
+                if attempt > 1 {
+                    output.print(&format!("✅ Request succeeded after {} attempts", attempt));
                 }
-
-                // Log additional context
-                error!("Task input: {}", input);
-                error!("Error type: {}", std::any::type_name_of_val(&e));
-
-                // Display user-friendly error message
-                output.print(&format!("❌ Error: {}", e));
-
-                // If it's a stream error, provide helpful guidance
-                if e.to_string().contains("No response received") {
-                    output.print("💡 This may be a temporary issue. Please try again or check the logs for more details.");
-                    output.print("   Log files are saved in the 'logs/' directory.");
+                output.print_markdown(&result.response);
+                return;
+            }
+            Err(e) => {
+                if e.to_string().contains("cancelled") {
+                    output.print("⚠️  Operation cancelled by user");
+                    return;
                 }
+                
+                // Check if this is a timeout error that we should retry
+                let error_type = classify_error(&e);
+                
+                if matches!(error_type, ErrorType::Recoverable(RecoverableError::Timeout)) && attempt < MAX_TIMEOUT_RETRIES {
+                    // Calculate retry delay with exponential backoff
+                    let delay_ms = 1000 * (2_u64.pow(attempt - 1));
+                    let delay = std::time::Duration::from_millis(delay_ms);
+                    
+                    output.print(&format!(
+                        "⏱️  Timeout error detected (attempt {}/{}). Retrying in {:?}...",
+                        attempt, MAX_TIMEOUT_RETRIES, delay
+                    ));
+                    
+                    // Wait before retrying
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                
+                // For non-timeout errors or after max retries, handle as before
+                handle_execution_error(&e, input, output, attempt);
+                return;
             }
         }
+    }
+}
+
+fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput, attempt: u32) {
+    // Enhanced error logging with detailed information
+    error!("=== TASK EXECUTION ERROR ===");
+    error!("Error: {}", e);
+    if attempt > 1 {
+        error!("Failed after {} attempts", attempt);
+    }
+    
+    // Log error chain
+    let mut source = e.source();
+    let mut depth = 1;
+    while let Some(err) = source {
+        error!("  Caused by [{}]: {}", depth, err);
+        source = err.source();
+        depth += 1;
+    }
+
+    // Log additional context
+    error!("Task input: {}", input);
+    error!("Error type: {}", std::any::type_name_of_val(&e));
+
+    // Display user-friendly error message
+    output.print(&format!("❌ Error: {}", e));
+
+    // If it's a stream error, provide helpful guidance
+    if e.to_string().contains("No response received") || e.to_string().contains("timed out") {
+                    output.print("💡 This may be a temporary issue. Please try again or check the logs for more details.");
+                    output.print("   Log files are saved in the 'logs/' directory.");
     }
 }
 
@@ -728,49 +799,62 @@ async fn run_autonomous(
     output.print("📋 Requirements loaded from requirements.md");
     output.print("🔄 Starting coach-player feedback loop...");
 
+    // Check if implementation files already exist
+    let skip_first_player = project.has_implementation_files();
+    if skip_first_player {
+        output.print("📂 Detected existing implementation files in workspace");
+        output.print("⏭️  Skipping first player turn - proceeding directly to coach review");
+    } else {
+        output.print("📂 No existing implementation files detected");
+        output.print("🎯 Starting with player implementation");
+    }
+
     let mut turn = 1;
     let mut coach_feedback = String::new();
     let mut implementation_approved = false;
 
     loop {
-        output.print(&format!(
-            "\n=== TURN {}/{} - PLAYER MODE ===",
-            turn, max_turns
-        ));
+        // Skip player turn if it's the first turn and implementation files exist
+        if !(turn == 1 && skip_first_player) {
+            output.print(&format!(
+                "\n=== TURN {}/{} - PLAYER MODE ===",
+                turn, max_turns
+            ));
 
-        // Player mode: implement requirements (with coach feedback if available)
-        let player_prompt = if coach_feedback.is_empty() {
-            format!(
-                "You are G3 in implementation mode. Read and implement the following requirements:\n\n{}\n\nImplement this step by step, creating all necessary files and code.",
-                requirements
-            )
-        } else {
-            format!(
-                "You are G3 in implementation mode. Address the following specific feedback from the coach:\n\n{}\n\nContext: You are improving an implementation based on these requirements:\n{}\n\nFocus on fixing the issues mentioned in the coach feedback above.",
-                coach_feedback, requirements
-            )
-        };
+            // Player mode: implement requirements (with coach feedback if available)
+            let player_prompt = if coach_feedback.is_empty() {
+                format!(
+                    "You are G3 in implementation mode. Read and implement the following requirements:\n\n{}\n\nImplement this step by step, creating all necessary files and code.",
+                    requirements
+                )
+            } else {
+                format!(
+                    "You are G3 in implementation mode. Address the following specific feedback from the coach:\n\n{}\n\nContext: You are improving an implementation based on these requirements:\n{}\n\nFocus on fixing the issues mentioned in the coach feedback above.",
+                    coach_feedback, requirements
+                )
+            };
 
-        output.print("🎯 Starting player implementation...");
+            output.print("🎯 Starting player implementation...");
 
-        // Execute player task and handle the result properly
-        match agent
-            .execute_task_with_timing(&player_prompt, None, false, show_prompt, show_code, true)
-            .await
-        {
-            Ok(player_result) => {
-                // Display player's implementation result
-                output.print("📝 Player implementation completed:");
-                output.print_markdown(&player_result);
+            // Execute player task and handle the result properly
+            match agent
+                .execute_task_with_timing(&player_prompt, None, false, show_prompt, show_code, true)
+                .await
+            {
+                Ok(result) => {
+                    // Display player's implementation result
+                    output.print("📝 Player implementation completed:");
+                    output.print_markdown(&result.response);
+                }
+                Err(e) => {
+                    output.print(&format!("❌ Player implementation failed: {}", e));
+                    // Continue to coach review even if player had an error
+                }
             }
-            Err(e) => {
-                output.print(&format!("❌ Player implementation failed: {}", e));
-                // Continue to coach review even if player had an error
-            }
+
+            // Give some time for file operations to complete
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
-
-        // Give some time for file operations to complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // Create a new agent instance for coach mode to ensure fresh context
         let config = g3_config::Config::load(None)?;
@@ -822,49 +906,14 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
 
         output.print("🎓 Coach review completed");
         
-        // Extract the actual feedback text from the coach result
-        // IMPORTANT: We only want the final_output summary, not the entire conversation
-        // The coach_result contains the full conversation including file reads, analysis, etc.
-        // We need to extract ONLY the final_output content
-        
-        let coach_feedback_text = {
-            // Look for the final_output content in the coach's response
-            // In autonomous mode, the final_output is returned without the "=> " prefix
-            // The coach result should end with the summary content from final_output
-            
-            // First, remove any timing information at the end
-            let content_without_timing = if let Some(timing_pos) = coach_result.rfind("\n⏱️") {
-                &coach_result[..timing_pos]
-            } else {
-                &coach_result
-            };
-            
-            // The final_output content is typically the last substantial text in the response
-            // after all tool executions. Look for it after the last tool execution marker
-            // or take the last paragraph if no clear markers
-            
-            // Split by double newlines to find the last substantial block
-            let blocks: Vec<&str> = content_without_timing.split("\n\n").collect();
-            
-            // Find the last non-empty block that isn't just whitespace
-            let final_block = blocks.iter()
-                .rev()
-                .find(|block| !block.trim().is_empty())
-                .map(|block| block.trim().to_string())
-                .unwrap_or_else(|| {
-                    // Fallback: if we can't find a clear block, take the whole thing
-                    // but this shouldn't happen if the coach properly calls final_output
-                    content_without_timing.trim().to_string()
-                });
-            
-            final_block
-        };
+        // Extract the coach feedback using the semantic extraction from TaskResult
+        let coach_feedback_text = coach_result.extract_last_block();
         
         // Log the size of the feedback for debugging
         info!(
             "Coach feedback extracted: {} characters (from {} total)",
             coach_feedback_text.len(),
-            coach_result.len()
+            coach_result.response.len()
         );
         
         // Check if we got empty feedback (this can happen if the coach doesn't call final_output)
@@ -878,7 +927,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         output.print(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
-        if coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
+        if coach_result.is_approved() {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
             output.print("✅ Coach approved the implementation!");
             implementation_approved = true;
