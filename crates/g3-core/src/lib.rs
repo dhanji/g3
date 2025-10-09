@@ -634,9 +634,10 @@ The tool will execute immediately and you'll receive the result (success or erro
   - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}}
   - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}}
 
-- **read_file**: Read the contents of a file
-  - Format: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"path/to/file\"}}
+- **read_file**: Read the contents of a file (supports partial reads via start/end)
+  - Format: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"path/to/file\", \"start\": 0, \"end\": 100}}
   - Example: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"src/main.rs\"}}
+  - Example (partial): {\"tool\": \"read_file\", \"args\": {\"file_path\": \"large.log\", \"start\": 0, \"end\": 1000}}
 
 - **write_file**: Write content to a file (creates or overwrites)
   - Format: {\"tool\": \"write_file\", \"args\": {\"file_path\": \"path/to/file\", \"content\": \"file content\"}}
@@ -882,13 +883,21 @@ The tool will execute immediately and you'll receive the result (success or erro
             },
             Tool {
                 name: "read_file".to_string(),
-                description: "Read the contents of a file".to_string(),
+                description: "Read the contents of a file. Optionally read a specific character range.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
                             "description": "The path to the file to read"
+                        },
+                        "start": {
+                            "type": "integer",
+                            "description": "Starting character position (0-indexed, inclusive). If omitted, reads from beginning."
+                        },
+                        "end": {
+                            "type": "integer",
+                            "description": "Ending character position (0-indexed, EXCLUSIVE). If omitted, reads to end of file."
                         }
                     },
                     "required": ["file_path"]
@@ -1726,14 +1735,47 @@ The tool will execute immediately and you'll receive the result (success or erro
                 debug!("Processing read_file tool call");
                 if let Some(file_path) = tool_call.args.get("file_path") {
                     if let Some(path_str) = file_path.as_str() {
-                        debug!("Reading file: {}", path_str);
+                        // Extract optional start and end positions
+                        let start_char = tool_call.args.get("start")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize);
+                        let end_char = tool_call.args.get("end")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize);
+                        
+                        debug!("Reading file: {}, start={:?}, end={:?}", path_str, start_char, end_char);
+                        
                         match std::fs::read_to_string(path_str) {
                             Ok(content) => {
-                                let line_count = content.lines().count();
-                                Ok(format!(
-                                    "📄 File content ({} lines):\n{}",
-                                    line_count, content
-                                ))
+                                // Validate and apply range if specified
+                                let start = start_char.unwrap_or(0);
+                                let end = end_char.unwrap_or(content.len());
+                                
+                                // Validation
+                                if start > content.len() {
+                                    return Ok(format!("❌ Start position {} exceeds file length {}", start, content.len()));
+                                }
+                                if end > content.len() {
+                                    return Ok(format!("❌ End position {} exceeds file length {}", end, content.len()));
+                                }
+                                if start > end {
+                                    return Ok(format!("❌ Start position {} is greater than end position {}", start, end));
+                                }
+                                
+                                // Extract the requested portion
+                                let partial_content = &content[start..end];
+                                let line_count = partial_content.lines().count();
+                                let total_lines = content.lines().count();
+                                
+                                // Format output with range info if partial
+                                if start_char.is_some() || end_char.is_some() {
+                                    Ok(format!(
+                                        "📄 File content (chars {}-{}, {} lines of {} total):\n{}",
+                                        start, end, line_count, total_lines, partial_content
+                                    ))
+                                } else {
+                                    Ok(format!("📄 File content ({} lines):\n{}", line_count, content))
+                                }
                             }
                             Err(e) => Ok(format!("❌ Failed to read file '{}': {}", path_str, e)),
                         }
