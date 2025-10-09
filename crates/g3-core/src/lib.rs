@@ -226,6 +226,7 @@ impl StreamingToolParser {
 pub struct ContextWindow {
     pub used_tokens: u32,
     pub total_tokens: u32,
+    pub cumulative_tokens: u32,  // Track cumulative tokens across all interactions
     pub conversation_history: Vec<Message>,
 }
 
@@ -234,23 +235,49 @@ impl ContextWindow {
         Self {
             used_tokens: 0,
             total_tokens,
+            cumulative_tokens: 0,
             conversation_history: Vec::new(),
         }
     }
 
     pub fn add_message(&mut self, message: Message) {
+        self.add_message_with_tokens(message, None);
+    }
+    
+    /// Add a message with optional token count from the provider
+    pub fn add_message_with_tokens(&mut self, message: Message, tokens: Option<u32>) {
         // Skip messages with empty content to avoid API errors
         if message.content.trim().is_empty() {
             warn!("Skipping empty message to avoid API error");
             return;
         }
 
-        // Better token estimation based on content type
-        let estimated_tokens = Self::estimate_tokens(&message.content);
-        self.used_tokens += estimated_tokens;
+        // Use provided token count if available, otherwise estimate
+        let token_count = tokens.unwrap_or_else(|| Self::estimate_tokens(&message.content));
+        self.used_tokens += token_count;
+        self.cumulative_tokens += token_count;
         self.conversation_history.push(message);
+        
+        debug!(
+            "Added message with {} tokens (used: {}/{}, cumulative: {})",
+            token_count, self.used_tokens, self.total_tokens, self.cumulative_tokens
+        );
     }
 
+    /// Update token usage from provider response
+    pub fn update_usage_from_response(&mut self, usage: &g3_providers::Usage) {
+        // Update with actual token usage from the provider
+        // This replaces our estimate with the actual count
+        let old_used = self.used_tokens;
+        self.used_tokens = usage.total_tokens;
+        self.cumulative_tokens = self.cumulative_tokens - old_used + usage.total_tokens;
+        
+        debug!(
+            "Updated token usage from provider: {} -> {} (cumulative: {})",
+            old_used, self.used_tokens, self.cumulative_tokens
+        );
+    }
+    
     /// More accurate token estimation
     fn estimate_tokens(text: &str) -> u32 {
         // Better heuristic:
@@ -266,8 +293,18 @@ impl ContextWindow {
     }
 
     pub fn update_usage(&mut self, usage: &g3_providers::Usage) {
-        // Update with actual token usage from the provider
-        self.used_tokens = usage.total_tokens;
+        // Deprecated: Use update_usage_from_response instead
+        self.update_usage_from_response(usage);
+    }
+    
+    /// Update cumulative token usage (for streaming)
+    pub fn add_streaming_tokens(&mut self, new_tokens: u32) {
+        self.used_tokens += new_tokens;
+        self.cumulative_tokens += new_tokens;
+        debug!(
+            "Added {} streaming tokens (used: {}/{}, cumulative: {})",
+            new_tokens, self.used_tokens, self.total_tokens, self.cumulative_tokens
+        );
     }
 
     pub fn percentage_used(&self) -> f32 {
@@ -1237,12 +1274,22 @@ The tool will execute immediately and you'll receive the result (success or erro
             let mut chunks_received = 0;
             let mut raw_chunks: Vec<String> = Vec::new(); // Store raw chunks for debugging
             let mut _last_error: Option<String> = None;
+            let mut accumulated_usage: Option<g3_providers::Usage> = None;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
                         // Notify UI about SSE received (including pings)
                         self.ui_writer.notify_sse_received();
+                        
+                        // Capture usage data if available
+                        if let Some(ref usage) = chunk.usage {
+                            accumulated_usage = Some(usage.clone());
+                            debug!(
+                                "Received usage data - prompt: {}, completion: {}, total: {}",
+                                usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+                            );
+                        }
                         
                         // Store raw chunk for debugging (limit to first 20 and last 5)
                         if chunks_received < 20 || chunk.finished {
@@ -1643,6 +1690,17 @@ The tool will execute immediately and you'll receive the result (success or erro
                         }
                     }
                 }
+            }
+            
+            // Update context window with actual usage if available
+            if let Some(usage) = accumulated_usage {
+                debug!("Updating context window with actual usage from stream");
+                self.context_window.update_usage_from_response(&usage);
+            } else {
+                // Fall back to estimation if no usage data was provided
+                debug!("No usage data from stream, using estimation");
+                let estimated_tokens = ContextWindow::estimate_tokens(&current_response);
+                self.context_window.add_streaming_tokens(estimated_tokens);
             }
 
             // If we get here and no tool was executed, we're done

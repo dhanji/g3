@@ -67,6 +67,7 @@ pub struct CompletionChunk {
     pub content: String,
     pub finished: bool,
     pub tool_calls: Option<Vec<ToolCall>>,
+    pub usage: Option<Usage>,  // Add usage tracking for streaming
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

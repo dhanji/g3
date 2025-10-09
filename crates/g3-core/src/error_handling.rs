@@ -376,6 +376,7 @@ macro_rules! error_context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
 
     #[test]
     fn test_error_classification() {

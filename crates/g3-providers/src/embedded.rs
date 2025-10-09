@@ -655,6 +655,7 @@ impl LLMProvider for EmbeddedProvider {
                                     let chunk = CompletionChunk {
                                         content: remaining_to_send.to_string(),
                                         finished: false,
+                                        usage: None,
                                         tool_calls: None,
                                     };
                                     let _ = tx.blocking_send(Ok(chunk));
@@ -681,6 +682,7 @@ impl LLMProvider for EmbeddedProvider {
                             let chunk = CompletionChunk {
                                 content: remaining_to_send.to_string(),
                                 finished: false,
+                                usage: None,
                                 tool_calls: None,
                             };
                             let _ = tx.blocking_send(Ok(chunk));
@@ -714,6 +716,7 @@ impl LLMProvider for EmbeddedProvider {
                             let chunk = CompletionChunk {
                                 content: to_send.to_string(),
                                 finished: false,
+                                usage: None,
                                 tool_calls: None,
                             };
                             if tx.blocking_send(Ok(chunk)).is_err() {
@@ -729,6 +732,7 @@ impl LLMProvider for EmbeddedProvider {
                         let chunk = CompletionChunk {
                             content: unsent_tokens.clone(),
                             finished: false,
+                            usage: None,
                             tool_calls: None,
                         };
                         if tx.blocking_send(Ok(chunk)).is_err() {
@@ -749,6 +753,7 @@ impl LLMProvider for EmbeddedProvider {
             let final_chunk = CompletionChunk {
                 content: String::new(),
                 finished: true,
+                usage: None,  // Embedded models calculate usage differently
                 tool_calls: None,
             };
             let _ = tx.blocking_send(Ok(final_chunk));
