@@ -1,15 +1,21 @@
 use crate::retro_tui::RetroTui;
 use g3_core::ui_writer::UiWriter;
 use std::io::{self, Write};
-use std::time::Instant;
 use std::sync::Mutex;
+use std::time::Instant;
 
 /// Console implementation of UiWriter that prints to stdout
-pub struct ConsoleUiWriter;
+pub struct ConsoleUiWriter {
+    current_tool_name: Mutex<Option<String>>,
+    current_tool_args: Mutex<Vec<(String, String)>>,
+}
 
 impl ConsoleUiWriter {
     pub fn new() -> Self {
-        Self
+        Self {
+            current_tool_name: Mutex::new(None),
+            current_tool_args: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -40,15 +46,53 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_header(&self, tool_name: &str) {
-        println!("┌─ {}", tool_name);
+        // Store the tool name and clear args for collection
+        *self.current_tool_name.lock().unwrap() = Some(tool_name.to_string());
+        self.current_tool_args.lock().unwrap().clear();
     }
 
     fn print_tool_arg(&self, key: &str, value: &str) {
-        println!("│ {}: {}", key, value);
+        // Collect arguments instead of printing immediately
+        self.current_tool_args
+            .lock()
+            .unwrap()
+            .push((key.to_string(), value.to_string()));
     }
 
     fn print_tool_output_header(&self) {
-        println!("├─ output:");
+        // Now print the tool header with the most important arg
+        if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
+            let args = self.current_tool_args.lock().unwrap();
+
+            // Find the most important argument
+            let important_arg = args
+                .iter()
+                .find(|(k, _)| k == "command" || k == "file_path" || k == "path" || k == "diff")
+                .or_else(|| args.first());
+
+            if let Some((_, value)) = important_arg {
+                // Truncate long values for display
+                let display_value = if value.len() > 80 {
+                    format!("{}...", &value[..77])
+                } else {
+                    value.clone()
+                };
+                println!("┌─ {} | {}", tool_name, display_value);
+            } else {
+                println!("┌─ {}", tool_name);
+            }
+
+            // Print any additional arguments (optional - can be removed if not wanted)
+            for (key, value) in args.iter() {
+                if Some(key.as_str()) != important_arg.map(|(k, _)| k.as_str()) {
+                    // Only show additional args if they're short or important
+                    if value.len() < 50 {
+                        println!("  {}: {}", key, value);
+                    }
+                }
+            }
+        }
+        //        println!("┌─────");
     }
 
     fn print_tool_output_line(&self, line: &str) {
@@ -57,7 +101,7 @@ impl UiWriter for ConsoleUiWriter {
 
     fn print_tool_output_summary(&self, hidden_count: usize) {
         println!(
-            "│ ... ({} more line{} hidden)",
+            "│ ... ({} more line{})",
             hidden_count,
             if hidden_count == 1 { "" } else { "s" }
         );
@@ -66,6 +110,9 @@ impl UiWriter for ConsoleUiWriter {
     fn print_tool_timing(&self, duration_str: &str) {
         println!("└─ ⚡️ {}", duration_str);
         println!();
+        // Clear the stored tool info
+        *self.current_tool_name.lock().unwrap() = None;
+        self.current_tool_args.lock().unwrap().clear();
     }
 
     fn print_agent_prompt(&self) {
@@ -145,7 +192,7 @@ impl UiWriter for RetroTuiWriter {
             .lock()
             .unwrap()
             .push(format!("Tool: {}", tool_name));
-        
+
         // Initialize caption
         *self.current_tool_caption.lock().unwrap() = String::new();
     }
@@ -155,12 +202,16 @@ impl UiWriter for RetroTuiWriter {
             .lock()
             .unwrap()
             .push(format!("{}: {}", key, value));
-        
+
         // Build caption from first argument (usually the most important one)
         let mut caption = self.current_tool_caption.lock().unwrap();
         if caption.is_empty() && (key == "file_path" || key == "command" || key == "path") {
             // Truncate long values for the caption
-            let truncated = if value.len() > 50 { format!("{}...", &value[..47]) } else { value.to_string() };
+            let truncated = if value.len() > 50 {
+                format!("{}...", &value[..47])
+            } else {
+                value.to_string()
+            };
             *caption = truncated;
         }
     }
@@ -170,16 +221,11 @@ impl UiWriter for RetroTuiWriter {
         // Send the initial tool header to the TUI now
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let caption = self.current_tool_caption.lock().unwrap().clone();
-            let caption = if caption.is_empty() { "Executing...".to_string() } else { caption };
-            
+
             // Send the tool output with initial header
-            self.tui.tool_output(
-                tool_name,
-                &caption,
-                ""
-            );
+            self.tui.tool_output(tool_name, &caption, "");
         }
-        
+
         self.current_tool_output.lock().unwrap().push(String::new());
         self.current_tool_output
             .lock()
@@ -196,7 +242,7 @@ impl UiWriter for RetroTuiWriter {
 
     fn print_tool_output_summary(&self, hidden_count: usize) {
         self.current_tool_output.lock().unwrap().push(format!(
-            "... ({} more line{} hidden)",
+            "... ({} more line{})",
             hidden_count,
             if hidden_count == 1 { "" } else { "s" }
         ));
@@ -214,23 +260,30 @@ impl UiWriter for RetroTuiWriter {
         } else {
             0
         };
-        
+
         // Get the tool name and caption
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let content = self.current_tool_output.lock().unwrap().join("\n");
             let caption = self.current_tool_caption.lock().unwrap().clone();
-            let caption = if caption.is_empty() { "Completed".to_string() } else { caption };
-            
+            let caption = if caption.is_empty() {
+                "Completed".to_string()
+            } else {
+                caption
+            };
+
             // Update the tool detail panel with the complete output without adding a new header
             // This keeps the original header in place to be updated by tool_complete
             self.tui.update_tool_detail(tool_name, &content);
-            
+
             // Determine success based on whether there's an error in the output
             // This is a simple heuristic - you might want to make this more sophisticated
-            let success = !content.contains("error") && !content.contains("Error") && !content.contains("ERROR");
-            
+            let success = !content.contains("error")
+                && !content.contains("Error")
+                && !content.contains("ERROR");
+
             // Send the completion status to update the header
-            self.tui.tool_complete(tool_name, success, duration_ms, &caption);
+            self.tui
+                .tool_complete(tool_name, success, duration_ms, &caption);
         }
 
         // Clear the buffers
