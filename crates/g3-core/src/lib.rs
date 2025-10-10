@@ -1402,8 +1402,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 self.ui_writer.flush();
                             }
 
-                            // Execute the tool with formatted output
-                            self.ui_writer.println(""); // New line before tool execution
+                            // Execute the tool with formatted output  
+                            // Only add newline if we printed some text content
+                            if !new_content.trim().is_empty() {
+                                self.ui_writer.println(""); // New line before tool execution
+                            }
 
                             // Skip printing tool call details for final_output
                             if tool_call.tool != "final_output" {
