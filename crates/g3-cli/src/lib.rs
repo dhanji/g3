@@ -4,20 +4,20 @@ use g3_config::Config;
 use g3_core::{project::Project, ui_writer::UiWriter, Agent};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
 mod retro_tui;
+mod theme;
 mod tui;
 mod ui_writer_impl;
-mod theme;
 use retro_tui::RetroTui;
+use theme::ColorTheme;
 use tui::SimpleOutput;
 use ui_writer_impl::{ConsoleUiWriter, RetroTuiWriter};
-use theme::ColorTheme;
 
 #[derive(Parser)]
 #[command(name = "g3")]
@@ -183,7 +183,14 @@ pub async fn run() -> Result<()> {
 
         if cli.retro {
             // Use retro terminal UI
-            run_interactive_retro(config, cli.show_prompt, cli.show_code, cli.theme, readme_content).await?;
+            run_interactive_retro(
+                config,
+                cli.show_prompt,
+                cli.show_code,
+                cli.theme,
+                readme_content,
+            )
+            .await?;
         } else {
             // Use standard terminal UI
             let output = SimpleOutput::new();
@@ -199,11 +206,11 @@ pub async fn run() -> Result<()> {
 fn read_project_readme(workspace_dir: &Path) -> Option<String> {
     // Check if we're in a project directory (contains .g3 or .git)
     let is_project_dir = workspace_dir.join(".g3").exists() || workspace_dir.join(".git").exists();
-    
+
     if !is_project_dir {
         return None;
     }
-    
+
     // Look for README files in common formats
     let readme_names = [
         "README.md",
@@ -214,14 +221,17 @@ fn read_project_readme(workspace_dir: &Path) -> Option<String> {
         "README.txt",
         "README.rst",
     ];
-    
+
     for readme_name in &readme_names {
         let readme_path = workspace_dir.join(readme_name);
         if readme_path.exists() {
             match std::fs::read_to_string(&readme_path) {
                 Ok(content) => {
                     // Return the content with a note about which file was read
-                    return Some(format!("📚 Project README (from {}):\n\n{}", readme_name, content));
+                    return Some(format!(
+                        "📚 Project README (from {}):\n\n{}",
+                        readme_name, content
+                    ));
                 }
                 Err(e) => {
                     // Log the error but continue looking for other README files
@@ -230,11 +240,17 @@ fn read_project_readme(workspace_dir: &Path) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
-async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: bool, theme_name: Option<String>, readme_content: Option<String>) -> Result<()> {
+async fn run_interactive_retro(
+    config: Config,
+    show_prompt: bool,
+    show_code: bool,
+    theme_name: Option<String>,
+    readme_content: Option<String>,
+) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
 
@@ -259,7 +275,7 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
 
     // Display initial system messages
     tui.output("SYSTEM: AGENT ONLINE\n\n");
-    
+
     // Display message if README was loaded
     if readme_content.is_some() {
         tui.output("SYSTEM: PROJECT README LOADED INTO CONTEXT\n\n");
@@ -383,13 +399,13 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                             // Execute the task
                             tui.output(&format!("> {}", input));
                             tui.status("PROCESSING");
-                            
+
                             const MAX_TIMEOUT_RETRIES: u32 = 3;
                             let mut attempt = 0;
-                            
+
                             loop {
                                 attempt += 1;
-                                
+
                                 match agent
                                     .execute_task_with_timing(
                                         &input,
@@ -403,7 +419,10 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                                 {
                                     Ok(result) => {
                                         if attempt > 1 {
-                                            tui.output(&format!("SYSTEM: REQUEST SUCCEEDED AFTER {} ATTEMPTS", attempt));
+                                            tui.output(&format!(
+                                                "SYSTEM: REQUEST SUCCEEDED AFTER {} ATTEMPTS",
+                                                attempt
+                                            ));
                                         }
                                         tui.output(&result.response);
                                         tui.status("READY");
@@ -412,21 +431,25 @@ async fn run_interactive_retro(config: Config, show_prompt: bool, show_code: boo
                                     Err(e) => {
                                         // Check if this is a timeout error that we should retry
                                         let error_type = classify_error(&e);
-                                        
-                                        if matches!(error_type, ErrorType::Recoverable(RecoverableError::Timeout)) && attempt < MAX_TIMEOUT_RETRIES {
+
+                                        if matches!(
+                                            error_type,
+                                            ErrorType::Recoverable(RecoverableError::Timeout)
+                                        ) && attempt < MAX_TIMEOUT_RETRIES
+                                        {
                                             // Calculate retry delay with exponential backoff
                                             let delay_ms = 1000 * (2_u64.pow(attempt - 1));
                                             let delay = std::time::Duration::from_millis(delay_ms);
-                                            
-                                            tui.output(&format!("SYSTEM: TIMEOUT ERROR (ATTEMPT {}/{}). RETRYING IN {:?}...", 
+
+                                            tui.output(&format!("SYSTEM: TIMEOUT ERROR (ATTEMPT {}/{}). RETRYING IN {:?}...",
                                                 attempt, MAX_TIMEOUT_RETRIES, delay));
                                             tui.status("RETRYING");
-                                            
+
                                             // Wait before retrying
                                             tokio::time::sleep(delay).await;
                                             continue;
                                         }
-                                        
+
                                         // For non-timeout errors or after max retries
                                         tui.error(&format!("Task execution failed: {}", e));
                                         tui.status("ERROR");
@@ -482,10 +505,8 @@ async fn run_interactive<W: UiWriter>(
     let output = SimpleOutput::new();
 
     output.print("");
-    output.print("🤖 G3 AI Coding Agent - Interactive Mode");
-    output.print(
-        "I solve problems by writing and executing code. Tell me what you need to accomplish!",
-    );
+    output.print("🪿 G3 AI Coding Agent - Interactive Mode");
+    output.print("I solve problems by writing and executing code. what shall we build today?");
     output.print("");
 
     // Display message if README was loaded
@@ -497,7 +518,7 @@ async fn run_interactive<W: UiWriter>(
     // Display provider and model information
     match agent.get_provider_info() {
         Ok((provider, model)) => {
-            output.print(&format!("🔧 Provider: {} | Model: {}", provider, model));
+            output.print(&format!("🔧 {} | {}", provider, model));
         }
         Err(e) => {
             error!("Failed to get provider info: {}", e);
@@ -505,9 +526,7 @@ async fn run_interactive<W: UiWriter>(
     }
 
     output.print("");
-    output.print("Type 'exit' or 'quit' to exit, use Up/Down arrows for command history");
-    output.print("For multiline input: use \\ at the end of a line to continue");
-    output.print("Submit multiline with Enter (without backslash)");
+    output.print("CTRL-D to quit; ↑/↓ for history");
     output.print("");
 
     // Initialize rustyline editor with history
@@ -640,7 +659,7 @@ async fn execute_task<W: UiWriter>(
 
     loop {
         attempt += 1;
-        
+
         // Execute task with cancellation support
         let execution_result = tokio::select! {
             result = agent.execute_task_with_timing_cancellable(
@@ -668,25 +687,29 @@ async fn execute_task<W: UiWriter>(
                     output.print("⚠️  Operation cancelled by user");
                     return;
                 }
-                
+
                 // Check if this is a timeout error that we should retry
                 let error_type = classify_error(&e);
-                
-                if matches!(error_type, ErrorType::Recoverable(RecoverableError::Timeout)) && attempt < MAX_TIMEOUT_RETRIES {
+
+                if matches!(
+                    error_type,
+                    ErrorType::Recoverable(RecoverableError::Timeout)
+                ) && attempt < MAX_TIMEOUT_RETRIES
+                {
                     // Calculate retry delay with exponential backoff
                     let delay_ms = 1000 * (2_u64.pow(attempt - 1));
                     let delay = std::time::Duration::from_millis(delay_ms);
-                    
+
                     output.print(&format!(
                         "⏱️  Timeout error detected (attempt {}/{}). Retrying in {:?}...",
                         attempt, MAX_TIMEOUT_RETRIES, delay
                     ));
-                    
+
                     // Wait before retrying
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                
+
                 // For non-timeout errors or after max retries, handle as before
                 handle_execution_error(&e, input, output, attempt);
                 return;
@@ -702,7 +725,7 @@ fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput,
     if attempt > 1 {
         error!("Failed after {} attempts", attempt);
     }
-    
+
     // Log error chain
     let mut source = e.source();
     let mut depth = 1;
@@ -721,8 +744,8 @@ fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput,
 
     // If it's a stream error, provide helpful guidance
     if e.to_string().contains("No response received") || e.to_string().contains("timed out") {
-                    output.print("💡 This may be a temporary issue. Please try again or check the logs for more details.");
-                    output.print("   Log files are saved in the 'logs/' directory.");
+        output.print("💡 This may be a temporary issue. Please try again or check the logs for more details.");
+        output.print("   Log files are saved in the 'logs/' directory.");
     }
 }
 
@@ -905,17 +928,17 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
             .await?;
 
         output.print("🎓 Coach review completed");
-        
+
         // Extract the coach feedback using the semantic extraction from TaskResult
         let coach_feedback_text = coach_result.extract_last_block();
-        
+
         // Log the size of the feedback for debugging
         info!(
             "Coach feedback extracted: {} characters (from {} total)",
             coach_feedback_text.len(),
             coach_result.response.len()
         );
-        
+
         // Check if we got empty feedback (this can happen if the coach doesn't call final_output)
         if coach_feedback_text.is_empty() {
             output.print("⚠️ Coach did not provide feedback. This may be a model issue.");
@@ -923,7 +946,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
             turn += 1;
             continue;
         }
-        
+
         output.print(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
