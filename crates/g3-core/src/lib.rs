@@ -1604,11 +1604,14 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 let has_text_response = !text_content.trim().is_empty()
                                     || !current_response.trim().is_empty();
 
-                                // If we have text in the parser buffer but not in current_response,
-                                // we should add it to the response
-                                if !text_content.trim().is_empty() && current_response.is_empty() {
-                                    current_response =
-                                        filter_json_tool_calls(text_content).trim().to_string();
+                                // Don't re-add text from parser buffer if we already displayed it
+                                // The parser buffer contains ALL accumulated text, but current_response
+                                // already has what was displayed during streaming
+                                if current_response.is_empty() && !text_content.trim().is_empty() {
+                                    // Only use parser text if we truly have no response
+                                    // This should be rare - only if streaming failed to display anything
+                                    debug!("Warning: Using parser buffer text as fallback - this may duplicate output");
+                                    // Don't add it - it's already been displayed
                                 }
 
                                 if !has_text_response && full_response.is_empty() {
@@ -1707,9 +1710,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     ));
                                 }
 
-                                // Add current response to full response if we have any
-                                if !current_response.is_empty() {
-                                    full_response.push_str(&current_response);
+                                // Set full_response to current_response (don't append)
+                                // current_response already contains everything that was displayed
+                                // Appending would duplicate the output
+                                if !current_response.is_empty() && full_response.is_empty() {
+                                    full_response = current_response.clone();
                                 }
 
                                 self.ui_writer.println("");
@@ -1776,13 +1781,10 @@ The tool will execute immediately and you'll receive the result (success or erro
 
             // If we get here and no tool was executed, we're done
             if !tool_executed {
-                // Check if we have any text in the parser that wasn't added to current_response
-                let text_content = parser.get_text_content();
-                if !text_content.trim().is_empty() && current_response.is_empty() {
-                    // The LLM responded with text but didn't call final_output
-                    // Add the text to the response
-                    current_response = filter_json_tool_calls(text_content).trim().to_string();
-                }
+                // Don't add parser text_content here - it's already been displayed during streaming
+                // The parser buffer contains ALL accumulated text, including what was already shown
+                // Adding it here would cause duplication of the entire response
+                debug!("Stream completed without tool execution. Response already displayed during streaming.");
 
                 let has_response = !current_response.is_empty() || !full_response.is_empty();
 
@@ -1792,7 +1794,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                         iteration_count
                     );
                 } else {
-                    full_response.push_str(&current_response);
+                    // Don't add current_response to full_response here - it was already displayed during streaming
+                    // Only add it if full_response is empty (meaning no tools were executed)
+                    if full_response.is_empty() && !current_response.is_empty() {
+                        full_response = current_response.clone();
+                    }
                     self.ui_writer.println("");
                 }
 
