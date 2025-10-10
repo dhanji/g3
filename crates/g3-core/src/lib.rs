@@ -1,7 +1,7 @@
 pub mod error_handling;
 pub mod project;
-pub mod ui_writer;
 pub mod task_result;
+pub mod ui_writer;
 pub use task_result::TaskResult;
 
 #[cfg(test)]
@@ -231,7 +231,7 @@ impl StreamingToolParser {
 pub struct ContextWindow {
     pub used_tokens: u32,
     pub total_tokens: u32,
-    pub cumulative_tokens: u32,  // Track cumulative tokens across all interactions
+    pub cumulative_tokens: u32, // Track cumulative tokens across all interactions
     pub conversation_history: Vec<Message>,
 }
 
@@ -248,7 +248,7 @@ impl ContextWindow {
     pub fn add_message(&mut self, message: Message) {
         self.add_message_with_tokens(message, None);
     }
-    
+
     /// Add a message with optional token count from the provider
     pub fn add_message_with_tokens(&mut self, message: Message, tokens: Option<u32>) {
         // Skip messages with empty content to avoid API errors
@@ -262,7 +262,7 @@ impl ContextWindow {
         self.used_tokens += token_count;
         self.cumulative_tokens += token_count;
         self.conversation_history.push(message);
-        
+
         debug!(
             "Added message with {} tokens (used: {}/{}, cumulative: {})",
             token_count, self.used_tokens, self.total_tokens, self.cumulative_tokens
@@ -276,13 +276,13 @@ impl ContextWindow {
         let old_used = self.used_tokens;
         self.used_tokens = usage.total_tokens;
         self.cumulative_tokens = self.cumulative_tokens - old_used + usage.total_tokens;
-        
+
         debug!(
             "Updated token usage from provider: {} -> {} (cumulative: {})",
             old_used, self.used_tokens, self.cumulative_tokens
         );
     }
-    
+
     /// More accurate token estimation
     fn estimate_tokens(text: &str) -> u32 {
         // Better heuristic:
@@ -301,7 +301,7 @@ impl ContextWindow {
         // Deprecated: Use update_usage_from_response instead
         self.update_usage_from_response(usage);
     }
-    
+
     /// Update cumulative token usage (for streaming)
     pub fn add_streaming_tokens(&mut self, new_tokens: u32) {
         self.used_tokens += new_tokens;
@@ -388,11 +388,19 @@ impl<W: UiWriter> Agent<W> {
         Self::new_with_mode(config, ui_writer, false).await
     }
 
-    pub async fn new_with_readme(config: Config, ui_writer: W, readme_content: Option<String>) -> Result<Self> {
+    pub async fn new_with_readme(
+        config: Config,
+        ui_writer: W,
+        readme_content: Option<String>,
+    ) -> Result<Self> {
         Self::new_with_mode_and_readme(config, ui_writer, false, readme_content).await
     }
 
-    pub async fn new_autonomous_with_readme(config: Config, ui_writer: W, readme_content: Option<String>) -> Result<Self> {
+    pub async fn new_autonomous_with_readme(
+        config: Config,
+        ui_writer: W,
+        readme_content: Option<String>,
+    ) -> Result<Self> {
         Self::new_with_mode_and_readme(config, ui_writer, true, readme_content).await
     }
 
@@ -404,7 +412,12 @@ impl<W: UiWriter> Agent<W> {
         Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None).await
     }
 
-    async fn new_with_mode_and_readme(config: Config, ui_writer: W, is_autonomous: bool, readme_content: Option<String>) -> Result<Self> {
+    async fn new_with_mode_and_readme(
+        config: Config,
+        ui_writer: W,
+        is_autonomous: bool,
+        readme_content: Option<String>,
+    ) -> Result<Self> {
         let mut providers = ProviderRegistry::new();
 
         // Only register providers that are configured AND selected as the default provider
@@ -917,7 +930,8 @@ The tool will execute immediately and you'll receive the result (success or erro
         request: CompletionRequest,
         show_timing: bool,
     ) -> Result<TaskResult> {
-        self.stream_completion_with_tools(request, show_timing).await
+        self.stream_completion_with_tools(request, show_timing)
+            .await
     }
 
     /// Create tool definitions for native tool calling providers
@@ -1301,7 +1315,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                     Ok(chunk) => {
                         // Notify UI about SSE received (including pings)
                         self.ui_writer.notify_sse_received();
-                        
+
                         // Capture usage data if available
                         if let Some(ref usage) = chunk.usage {
                             accumulated_usage = Some(usage.clone());
@@ -1310,7 +1324,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
                             );
                         }
-                        
+
                         // Store raw chunk for debugging (limit to first 20 and last 5)
                         if chunks_received < 20 || chunk.finished {
                             raw_chunks.push(format!(
@@ -1464,7 +1478,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         // Don't add the "=> " prefix in autonomous mode
                                         // as it interferes with coach feedback parsing
                                         if !self.is_autonomous {
-                                            full_response.push_str(&format!("\n\n=> {}", summary_str));
+                                            full_response
+                                                .push_str(&format!("\n\n=> {}", summary_str));
                                         } else {
                                             full_response.push_str(&format!("\n\n{}", summary_str));
                                         }
@@ -1473,15 +1488,23 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 self.ui_writer.println("");
                                 let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                                
+
                                 // Add timing if needed
                                 let final_response = if show_timing {
-                                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                                    format!(
+                                        "{}\n\n⏱️ {} | 💭 {}",
+                                        full_response,
+                                        Self::format_duration(total_execution_time),
+                                        Self::format_duration(_ttft)
+                                    )
                                 } else {
                                     full_response
                                 };
-                                
-                                return Ok(TaskResult::new(final_response, self.context_window.clone()));
+
+                                return Ok(TaskResult::new(
+                                    final_response,
+                                    self.context_window.clone(),
+                                ));
                             }
 
                             // Closure marker with timing
@@ -1576,14 +1599,16 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 // We need to check the parser's text buffer as well, since the LLM
                                 // might have responded with text but no final_output tool call
                                 let text_content = parser.get_text_content();
-                                let has_text_response = !text_content.trim().is_empty() || !current_response.trim().is_empty();
-                                
+                                let has_text_response = !text_content.trim().is_empty()
+                                    || !current_response.trim().is_empty();
+
                                 // If we have text in the parser buffer but not in current_response,
                                 // we should add it to the response
                                 if !text_content.trim().is_empty() && current_response.is_empty() {
-                                    current_response = filter_json_tool_calls(text_content).trim().to_string();
+                                    current_response =
+                                        filter_json_tool_calls(text_content).trim().to_string();
                                 }
-                                
+
                                 if !has_text_response && full_response.is_empty() {
                                     // Log detailed error information before failing
                                     error!(
@@ -1688,15 +1713,23 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 self.ui_writer.println("");
                                 let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                                
+
                                 // Add timing if needed
                                 let final_response = if show_timing {
-                                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                                    format!(
+                                        "{}\n\n⏱️ {} | 💭 {}",
+                                        full_response,
+                                        Self::format_duration(total_execution_time),
+                                        Self::format_duration(_ttft)
+                                    )
                                 } else {
                                     full_response
                                 };
-                                
-                                return Ok(TaskResult::new(final_response, self.context_window.clone()));
+
+                                return Ok(TaskResult::new(
+                                    final_response,
+                                    self.context_window.clone(),
+                                ));
                             }
                             break; // Tool was executed, break to continue outer loop
                         }
@@ -1727,7 +1760,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                     }
                 }
             }
-            
+
             // Update context window with actual usage if available
             if let Some(usage) = accumulated_usage {
                 debug!("Updating context window with actual usage from stream");
@@ -1748,9 +1781,9 @@ The tool will execute immediately and you'll receive the result (success or erro
                     // Add the text to the response
                     current_response = filter_json_tool_calls(text_content).trim().to_string();
                 }
-                
+
                 let has_response = !current_response.is_empty() || !full_response.is_empty();
-                
+
                 if !has_response {
                     warn!(
                         "Loop exited without any response after {} iterations",
@@ -1762,14 +1795,19 @@ The tool will execute immediately and you'll receive the result (success or erro
                 }
 
                 let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
-                
+
                 // Add timing if needed
                 let final_response = if show_timing {
-                    format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+                    format!(
+                        "{}\n\n⏱️ {} | 💭 {}",
+                        full_response,
+                        Self::format_duration(total_execution_time),
+                        Self::format_duration(_ttft)
+                    )
                 } else {
                     full_response
                 };
-                
+
                 return Ok(TaskResult::new(final_response, self.context_window.clone()));
             }
 
@@ -1778,14 +1816,19 @@ The tool will execute immediately and you'll receive the result (success or erro
 
         // If we exit the loop due to max iterations
         let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
-        
+
         // Add timing if needed
         let final_response = if show_timing {
-            format!("{}\n\n⏱️ {} | 💭 {}", full_response, Self::format_duration(total_execution_time), Self::format_duration(_ttft))
+            format!(
+                "{}\n\n⏱️ {} | 💭 {}",
+                full_response,
+                Self::format_duration(total_execution_time),
+                Self::format_duration(_ttft)
+            )
         } else {
             full_response
         };
-        
+
         Ok(TaskResult::new(final_response, self.context_window.clone()))
     }
 
@@ -1846,37 +1889,55 @@ The tool will execute immediately and you'll receive the result (success or erro
                 if let Some(file_path) = tool_call.args.get("file_path") {
                     if let Some(path_str) = file_path.as_str() {
                         // Extract optional start and end positions
-                        let start_char = tool_call.args.get("start")
+                        let start_char = tool_call
+                            .args
+                            .get("start")
                             .and_then(|v| v.as_u64())
                             .map(|n| n as usize);
-                        let end_char = tool_call.args.get("end")
+                        let end_char = tool_call
+                            .args
+                            .get("end")
                             .and_then(|v| v.as_u64())
                             .map(|n| n as usize);
-                        
-                        debug!("Reading file: {}, start={:?}, end={:?}", path_str, start_char, end_char);
-                        
+
+                        debug!(
+                            "Reading file: {}, start={:?}, end={:?}",
+                            path_str, start_char, end_char
+                        );
+
                         match std::fs::read_to_string(path_str) {
                             Ok(content) => {
                                 // Validate and apply range if specified
                                 let start = start_char.unwrap_or(0);
                                 let end = end_char.unwrap_or(content.len());
-                                
+
                                 // Validation
                                 if start > content.len() {
-                                    return Ok(format!("❌ Start position {} exceeds file length {}", start, content.len()));
+                                    return Ok(format!(
+                                        "❌ Start position {} exceeds file length {}",
+                                        start,
+                                        content.len()
+                                    ));
                                 }
                                 if end > content.len() {
-                                    return Ok(format!("❌ End position {} exceeds file length {}", end, content.len()));
+                                    return Ok(format!(
+                                        "❌ End position {} exceeds file length {}",
+                                        end,
+                                        content.len()
+                                    ));
                                 }
                                 if start > end {
-                                    return Ok(format!("❌ Start position {} is greater than end position {}", start, end));
+                                    return Ok(format!(
+                                        "❌ Start position {} is greater than end position {}",
+                                        start, end
+                                    ));
                                 }
-                                
+
                                 // Extract the requested portion
                                 let partial_content = &content[start..end];
                                 let line_count = partial_content.lines().count();
                                 let total_lines = content.lines().count();
-                                
+
                                 // Format output with range info if partial
                                 if start_char.is_some() || end_char.is_some() {
                                     Ok(format!(
@@ -1884,7 +1945,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         start, end, line_count, total_lines, partial_content
                                     ))
                                 } else {
-                                    Ok(format!("📄 File content ({} lines):\n{}", line_count, content))
+                                    Ok(format!(
+                                        "📄 File content ({} lines):\n{}",
+                                        line_count, content
+                                    ))
                                 }
                             }
                             Err(e) => Ok(format!("❌ Failed to read file '{}': {}", path_str, e)),
@@ -2057,8 +2121,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                             let line_count = content.lines().count();
                             let char_count = content.len();
                             Ok(format!(
-                                "✅ Successfully wrote {} lines ({} characters) to '{}'",
-                                line_count, char_count, path
+                                "✅ Successfully wrote {} lines ({} characters)",
+                                line_count, char_count
                             ))
                         }
                         Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", path, e)),
@@ -2240,10 +2304,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                 // Write the result back to the file
                 match std::fs::write(file_path, &result) {
-                    Ok(()) => Ok(format!(
-                        "✅ Successfully applied unified diff to '{}'",
-                        file_path
-                    )),
+                    Ok(()) => Ok(format!("✅ Successfully applied unified diff")),
                     Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
                 }
             }

@@ -79,10 +79,10 @@ impl UiWriter for ConsoleUiWriter {
                     value.clone()
                 };
                 // Print with bold green formatting using ANSI escape codes
-                println!("\x1b[1;32m┌─ {} | {}\x1b[0m", tool_name, display_value);
+                println!("┌─\x1b[1;32m {} | {}\x1b[0m", tool_name, display_value);
             } else {
                 // Print with bold green formatting using ANSI escape codes
-                println!("\x1b[1;32m┌─ {}\x1b[0m", tool_name);
+                println!("┌─\x1b[1;32m {}\x1b[0m", tool_name);
             }
 
             // Print any additional arguments (optional - can be removed if not wanted)

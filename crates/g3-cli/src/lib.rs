@@ -244,6 +244,55 @@ fn read_project_readme(workspace_dir: &Path) -> Option<String> {
     None
 }
 
+/// Extract the main heading or title from README content
+fn extract_readme_heading(readme_content: &str) -> Option<String> {
+    // Process the content line by line, skipping the prefix line if present
+    let lines_iter = readme_content.lines();
+    let mut content_lines = Vec::new();
+    
+    for line in lines_iter {
+        // Skip the "📚 Project README (from ...):" line
+        if line.starts_with("📚 Project README") {
+            continue;
+        }
+        content_lines.push(line);
+    }
+    let content = content_lines.join("\n");
+    
+    // Look for the first markdown heading
+    for line in content.lines() {
+        let trimmed = line.trim();
+        
+        // Check for H1 heading (# Title)
+        if trimmed.starts_with("# ") {
+            let title = trimmed[2..].trim();
+            if !title.is_empty() {
+                // Return the full title (including any description after dash)
+                return Some(title.to_string());
+            }
+        }
+        
+        // Skip other markdown headings for now (##, ###, etc.)
+        // We're only looking for the main H1 heading
+    }
+    
+    // If no H1 heading found, look for the first non-empty, non-metadata line as a fallback
+    for line in content.lines().take(5) {
+        let trimmed = line.trim();
+        // Skip empty lines, other heading markers, and metadata
+        if !trimmed.is_empty() && !trimmed.starts_with("📚") && !trimmed.starts_with('#') 
+            && !trimmed.starts_with("==") && !trimmed.starts_with("--") {
+            // Limit length for display
+            return Some(if trimmed.len() > 100 {
+                format!("{}...", &trimmed[..97])
+            } else {
+                trimmed.to_string()
+            });
+        }
+    }
+    None
+}
+
 async fn run_interactive_retro(
     config: Config,
     show_prompt: bool,
@@ -278,7 +327,14 @@ async fn run_interactive_retro(
 
     // Display message if README was loaded
     if readme_content.is_some() {
-        tui.output("SYSTEM: PROJECT README LOADED INTO CONTEXT\n\n");
+        // Extract the first heading or title from the README
+        let readme_snippet = if let Some(ref content) = readme_content {
+            extract_readme_heading(content)
+                .unwrap_or_else(|| "PROJECT DOCUMENTATION LOADED".to_string())
+        } else {
+            "PROJECT DOCUMENTATION LOADED".to_string()
+        };
+        tui.output(&format!("SYSTEM: PROJECT README LOADED - {}\n\n", readme_snippet));
     }
     tui.output("SYSTEM: READY FOR INPUT\n\n");
     tui.output("\n\n");
@@ -511,7 +567,18 @@ async fn run_interactive<W: UiWriter>(
 
     // Display message if README was loaded
     if readme_content.is_some() {
-        output.print("📚 Project README loaded into context");
+        // Extract the first heading or title from the README
+        let readme_snippet = if let Some(ref content) = readme_content {
+            extract_readme_heading(content)
+                .unwrap_or_else(|| "Project documentation loaded".to_string())
+        } else {
+            "Project documentation loaded".to_string()
+        };
+        
+        output.print(&format!("📚 Project README loaded: {}", readme_snippet));
+        if readme_snippet.len() > 80 {
+            output.print("   (Full README available in context)");
+        }
         output.print("");
     }
 
