@@ -71,19 +71,15 @@ impl UiWriter for ConsoleUiWriter {
                 .find(|(k, _)| k == "command" || k == "file_path" || k == "path" || k == "diff")
                 .or_else(|| args.first());
 
-            if let Some((key, value)) = important_arg {
+            if let Some((_, value)) = important_arg {
                 // Truncate long values for display
                 let display_value = if value.len() > 80 {
                     format!("{}...", &value[..77])
                 } else {
                     value.clone()
                 };
-                // Print with bold green formatting using ANSI escape codes  
-                // Always show the key name to make it clear what the argument is
-                println!("┌─\x1b[1;32m {} | {}: {}\x1b[0m", 
-                    tool_name, 
-                    key,
-                    display_value);
+                // Print with bold green formatting using ANSI escape codes
+                println!("┌─\x1b[1;32m {} | {}\x1b[0m", tool_name, display_value);
             } else {
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {}\x1b[0m", tool_name);
