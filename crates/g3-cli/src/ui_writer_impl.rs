@@ -60,7 +60,7 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_output_header(&self) {
-        // Now print the tool header with the most important arg
+        // Now print the tool header with the most important arg in bold green
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let args = self.current_tool_args.lock().unwrap();
 
@@ -77,9 +77,11 @@ impl UiWriter for ConsoleUiWriter {
                 } else {
                     value.clone()
                 };
-                println!("┌─ {} | {}", tool_name, display_value);
+                // Print with bold green formatting using ANSI escape codes
+                println!("\x1b[1;32m┌─ {} | {}\x1b[0m", tool_name, display_value);
             } else {
-                println!("┌─ {}", tool_name);
+                // Print with bold green formatting using ANSI escape codes
+                println!("\x1b[1;32m┌─ {}\x1b[0m", tool_name);
             }
 
             // Print any additional arguments (optional - can be removed if not wanted)
