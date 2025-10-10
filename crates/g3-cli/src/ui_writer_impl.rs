@@ -60,6 +60,7 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_output_header(&self) {
+        println!();
         // Now print the tool header with the most important arg in bold green
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let args = self.current_tool_args.lock().unwrap();
@@ -94,7 +95,6 @@ impl UiWriter for ConsoleUiWriter {
                 }
             }
         }
-        //        println!("┌─────");
     }
 
     fn print_tool_output_line(&self, line: &str) {
