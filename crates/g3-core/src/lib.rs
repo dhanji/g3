@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub tool: String,
-    pub args: serde_json::Value,
+    pub args: serde_json::Value,  // Should be a JSON object with tool-specific arguments
 }
 
 #[derive(Debug, Clone)]
@@ -167,14 +167,47 @@ impl StreamingToolParser {
                                 let json_str = &json_text[..=i];
                                 debug!("Attempting to parse JSON tool call: {}", json_str);
 
+                                // First try to parse as a ToolCall
                                 if let Ok(tool_call) = serde_json::from_str::<ToolCall>(json_str) {
-                                    debug!("Successfully parsed JSON tool call: {:?}", tool_call);
+                                    // Validate that this is actually a proper tool call
+                                    // The args should be a JSON object with reasonable keys
+                                    if let Some(args_obj) = tool_call.args.as_object() {
+                                        // Check if any key looks like it contains agent message content
+                                        // This would indicate a malformed tool call where the message
+                                        // got mixed into the args
+                                        let has_message_like_key = args_obj.keys().any(|key| {
+                                            key.len() > 100 || 
+                                            key.contains('\n') ||
+                                            key.contains("I'll") ||
+                                            key.contains("Let me") ||
+                                            key.contains("Here's") ||
+                                            key.contains("I can") ||
+                                            key.contains("I need") ||
+                                            key.contains("First") ||
+                                            key.contains("Now") ||
+                                            key.contains("The ")
+                                        });
 
-                                    // Reset JSON parsing state
-                                    self.in_json_tool_call = false;
-                                    self.json_tool_start = None;
+                                        if has_message_like_key {
+                                            debug!("Detected malformed tool call with message-like keys, skipping");
+                                            // This looks like a malformed tool call, skip it
+                                            self.in_json_tool_call = false;
+                                            self.json_tool_start = None;
+                                            break;
+                                        }
 
-                                    return Some(tool_call);
+                                        // Also check if the values look reasonable
+                                        // Tool arguments should typically be file paths, commands, or content
+                                        // Not entire agent messages
+                                        
+                                        debug!("Successfully parsed valid JSON tool call: {:?}", tool_call);
+                                        // Reset JSON parsing state
+                                        self.in_json_tool_call = false;
+                                        self.json_tool_start = None;
+                                        return Some(tool_call);
+                                    }
+                                    // If args is not an object, skip this as invalid
+                                    debug!("Tool call args is not an object, skipping");
                                 } else {
                                     debug!("Failed to parse JSON tool call: {}", json_str);
                                     // Reset and continue looking

@@ -53,10 +53,21 @@ impl UiWriter for ConsoleUiWriter {
 
     fn print_tool_arg(&self, key: &str, value: &str) {
         // Collect arguments instead of printing immediately
-        self.current_tool_args
+        // Filter out any keys that look like they might be agent message content
+        // (e.g., keys that are suspiciously long or contain message-like content)
+        let is_valid_arg_key = key.len() < 50 && 
+            !key.contains('\n') && 
+            !key.contains("I'll") && 
+            !key.contains("Let me") &&
+            !key.contains("Here's") &&
+            !key.contains("I can");
+        
+        if is_valid_arg_key {
+            self.current_tool_args
             .lock()
             .unwrap()
             .push((key.to_string(), value.to_string()));
+        }
     }
 
     fn print_tool_output_header(&self) {
@@ -200,11 +211,22 @@ impl UiWriter for RetroTuiWriter {
     }
 
     fn print_tool_arg(&self, key: &str, value: &str) {
-        self.current_tool_output
-            .lock()
-            .unwrap()
-            .push(format!("{}: {}", key, value));
-
+        // Filter out any keys that look like they might be agent message content
+        // (e.g., keys that are suspiciously long or contain message-like content)
+        let is_valid_arg_key = key.len() < 50 && 
+            !key.contains('\n') && 
+            !key.contains("I'll") && 
+            !key.contains("Let me") &&
+            !key.contains("Here's") &&
+            !key.contains("I can");
+        
+        if is_valid_arg_key {
+            self.current_tool_output
+                .lock()
+                .unwrap()
+                .push(format!("{}: {}", key, value));
+        }
+        
         // Build caption from first argument (usually the most important one)
         let mut caption = self.current_tool_caption.lock().unwrap();
         if caption.is_empty() && (key == "file_path" || key == "command" || key == "path") {
