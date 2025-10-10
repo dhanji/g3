@@ -271,15 +271,14 @@ impl ContextWindow {
 
     /// Update token usage from provider response
     pub fn update_usage_from_response(&mut self, usage: &g3_providers::Usage) {
-        // Update with actual token usage from the provider
-        // This replaces our estimate with the actual count
-        let old_used = self.used_tokens;
-        self.used_tokens = usage.total_tokens;
-        self.cumulative_tokens = self.cumulative_tokens - old_used + usage.total_tokens;
+        // Add the tokens from this response to our running total
+        // The usage.total_tokens represents tokens used in this single API call
+        self.used_tokens += usage.total_tokens;
+        self.cumulative_tokens += usage.total_tokens;
 
         debug!(
-            "Updated token usage from provider: {} -> {} (cumulative: {})",
-            old_used, self.used_tokens, self.cumulative_tokens
+            "Added {} tokens from provider response (used: {}/{}, cumulative: {})",
+            usage.total_tokens, self.used_tokens, self.total_tokens, self.cumulative_tokens
         );
     }
 

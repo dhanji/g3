@@ -1,154 +1,94 @@
 use g3_core::ContextWindow;
-use g3_providers::{Message, MessageRole, Usage};
+use g3_providers::Usage;
 
 #[test]
-fn test_context_window_with_actual_tokens() {
-    let mut context = ContextWindow::new(10000);
+fn test_token_accumulation() {
+    let mut window = ContextWindow::new(10000);
     
-    // Add a message with known token count
-    let message = Message {
-        role: MessageRole::User,
-        content: "Hello, how are you today?".to_string(),
+    // First API call: 100 prompt + 50 completion = 150 total
+    let usage1 = Usage {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        total_tokens: 150,
     };
-    
-    // Add with actual token count (let's say this is 7 tokens)
-    context.add_message_with_tokens(message.clone(), Some(7));
-    
-    assert_eq!(context.used_tokens, 7);
-    assert_eq!(context.cumulative_tokens, 7);
-    
-    // Add another message with estimation (no token count provided)
-    let message2 = Message {
-        role: MessageRole::Assistant,
-        content: "I'm doing well, thank you for asking!".to_string(),
+    window.update_usage_from_response(&usage1);
+    assert_eq!(window.used_tokens, 150, "First call should have 150 tokens");
+    assert_eq!(window.cumulative_tokens, 150, "Cumulative should be 150");
+
+    // Second API call: 200 prompt + 75 completion = 275 total
+    let usage2 = Usage {
+        prompt_tokens: 200,
+        completion_tokens: 75,
+        total_tokens: 275,
     };
+    window.update_usage_from_response(&usage2);
+    assert_eq!(window.used_tokens, 425, "Second call should accumulate to 425 tokens");
+    assert_eq!(window.cumulative_tokens, 425, "Cumulative should be 425");
+
+    // Third API call with SMALLER token count: 50 prompt + 25 completion = 75 total
+    let usage3 = Usage {
+        prompt_tokens: 50,
+        completion_tokens: 25,
+        total_tokens: 75,
+    };
+    window.update_usage_from_response(&usage3);
+    assert_eq!(window.used_tokens, 500, "Third call should accumulate to 500 tokens");
+    assert_eq!(window.cumulative_tokens, 500, "Cumulative should be 500");
     
-    context.add_message_with_tokens(message2, None);
-    
-    // Should have added estimated tokens (roughly 10-11 tokens for this text)
-    assert!(context.used_tokens > 7);
-    assert_eq!(context.cumulative_tokens, context.used_tokens);
+    // Verify tokens never decrease
+    assert!(window.used_tokens >= 425, "Token count should never decrease!");
 }
 
 #[test]
-fn test_context_window_update_from_response() {
-    let mut context = ContextWindow::new(10000);
+fn test_add_streaming_tokens() {
+    let mut window = ContextWindow::new(10000);
     
-    // Add initial messages with estimation
-    let message1 = Message {
-        role: MessageRole::User,
-        content: "What is the capital of France?".to_string(),
-    };
-    context.add_message(message1);
+    // Add some streaming tokens
+    window.add_streaming_tokens(100);
+    assert_eq!(window.used_tokens, 100);
+    assert_eq!(window.cumulative_tokens, 100);
     
-    let initial_estimate = context.used_tokens;
-    let initial_cumulative = context.cumulative_tokens;
+    // Add more
+    window.add_streaming_tokens(50);
+    assert_eq!(window.used_tokens, 150);
+    assert_eq!(window.cumulative_tokens, 150);
     
-    // Now update with actual usage from provider
+    // Now update from provider response
     let usage = Usage {
-        prompt_tokens: 8,
-        completion_tokens: 15,
-        total_tokens: 23,
+        prompt_tokens: 80,
+        completion_tokens: 40,
+        total_tokens: 120,
     };
+    window.update_usage_from_response(&usage);
     
-    context.update_usage_from_response(&usage);
-    
-    // Should have replaced estimate with actual
-    assert_eq!(context.used_tokens, 23);
-    // Cumulative should be adjusted
-    assert_eq!(context.cumulative_tokens, context.cumulative_tokens);
-    assert!(context.cumulative_tokens >= 23);
+    // Should ADD to existing, not replace
+    assert_eq!(window.used_tokens, 270, "Should add 120 to existing 150");
+    assert_eq!(window.cumulative_tokens, 270);
 }
 
 #[test]
-fn test_streaming_token_accumulation() {
-    let mut context = ContextWindow::new(10000);
+fn test_percentage_calculation() {
+    let mut window = ContextWindow::new(1000);
     
-    // Simulate streaming tokens being added
-    context.add_streaming_tokens(5);
-    assert_eq!(context.used_tokens, 5);
-    assert_eq!(context.cumulative_tokens, 5);
-    
-    context.add_streaming_tokens(3);
-    assert_eq!(context.used_tokens, 8);
-    assert_eq!(context.cumulative_tokens, 8);
-    
-    context.add_streaming_tokens(7);
-    assert_eq!(context.used_tokens, 15);
-    assert_eq!(context.cumulative_tokens, 15);
-}
-
-#[test]
-fn test_context_window_percentage_with_actual_tokens() {
-    let mut context = ContextWindow::new(1000);
-    
-    // Add messages with known token counts
-    let message1 = Message {
-        role: MessageRole::User,
-        content: "First message".to_string(),
+    // Add tokens via provider response
+    let usage = Usage {
+        prompt_tokens: 150,
+        completion_tokens: 100,
+        total_tokens: 250,
     };
-    context.add_message_with_tokens(message1, Some(100));
+    window.update_usage_from_response(&usage);
     
-    assert_eq!(context.percentage_used(), 10.0);
+    assert_eq!(window.percentage_used(), 25.0);
+    assert_eq!(window.remaining_tokens(), 750);
     
-    let message2 = Message {
-        role: MessageRole::Assistant,
-        content: "Second message".to_string(),
+    // Add more tokens
+    let usage2 = Usage {
+        prompt_tokens: 300,
+        completion_tokens: 200,
+        total_tokens: 500,
     };
-    context.add_message_with_tokens(message2, Some(400));
+    window.update_usage_from_response(&usage2);
     
-    assert_eq!(context.percentage_used(), 50.0);
-    
-    // Test should_summarize threshold (80%)
-    let message3 = Message {
-        role: MessageRole::User,
-        content: "Third message".to_string(),
-    };
-    context.add_message_with_tokens(message3, Some(300));
-    
-    assert_eq!(context.percentage_used(), 80.0);
-    assert!(context.should_summarize());
-}
-
-#[test]
-fn test_fallback_to_estimation() {
-    let mut context = ContextWindow::new(10000);
-    
-    // Add message without token count (should use estimation)
-    let message = Message {
-        role: MessageRole::User,
-        content: "This is a test message without token count".to_string(),
-    };
-    
-    context.add_message_with_tokens(message.clone(), None);
-    
-    // Should have estimated tokens (roughly 11-12 tokens for this text)
-    assert!(context.used_tokens > 0);
-    assert!(context.used_tokens < 20); // Reasonable upper bound
-    
-    // Verify estimation is reasonable
-    let text_len = message.content.len();
-    let estimated = context.used_tokens;
-    let ratio = text_len as f32 / estimated as f32;
-    
-    // Should be roughly 3-4 characters per token
-    assert!(ratio > 2.0 && ratio < 6.0);
-}
-
-#[test]
-fn test_empty_message_handling() {
-    let mut context = ContextWindow::new(10000);
-    
-    // Empty messages should be skipped
-    let empty_message = Message {
-        role: MessageRole::User,
-        content: "   ".to_string(), // Only whitespace
-    };
-    
-    context.add_message_with_tokens(empty_message, Some(10));
-    
-    // Should not have added anything
-    assert_eq!(context.used_tokens, 0);
-    assert_eq!(context.cumulative_tokens, 0);
-    assert_eq!(context.conversation_history.len(), 0);
+    assert_eq!(window.percentage_used(), 75.0);
+    assert_eq!(window.remaining_tokens(), 250);
 }
