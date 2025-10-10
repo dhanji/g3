@@ -98,12 +98,12 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_output_line(&self, line: &str) {
-        println!("│ {}", line);
+        println!("│ \x1b[2m{}\x1b[0m", line);
     }
 
     fn print_tool_output_summary(&self, hidden_count: usize) {
         println!(
-            "│ ... ({} more line{})",
+            "│ \x1b[2m... ({} more line{})\x1b[0m",
             hidden_count,
             if hidden_count == 1 { "" } else { "s" }
         );
