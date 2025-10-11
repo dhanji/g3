@@ -876,26 +876,38 @@ async fn run_autonomous(
             "   {}/requirements.md",
             project.workspace().display()
         ));
-        
+
         // Generate final report even for early exit
         let elapsed = start_time.elapsed();
         let context_window = agent.get_context_window();
-        
+
         output.print(&format!("\n{}", "=".repeat(60)));
         output.print("📊 AUTONOMOUS MODE SESSION REPORT");
         output.print(&"=".repeat(60));
-        
-        output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+
+        output.print(&format!(
+            "⏱️  Total Duration: {:.2}s",
+            elapsed.as_secs_f64()
+        ));
         output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
         output.print(&format!("📝 Final Status: ⚠️ NO REQUIREMENTS FILE"));
-        
+
         output.print("\n📈 Token Usage Statistics:");
         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
-        output.print(&format!("   • Total Available: {}", context_window.total_tokens));
-        output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
-        output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+        output.print(&format!(
+            "   • Total Available: {}",
+            context_window.total_tokens
+        ));
+        output.print(&format!(
+            "   • Cumulative Tokens: {}",
+            context_window.cumulative_tokens
+        ));
+        output.print(&format!(
+            "   • Usage Percentage: {:.1}%",
+            context_window.percentage_used()
+        ));
         output.print(&"=".repeat(60));
-        
+
         return Ok(());
     }
 
@@ -904,26 +916,38 @@ async fn run_autonomous(
         Some(content) => content,
         None => {
             output.print("❌ Error: Could not read requirements.md");
-            
+
             // Generate final report even for early exit
             let elapsed = start_time.elapsed();
             let context_window = agent.get_context_window();
-            
+
             output.print(&format!("\n{}", "=".repeat(60)));
             output.print("📊 AUTONOMOUS MODE SESSION REPORT");
             output.print(&"=".repeat(60));
-            
-            output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+
+            output.print(&format!(
+                "⏱️  Total Duration: {:.2}s",
+                elapsed.as_secs_f64()
+            ));
             output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
             output.print(&format!("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS"));
-            
+
             output.print("\n📈 Token Usage Statistics:");
             output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
-            output.print(&format!("   • Total Available: {}", context_window.total_tokens));
-            output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
-            output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+            output.print(&format!(
+                "   • Total Available: {}",
+                context_window.total_tokens
+            ));
+            output.print(&format!(
+                "   • Cumulative Tokens: {}",
+                context_window.cumulative_tokens
+            ));
+            output.print(&format!(
+                "   • Usage Percentage: {:.1}%",
+                context_window.percentage_used()
+            ));
             output.print(&"=".repeat(60));
-            
+
             return Ok(());
         }
     };
@@ -972,10 +996,17 @@ async fn run_autonomous(
             let mut player_retry_count = 0;
             const MAX_PLAYER_RETRIES: u32 = 3;
             let mut player_failed = false;
-            
+
             loop {
                 match agent
-                    .execute_task_with_timing(&player_prompt, None, false, show_prompt, show_code, true)
+                    .execute_task_with_timing(
+                        &player_prompt,
+                        None,
+                        false,
+                        show_prompt,
+                        show_code,
+                        true,
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -988,34 +1019,54 @@ async fn run_autonomous(
                         // Check if this is a panic (unrecoverable)
                         if e.to_string().contains("panic") {
                             output.print(&format!("💥 Player panic detected: {}", e));
-                            
+
                             // Generate final report even for panic
                             let elapsed = start_time.elapsed();
                             let context_window = agent.get_context_window();
-                            
+
                             output.print(&format!("\n{}", "=".repeat(60)));
                             output.print("📊 AUTONOMOUS MODE SESSION REPORT");
                             output.print(&"=".repeat(60));
-                            
-                            output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+
+                            output.print(&format!(
+                                "⏱️  Total Duration: {:.2}s",
+                                elapsed.as_secs_f64()
+                            ));
                             output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
                             output.print(&format!("📝 Final Status: 💥 PLAYER PANIC"));
-                            
+
                             output.print("\n📈 Token Usage Statistics:");
-                            output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
-                            output.print(&format!("   • Total Available: {}", context_window.total_tokens));
-                            output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
-                            output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+                            output.print(&format!(
+                                "   • Used Tokens: {}",
+                                context_window.used_tokens
+                            ));
+                            output.print(&format!(
+                                "   • Total Available: {}",
+                                context_window.total_tokens
+                            ));
+                            output.print(&format!(
+                                "   • Cumulative Tokens: {}",
+                                context_window.cumulative_tokens
+                            ));
+                            output.print(&format!(
+                                "   • Usage Percentage: {:.1}%",
+                                context_window.percentage_used()
+                            ));
                             output.print(&"=".repeat(60));
-                            
+
                             return Err(e);
                         }
-                        
+
                         player_retry_count += 1;
-                        output.print(&format!("⚠️ Player error (attempt {}/{}): {}", player_retry_count, MAX_PLAYER_RETRIES, e));
-                        
+                        output.print(&format!(
+                            "⚠️ Player error (attempt {}/{}): {}",
+                            player_retry_count, MAX_PLAYER_RETRIES, e
+                        ));
+
                         if player_retry_count >= MAX_PLAYER_RETRIES {
-                            output.print("🔄 Max retries reached for player, marking turn as failed...");
+                            output.print(
+                                "🔄 Max retries reached for player, marking turn as failed...",
+                            );
                             player_failed = true;
                             break; // Exit retry loop
                         }
@@ -1023,19 +1074,22 @@ async fn run_autonomous(
                     }
                 }
             }
-            
+
             // If player failed after max retries, increment turn and continue
             if player_failed {
-                output.print(&format!("⚠️ Player turn {} failed after max retries. Moving to next turn.", turn));
+                output.print(&format!(
+                    "⚠️ Player turn {} failed after max retries. Moving to next turn.",
+                    turn
+                ));
                 turn += 1;
-                
+
                 // Check if we've reached max turns
                 if turn > max_turns {
                     output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
                     output.print(&format!("⏰ Maximum turns ({}) reached", max_turns));
                     break;
                 }
-                
+
                 // Continue to next iteration with empty feedback (restart from scratch)
                 coach_feedback = String::new();
                 continue;
@@ -1089,13 +1143,13 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         );
 
         output.print("🎓 Starting coach review...");
-        
+
         // Execute coach task with retry on error
         let mut coach_retry_count = 0;
         const MAX_COACH_RETRIES: u32 = 3;
         let mut coach_failed = false;
         let coach_result_opt;
-        
+
         loop {
             match coach_agent
                 .execute_task_with_timing(&coach_prompt, None, false, show_prompt, show_code, true)
@@ -1109,32 +1163,47 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
                     // Check if this is a panic (unrecoverable)
                     if e.to_string().contains("panic") {
                         output.print(&format!("💥 Coach panic detected: {}", e));
-                        
+
                         // Generate final report even for panic
                         let elapsed = start_time.elapsed();
                         let context_window = agent.get_context_window();
-                        
+
                         output.print(&format!("\n{}", "=".repeat(60)));
                         output.print("📊 AUTONOMOUS MODE SESSION REPORT");
                         output.print(&"=".repeat(60));
-                        
-                        output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+
+                        output.print(&format!(
+                            "⏱️  Total Duration: {:.2}s",
+                            elapsed.as_secs_f64()
+                        ));
                         output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
                         output.print(&format!("📝 Final Status: 💥 COACH PANIC"));
-                        
+
                         output.print("\n📈 Token Usage Statistics:");
                         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
-                        output.print(&format!("   • Total Available: {}", context_window.total_tokens));
-                        output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
-                        output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+                        output.print(&format!(
+                            "   • Total Available: {}",
+                            context_window.total_tokens
+                        ));
+                        output.print(&format!(
+                            "   • Cumulative Tokens: {}",
+                            context_window.cumulative_tokens
+                        ));
+                        output.print(&format!(
+                            "   • Usage Percentage: {:.1}%",
+                            context_window.percentage_used()
+                        ));
                         output.print(&"=".repeat(60));
-                        
+
                         return Err(e);
                     }
-                    
+
                     coach_retry_count += 1;
-                    output.print(&format!("⚠️ Coach error (attempt {}/{}): {}", coach_retry_count, MAX_COACH_RETRIES, e));
-                    
+                    output.print(&format!(
+                        "⚠️ Coach error (attempt {}/{}): {}",
+                        coach_retry_count, MAX_COACH_RETRIES, e
+                    ));
+
                     if coach_retry_count >= MAX_COACH_RETRIES {
                         output.print("🔄 Max retries reached for coach, using default feedback...");
                         // Provide default feedback and break out of retry loop
@@ -1146,15 +1215,18 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
                 }
             }
         }
-        
+
         output.print("🎓 Coach review completed");
 
         // If coach failed after max retries, increment turn and continue with default feedback
         if coach_failed {
-            output.print(&format!("⚠️ Coach turn {} failed after max retries. Using default feedback.", turn));
+            output.print(&format!(
+                "⚠️ Coach turn {} failed after max retries. Using default feedback.",
+                turn
+            ));
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
             turn += 1;
-            
+
             if turn > max_turns {
                 output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
                 output.print(&format!("⏰ Maximum turns ({}) reached", max_turns));
@@ -1211,34 +1283,47 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
     // Generate final report
     let elapsed = start_time.elapsed();
     let context_window = agent.get_context_window();
-    
+
     output.print(&format!("\n{}", "=".repeat(60)));
     output.print("📊 AUTONOMOUS MODE SESSION REPORT");
     output.print(&"=".repeat(60));
-    
-    output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+
+    output.print(&format!(
+        "⏱️  Total Duration: {:.2}s",
+        elapsed.as_secs_f64()
+    ));
     output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
-    output.print(&format!("📝 Final Status: {}", 
-        if implementation_approved { 
-            "✅ APPROVED" 
-        } else if turn >= max_turns { 
-            "⏰ MAX TURNS REACHED" 
-        } else { 
-            "⚠️ INCOMPLETE" 
+    output.print(&format!(
+        "📝 Final Status: {}",
+        if implementation_approved {
+            "✅ APPROVED"
+        } else if turn >= max_turns {
+            "⏰ MAX TURNS REACHED"
+        } else {
+            "⚠️ INCOMPLETE"
         }
     ));
-    
+
     output.print("\n📈 Token Usage Statistics:");
     output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
-    output.print(&format!("   • Total Available: {}", context_window.total_tokens));
-    output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
-    output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+    output.print(&format!(
+        "   • Total Available: {}",
+        context_window.total_tokens
+    ));
+    output.print(&format!(
+        "   • Cumulative Tokens: {}",
+        context_window.cumulative_tokens
+    ));
+    output.print(&format!(
+        "   • Usage Percentage: {:.1}%",
+        context_window.percentage_used()
+    ));
     output.print(&"=".repeat(60));
-    
+
     if implementation_approved {
         output.print("\n🎉 Autonomous mode completed successfully");
     } else {
-        output.print("\n🔄 Autonomous mode completed (max iterations)");
+        output.print("\n🔄 Autonomous mode terminated (max iterations)");
     }
 
     Ok(())
