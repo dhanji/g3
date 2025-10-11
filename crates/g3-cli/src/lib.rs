@@ -859,6 +859,7 @@ async fn run_autonomous(
     show_code: bool,
     max_turns: usize,
 ) -> Result<()> {
+    let start_time = std::time::Instant::now();
     let output = SimpleOutput::new();
 
     output.print("🤖 G3 AI Coding Agent - Autonomous Mode");
@@ -875,6 +876,26 @@ async fn run_autonomous(
             "   {}/requirements.md",
             project.workspace().display()
         ));
+        
+        // Generate final report even for early exit
+        let elapsed = start_time.elapsed();
+        let context_window = agent.get_context_window();
+        
+        output.print(&format!("\n{}", "=".repeat(60)));
+        output.print("📊 AUTONOMOUS MODE SESSION REPORT");
+        output.print(&"=".repeat(60));
+        
+        output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+        output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
+        output.print(&format!("📝 Final Status: ⚠️ NO REQUIREMENTS FILE"));
+        
+        output.print("\n📈 Token Usage Statistics:");
+        output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
+        output.print(&format!("   • Total Available: {}", context_window.total_tokens));
+        output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
+        output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+        output.print(&"=".repeat(60));
+        
         return Ok(());
     }
 
@@ -883,6 +904,26 @@ async fn run_autonomous(
         Some(content) => content,
         None => {
             output.print("❌ Error: Could not read requirements.md");
+            
+            // Generate final report even for early exit
+            let elapsed = start_time.elapsed();
+            let context_window = agent.get_context_window();
+            
+            output.print(&format!("\n{}", "=".repeat(60)));
+            output.print("📊 AUTONOMOUS MODE SESSION REPORT");
+            output.print(&"=".repeat(60));
+            
+            output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+            output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
+            output.print(&format!("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS"));
+            
+            output.print("\n📈 Token Usage Statistics:");
+            output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
+            output.print(&format!("   • Total Available: {}", context_window.total_tokens));
+            output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
+            output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+            output.print(&"=".repeat(60));
+            
             return Ok(());
         }
     };
@@ -947,6 +988,26 @@ async fn run_autonomous(
                         // Check if this is a panic (unrecoverable)
                         if e.to_string().contains("panic") {
                             output.print(&format!("💥 Player panic detected: {}", e));
+                            
+                            // Generate final report even for panic
+                            let elapsed = start_time.elapsed();
+                            let context_window = agent.get_context_window();
+                            
+                            output.print(&format!("\n{}", "=".repeat(60)));
+                            output.print("📊 AUTONOMOUS MODE SESSION REPORT");
+                            output.print(&"=".repeat(60));
+                            
+                            output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+                            output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
+                            output.print(&format!("📝 Final Status: 💥 PLAYER PANIC"));
+                            
+                            output.print("\n📈 Token Usage Statistics:");
+                            output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
+                            output.print(&format!("   • Total Available: {}", context_window.total_tokens));
+                            output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
+                            output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+                            output.print(&"=".repeat(60));
+                            
                             return Err(e);
                         }
                         
@@ -1048,6 +1109,26 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
                     // Check if this is a panic (unrecoverable)
                     if e.to_string().contains("panic") {
                         output.print(&format!("💥 Coach panic detected: {}", e));
+                        
+                        // Generate final report even for panic
+                        let elapsed = start_time.elapsed();
+                        let context_window = agent.get_context_window();
+                        
+                        output.print(&format!("\n{}", "=".repeat(60)));
+                        output.print("📊 AUTONOMOUS MODE SESSION REPORT");
+                        output.print(&"=".repeat(60));
+                        
+                        output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+                        output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
+                        output.print(&format!("📝 Final Status: 💥 COACH PANIC"));
+                        
+                        output.print("\n📈 Token Usage Statistics:");
+                        output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
+                        output.print(&format!("   • Total Available: {}", context_window.total_tokens));
+                        output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
+                        output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+                        output.print(&"=".repeat(60));
+                        
                         return Err(e);
                     }
                     
@@ -1127,6 +1208,33 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         output.print("🔄 Coach provided feedback for next iteration");
     }
 
+    // Generate final report
+    let elapsed = start_time.elapsed();
+    let context_window = agent.get_context_window();
+    
+    output.print(&format!("\n{}", "=".repeat(60)));
+    output.print("📊 AUTONOMOUS MODE SESSION REPORT");
+    output.print(&"=".repeat(60));
+    
+    output.print(&format!("⏱️  Total Duration: {:.2}s", elapsed.as_secs_f64()));
+    output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
+    output.print(&format!("📝 Final Status: {}", 
+        if implementation_approved { 
+            "✅ APPROVED" 
+        } else if turn >= max_turns { 
+            "⏰ MAX TURNS REACHED" 
+        } else { 
+            "⚠️ INCOMPLETE" 
+        }
+    ));
+    
+    output.print("\n📈 Token Usage Statistics:");
+    output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
+    output.print(&format!("   • Total Available: {}", context_window.total_tokens));
+    output.print(&format!("   • Cumulative Tokens: {}", context_window.cumulative_tokens));
+    output.print(&format!("   • Usage Percentage: {:.1}%", context_window.percentage_used()));
+    output.print(&"=".repeat(60));
+    
     if implementation_approved {
         output.print("\n🎉 Autonomous mode completed successfully");
     } else {

@@ -1399,6 +1399,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                         for tool_call in completed_tools {
                             debug!("Processing completed tool call: {:?}", tool_call);
 
+                            // Track what we've already displayed before getting new text
+                            // This prevents re-displaying old content after tool execution
+                            let already_displayed_chars = current_response.chars().count();
+
                             // Get the text content accumulated so far
                             let text_content = parser.get_text_content();
 
@@ -1413,15 +1417,19 @@ The tool will execute immediately and you'll receive the result (success or erro
                             let filtered_content = filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
 
-                            // Display any new content before tool execution
+                            // Display any new content before tool execution  
+                            // We need to skip what was already shown (tracked in current_response)
+                            // but also account for the fact that parser.text_buffer accumulates
+                            // across iterations and is never cleared until reset()
                             let new_content =
                                 if current_response.len() <= final_display_content.len() {
-                                    let chars_already_shown = current_response.chars().count();
+                                    // Only show content that hasn't been displayed yet
                                     final_display_content
                                         .chars()
-                                        .skip(chars_already_shown)
+                                        .skip(already_displayed_chars)
                                         .collect::<String>()
                                 } else {
+                                    // Nothing new to display
                                     String::new()
                                 };
 
@@ -1432,6 +1440,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 }
                                 self.ui_writer.print_agent_response(&new_content);
                                 self.ui_writer.flush();
+                                // Update current_response to track what we've displayed
+                                current_response.push_str(&new_content);
                             }
 
                             // Execute the tool with formatted output
@@ -1592,6 +1602,11 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                             // Reset parser for next iteration
                             parser.reset();
+                            // Clear current_response for next iteration to prevent buffered text
+                            // from being incorrectly displayed after tool execution
+                            current_response.clear();
+                            // Reset response_started flag for next iteration
+                            response_started = false;
                             break; // Break out of current stream to start a new one
                         }
 
@@ -1971,8 +1986,22 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     ));
                                 }
 
-                                // Extract the requested portion
-                                let partial_content = &content[start..end];
+                                // Extract the requested portion, ensuring we're at char boundaries
+                                // Find the nearest valid char boundaries
+                                let start_boundary = if start == 0 {
+                                    0
+                                } else {
+                                    content.char_indices()
+                                        .find(|(i, _)| *i >= start)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(start)
+                                };
+                                let end_boundary = content.char_indices()
+                                    .find(|(i, _)| *i >= end)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(content.len());
+                                
+                                let partial_content = &content[start_boundary..end_boundary];
                                 let line_count = partial_content.lines().count();
                                 let total_lines = content.lines().count();
 
@@ -1980,7 +2009,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 if start_char.is_some() || end_char.is_some() {
                                     Ok(format!(
                                         "📄 File content (chars {}-{}, {} lines of {} total):\n{}",
-                                        start, end, line_count, total_lines, partial_content
+                                        start_boundary, end_boundary, line_count, total_lines, partial_content
                                     ))
                                 } else {
                                     Ok(format!(
@@ -2587,8 +2616,22 @@ pub fn apply_unified_diff_to_string(
         );
     }
 
-    // Extract the region we're going to modify (whole file if no bounds provided)
-    let mut region_content = content_norm[search_start..search_end].to_string();
+    // Extract the region we're going to modify, ensuring we're at char boundaries
+    // Find the nearest valid char boundaries
+    let start_boundary = if search_start == 0 {
+        0
+    } else {
+        content_norm.char_indices()
+            .find(|(i, _)| *i >= search_start)
+            .map(|(i, _)| i)
+            .unwrap_or(search_start)
+    };
+    let end_boundary = content_norm.char_indices()
+        .find(|(i, _)| *i >= search_end)
+        .map(|(i, _)| i)
+        .unwrap_or(content_norm.len());
+    
+    let mut region_content = content_norm[start_boundary..end_boundary].to_string();
 
     // Apply hunks in order
     for (idx, (old_block, new_block)) in hunks.iter().enumerate() {
@@ -2611,7 +2654,7 @@ pub fn apply_unified_diff_to_string(
             }
 
             let range_note = if start_char.is_some() || end_char.is_some() {
-                format!(" (within character range {}:{})", search_start, search_end)
+                format!(" (within character range {}:{})", start_boundary, end_boundary)
             } else {
                 String::new()
             };
@@ -2627,9 +2670,9 @@ pub fn apply_unified_diff_to_string(
 
     // Reconstruct the full content with the modified region
     let mut result = String::with_capacity(content_norm.len() + region_content.len());
-    result.push_str(&content_norm[..search_start]);
+    result.push_str(&content_norm[..start_boundary]);
     result.push_str(&region_content);
-    result.push_str(&content_norm[search_end..]);
+    result.push_str(&content_norm[end_boundary..]);
     Ok(result)
 }
 
