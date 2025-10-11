@@ -76,34 +76,29 @@ impl UiWriter for ConsoleUiWriter {
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let args = self.current_tool_args.lock().unwrap();
 
-            // Find the most important argument
+            // Find the most important argument - prioritize file_path if available
             let important_arg = args
                 .iter()
-                .find(|(k, _)| k == "command" || k == "file_path" || k == "path" || k == "diff")
+                .find(|(k, _)| k == "file_path")
+                .or_else(|| args.iter().find(|(k, _)| k == "command" || k == "path"))
                 .or_else(|| args.first());
 
             if let Some((_, value)) = important_arg {
+                // For multi-line values, only show the first line
+                let first_line = value.lines().next().unwrap_or("");
+                
                 // Truncate long values for display
-                let display_value = if value.len() > 80 {
-                    format!("{}...", &value[..77])
+                let display_value = if first_line.len() > 80 {
+                    format!("{}...", &first_line[..77])
                 } else {
-                    value.clone()
+                    first_line.to_string()
                 };
+                
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {} | {}\x1b[0m", tool_name, display_value);
             } else {
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {}\x1b[0m", tool_name);
-            }
-
-            // Print any additional arguments (optional - can be removed if not wanted)
-            for (key, value) in args.iter() {
-                if Some(key.as_str()) != important_arg.map(|(k, _)| k.as_str()) {
-                    // Only show additional args if they're short or important
-                    if value.len() < 50 {
-                        println!("  {}: {}", key, value);
-                    }
-                }
             }
         }
     }
