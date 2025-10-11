@@ -927,20 +927,57 @@ async fn run_autonomous(
 
             output.print("🎯 Starting player implementation...");
 
-            // Execute player task and handle the result properly
-            match agent
-                .execute_task_with_timing(&player_prompt, None, false, show_prompt, show_code, true)
-                .await
-            {
-                Ok(result) => {
-                    // Display player's implementation result
-                    output.print("📝 Player implementation completed:");
-                    output.print_markdown(&result.response);
+            // Execute player task with retry on error
+            let mut player_retry_count = 0;
+            const MAX_PLAYER_RETRIES: u32 = 3;
+            let mut player_failed = false;
+            
+            loop {
+                match agent
+                    .execute_task_with_timing(&player_prompt, None, false, show_prompt, show_code, true)
+                    .await
+                {
+                    Ok(result) => {
+                        // Display player's implementation result
+                        output.print("📝 Player implementation completed:");
+                        output.print_markdown(&result.response);
+                        break;
+                    }
+                    Err(e) => {
+                        // Check if this is a panic (unrecoverable)
+                        if e.to_string().contains("panic") {
+                            output.print(&format!("💥 Player panic detected: {}", e));
+                            return Err(e);
+                        }
+                        
+                        player_retry_count += 1;
+                        output.print(&format!("⚠️ Player error (attempt {}/{}): {}", player_retry_count, MAX_PLAYER_RETRIES, e));
+                        
+                        if player_retry_count >= MAX_PLAYER_RETRIES {
+                            output.print("🔄 Max retries reached for player, marking turn as failed...");
+                            player_failed = true;
+                            break; // Exit retry loop
+                        }
+                        output.print("🔄 Retrying player implementation...");
+                    }
                 }
-                Err(e) => {
-                    output.print(&format!("❌ Player implementation failed: {}", e));
-                    // Continue to coach review even if player had an error
+            }
+            
+            // If player failed after max retries, increment turn and continue
+            if player_failed {
+                output.print(&format!("⚠️ Player turn {} failed after max retries. Moving to next turn.", turn));
+                turn += 1;
+                
+                // Check if we've reached max turns
+                if turn > max_turns {
+                    output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
+                    output.print(&format!("⏰ Maximum turns ({}) reached", max_turns));
+                    break;
                 }
+                
+                // Continue to next iteration with empty feedback (restart from scratch)
+                coach_feedback = String::new();
+                continue;
             }
 
             // Give some time for file operations to complete
@@ -991,11 +1028,62 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         );
 
         output.print("🎓 Starting coach review...");
-        let coach_result = coach_agent
-            .execute_task_with_timing(&coach_prompt, None, false, show_prompt, show_code, true)
-            .await?;
-
+        
+        // Execute coach task with retry on error
+        let mut coach_retry_count = 0;
+        const MAX_COACH_RETRIES: u32 = 3;
+        let mut coach_failed = false;
+        let coach_result_opt;
+        
+        loop {
+            match coach_agent
+                .execute_task_with_timing(&coach_prompt, None, false, show_prompt, show_code, true)
+                .await
+            {
+                Ok(result) => {
+                    coach_result_opt = Some(result);
+                    break;
+                }
+                Err(e) => {
+                    // Check if this is a panic (unrecoverable)
+                    if e.to_string().contains("panic") {
+                        output.print(&format!("💥 Coach panic detected: {}", e));
+                        return Err(e);
+                    }
+                    
+                    coach_retry_count += 1;
+                    output.print(&format!("⚠️ Coach error (attempt {}/{}): {}", coach_retry_count, MAX_COACH_RETRIES, e));
+                    
+                    if coach_retry_count >= MAX_COACH_RETRIES {
+                        output.print("🔄 Max retries reached for coach, using default feedback...");
+                        // Provide default feedback and break out of retry loop
+                        coach_result_opt = None;
+                        coach_failed = true;
+                        break; // Exit retry loop with default feedback
+                    }
+                    output.print("🔄 Retrying coach review...");
+                }
+            }
+        }
+        
         output.print("🎓 Coach review completed");
+
+        // If coach failed after max retries, increment turn and continue with default feedback
+        if coach_failed {
+            output.print(&format!("⚠️ Coach turn {} failed after max retries. Using default feedback.", turn));
+            coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
+            turn += 1;
+            
+            if turn > max_turns {
+                output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
+                output.print(&format!("⏰ Maximum turns ({}) reached", max_turns));
+                break;
+            }
+            continue; // Continue to next iteration with default feedback
+        }
+
+        // We have a valid coach result, process it
+        let coach_result = coach_result_opt.unwrap();
 
         // Extract the coach feedback using the semantic extraction from TaskResult
         let coach_feedback_text = coach_result.extract_last_block();
