@@ -1238,8 +1238,8 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         // We have a valid coach result, process it
         let coach_result = coach_result_opt.unwrap();
 
-        // Extract the coach feedback using the semantic extraction from TaskResult
-        let coach_feedback_text = coach_result.extract_last_block();
+        // Extract the complete coach feedback from final_output
+        let coach_feedback_text = coach_result.extract_final_output();
 
         // Log the size of the feedback for debugging
         info!(

@@ -1500,14 +1500,27 @@ The tool will execute immediately and you'll receive the result (success or erro
                             if tool_call.tool != "final_output" {
                                 let output_lines: Vec<&str> = tool_result.lines().collect();
                                 const MAX_LINES: usize = 5;
+                                const MAX_LINE_WIDTH: usize = 80;
 
                                 if output_lines.len() <= MAX_LINES {
                                     for line in output_lines {
-                                        self.ui_writer.print_tool_output_line(line);
+                                        // Clip line to max width
+                                        let clipped_line = if line.len() > MAX_LINE_WIDTH {
+                                            format!("{}...", &line[..MAX_LINE_WIDTH.saturating_sub(3)])
+                                        } else {
+                                            line.to_string()
+                                        };
+                                        self.ui_writer.print_tool_output_line(&clipped_line);
                                     }
                                 } else {
                                     for line in output_lines.iter().take(MAX_LINES) {
-                                        self.ui_writer.print_tool_output_line(line);
+                                        // Clip line to max width
+                                        let clipped_line = if line.len() > MAX_LINE_WIDTH {
+                                            format!("{}...", &line[..MAX_LINE_WIDTH.saturating_sub(3)])
+                                        } else {
+                                            line.to_string()
+                                        };
+                                        self.ui_writer.print_tool_output_line(&clipped_line);
                                     }
                                     let hidden_count = output_lines.len() - MAX_LINES;
                                     self.ui_writer.print_tool_output_summary(hidden_count);
