@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub tool: String,
-    pub args: serde_json::Value,  // Should be a JSON object with tool-specific arguments
+    pub args: serde_json::Value, // Should be a JSON object with tool-specific arguments
 }
 
 #[derive(Debug, Clone)]
@@ -176,16 +176,16 @@ impl StreamingToolParser {
                                         // This would indicate a malformed tool call where the message
                                         // got mixed into the args
                                         let has_message_like_key = args_obj.keys().any(|key| {
-                                            key.len() > 100 || 
-                                            key.contains('\n') ||
-                                            key.contains("I'll") ||
-                                            key.contains("Let me") ||
-                                            key.contains("Here's") ||
-                                            key.contains("I can") ||
-                                            key.contains("I need") ||
-                                            key.contains("First") ||
-                                            key.contains("Now") ||
-                                            key.contains("The ")
+                                            key.len() > 100
+                                                || key.contains('\n')
+                                                || key.contains("I'll")
+                                                || key.contains("Let me")
+                                                || key.contains("Here's")
+                                                || key.contains("I can")
+                                                || key.contains("I need")
+                                                || key.contains("First")
+                                                || key.contains("Now")
+                                                || key.contains("The ")
                                         });
 
                                         if has_message_like_key {
@@ -199,8 +199,11 @@ impl StreamingToolParser {
                                         // Also check if the values look reasonable
                                         // Tool arguments should typically be file paths, commands, or content
                                         // Not entire agent messages
-                                        
-                                        debug!("Successfully parsed valid JSON tool call: {:?}", tool_call);
+
+                                        debug!(
+                                            "Successfully parsed valid JSON tool call: {:?}",
+                                            tool_call
+                                        );
                                         // Reset JSON parsing state
                                         self.in_json_tool_call = false;
                                         self.json_tool_start = None;
@@ -708,10 +711,9 @@ You have access to tools. When you need to accomplish a task, you MUST use the a
 IMPORTANT: You must call tools to achieve goals. When you receive a request:
 1. Analyze and identify what needs to be done
 2. Call the appropriate tool with the required parameters
-3. Wait for the tool result
-4. Continue or complete the task based on the result
-5. If you repeatedly try something and it fails, try a different approach
-6. Call the final_output task with a detailed summary when done with all tasks.
+3. Continue or complete the task based on the result
+4. If you repeatedly try something and it fails, try a different approach
+5. Call the final_output tool with a detailed summary when done.
 
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files or data for testing, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
@@ -1417,7 +1419,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                             let filtered_content = filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
 
-                            // Display any new content before tool execution  
+                            // Display any new content before tool execution
                             // We need to skip what was already shown (tracked in current_response)
                             // but also account for the fact that parser.text_buffer accumulates
                             // across iterations and is never cleared until reset()
@@ -1991,16 +1993,18 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 let start_boundary = if start == 0 {
                                     0
                                 } else {
-                                    content.char_indices()
+                                    content
+                                        .char_indices()
                                         .find(|(i, _)| *i >= start)
                                         .map(|(i, _)| i)
                                         .unwrap_or(start)
                                 };
-                                let end_boundary = content.char_indices()
+                                let end_boundary = content
+                                    .char_indices()
                                     .find(|(i, _)| *i >= end)
                                     .map(|(i, _)| i)
                                     .unwrap_or(content.len());
-                                
+
                                 let partial_content = &content[start_boundary..end_boundary];
                                 let line_count = partial_content.lines().count();
                                 let total_lines = content.lines().count();
@@ -2009,7 +2013,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 if start_char.is_some() || end_char.is_some() {
                                     Ok(format!(
                                         "📄 File content (chars {}-{}, {} lines of {} total):\n{}",
-                                        start_boundary, end_boundary, line_count, total_lines, partial_content
+                                        start_boundary,
+                                        end_boundary,
+                                        line_count,
+                                        total_lines,
+                                        partial_content
                                     ))
                                 } else {
                                     Ok(format!(
@@ -2621,16 +2629,18 @@ pub fn apply_unified_diff_to_string(
     let start_boundary = if search_start == 0 {
         0
     } else {
-        content_norm.char_indices()
+        content_norm
+            .char_indices()
             .find(|(i, _)| *i >= search_start)
             .map(|(i, _)| i)
             .unwrap_or(search_start)
     };
-    let end_boundary = content_norm.char_indices()
+    let end_boundary = content_norm
+        .char_indices()
         .find(|(i, _)| *i >= search_end)
         .map(|(i, _)| i)
         .unwrap_or(content_norm.len());
-    
+
     let mut region_content = content_norm[start_boundary..end_boundary].to_string();
 
     // Apply hunks in order
@@ -2654,7 +2664,10 @@ pub fn apply_unified_diff_to_string(
             }
 
             let range_note = if start_char.is_some() || end_char.is_some() {
-                format!(" (within character range {}:{})", start_boundary, end_boundary)
+                format!(
+                    " (within character range {}:{})",
+                    start_boundary, end_boundary
+                )
             } else {
                 String::new()
             };
