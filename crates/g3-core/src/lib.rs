@@ -1469,7 +1469,12 @@ The tool will execute immediately and you'll receive the result (success or erro
                                                     }
                                                 } else {
                                                     if s.len() > 100 {
-                                                        format!("{}...", &s[..100])
+                                                        // Use char_indices to respect UTF-8 boundaries
+                                                        let truncated = s.char_indices()
+                                                            .take(100)
+                                                            .map(|(_, c)| c)
+                                                            .collect::<String>();
+                                                        format!("{}...", truncated)
                                                     } else {
                                                         s.clone()
                                                     }
