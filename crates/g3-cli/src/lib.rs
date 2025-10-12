@@ -62,6 +62,14 @@ pub struct Cli {
     /// Color theme for retro mode (default, dracula, or path to theme file)
     #[arg(long, value_name = "THEME")]
     pub theme: Option<String>,
+
+    /// Override the configured provider (anthropic, databricks, embedded, openai)
+    #[arg(long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+
+    /// Override the model for the selected provider
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
 }
 
 pub async fn run() -> Result<()> {
@@ -140,8 +148,23 @@ pub async fn run() -> Result<()> {
         info!("Using workspace: {}", project.workspace().display());
     }
 
-    // Load configuration
-    let config = Config::load(cli.config.as_deref())?;
+    // Load configuration with CLI overrides
+    let config = Config::load_with_overrides(
+        cli.config.as_deref(),
+        cli.provider.clone(),
+        cli.model.clone(),
+    )?;
+    
+    // Validate provider if specified
+    if let Some(ref provider) = cli.provider {
+        let valid_providers = ["anthropic", "databricks", "embedded", "openai"];
+        if !valid_providers.contains(&provider.as_str()) {
+            return Err(anyhow::anyhow!(
+                "Invalid provider '{}'. Valid options: {:?}", 
+                provider, valid_providers
+            ));
+        }
+    }
 
     // Initialize agent
     let ui_writer = ConsoleUiWriter::new();
@@ -184,7 +207,7 @@ pub async fn run() -> Result<()> {
         if cli.retro {
             // Use retro terminal UI
             run_interactive_retro(
-                config,
+                config,  // Already has overrides applied
                 cli.show_prompt,
                 cli.show_code,
                 cli.theme,
@@ -1100,7 +1123,8 @@ async fn run_autonomous(
         }
 
         // Create a new agent instance for coach mode to ensure fresh context
-        let config = g3_config::Config::load(None)?;
+        // Use the same config with overrides that was passed to the player agent
+        let config = agent.get_config().clone();
         let ui_writer = ConsoleUiWriter::new();
         let mut coach_agent = Agent::new_autonomous(config, ui_writer).await?;
 

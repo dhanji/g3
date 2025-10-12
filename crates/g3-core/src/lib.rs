@@ -412,6 +412,7 @@ Format this as a detailed but concise summary that can be used to resume the con
 pub struct Agent<W: UiWriter> {
     providers: ProviderRegistry,
     context_window: ContextWindow,
+    config: Config,
     session_id: Option<String>,
     tool_call_metrics: Vec<(String, Duration, bool)>, // (tool_name, duration, success)
     ui_writer: W,
@@ -549,6 +550,7 @@ impl<W: UiWriter> Agent<W> {
         Ok(Self {
             providers,
             context_window,
+            config,
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
@@ -957,6 +959,10 @@ The tool will execute immediately and you'll receive the result (success or erro
 
     pub fn get_tool_call_metrics(&self) -> &Vec<(String, Duration, bool)> {
         &self.tool_call_metrics
+    }
+    
+    pub fn get_config(&self) -> &Config {
+        &self.config
     }
 
     async fn stream_completion(

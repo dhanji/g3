@@ -202,4 +202,64 @@ impl Config {
         std::fs::write(path, toml_string)?;
         Ok(())
     }
+    
+    pub fn load_with_overrides(
+        config_path: Option<&str>,
+        provider_override: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<Self> {
+        // Load the base configuration
+        let mut config = Self::load(config_path)?;
+        
+        // Apply provider override
+        if let Some(provider) = provider_override {
+            config.providers.default_provider = provider;
+        }
+        
+        // Apply model override to the active provider
+        if let Some(model) = model_override {
+            match config.providers.default_provider.as_str() {
+                "anthropic" => {
+                    if let Some(ref mut anthropic) = config.providers.anthropic {
+                        anthropic.model = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider 'anthropic' is not configured. Please add anthropic configuration to your config file."
+                        ));
+                    }
+                }
+                "databricks" => {
+                    if let Some(ref mut databricks) = config.providers.databricks {
+                        databricks.model = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider 'databricks' is not configured. Please add databricks configuration to your config file."
+                        ));
+                    }
+                }
+                "embedded" => {
+                    if let Some(ref mut embedded) = config.providers.embedded {
+                        embedded.model_path = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider 'embedded' is not configured. Please add embedded configuration to your config file."
+                        ));
+                    }
+                }
+                "openai" => {
+                    if let Some(ref mut openai) = config.providers.openai {
+                        openai.model = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider 'openai' is not configured. Please add openai configuration to your config file."
+                        ));
+                    }
+                }
+                _ => return Err(anyhow::anyhow!("Unknown provider: {}", 
+                    config.providers.default_provider)),
+            }
+        }
+        
+        Ok(config)
+    }
 }
