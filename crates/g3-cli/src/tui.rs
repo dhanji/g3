@@ -1,5 +1,5 @@
 use crossterm::style::Color;
-use crossterm::style::{Stylize, SetForegroundColor, ResetColor};
+use crossterm::style::{SetForegroundColor, ResetColor};
 use termimad::MadSkin;
 
 /// Simple output handler with markdown support

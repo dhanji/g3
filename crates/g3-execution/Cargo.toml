@@ -7,6 +7,7 @@ description = "Code execution engine for G3 AI agent"
 [dependencies]
 tokio = { workspace = true }
 anyhow = { workspace = true }
+futures = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = "1.0"

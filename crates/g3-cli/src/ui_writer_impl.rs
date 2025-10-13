@@ -8,6 +8,8 @@ use std::time::Instant;
 pub struct ConsoleUiWriter {
     current_tool_name: Mutex<Option<String>>,
     current_tool_args: Mutex<Vec<(String, String)>>,
+    current_output_line: Mutex<Option<String>>,
+    output_line_printed: Mutex<bool>,
 }
 
 impl ConsoleUiWriter {
@@ -15,6 +17,8 @@ impl ConsoleUiWriter {
         Self {
             current_tool_name: Mutex::new(None),
             current_tool_args: Mutex::new(Vec::new()),
+            current_output_line: Mutex::new(None),
+            output_line_printed: Mutex::new(false),
         }
     }
 }
@@ -103,6 +107,25 @@ impl UiWriter for ConsoleUiWriter {
         }
     }
 
+    fn update_tool_output_line(&self, line: &str) {
+        let mut current_line = self.current_output_line.lock().unwrap();
+        let mut line_printed = self.output_line_printed.lock().unwrap();
+        
+        // If we've already printed a line, clear it first
+        if *line_printed {
+            // Move cursor up one line and clear it
+            print!("\x1b[1A\x1b[2K");
+        }
+        
+        // Print the new line
+        println!("│ \x1b[2m{}\x1b[0m", line);
+        let _ = io::stdout().flush();
+        
+        // Update state
+        *current_line = Some(line.to_string());
+        *line_printed = true;
+    }
+    
     fn print_tool_output_line(&self, line: &str) {
         println!("│ \x1b[2m{}\x1b[0m", line);
     }
@@ -121,6 +144,8 @@ impl UiWriter for ConsoleUiWriter {
         // Clear the stored tool info
         *self.current_tool_name.lock().unwrap() = None;
         self.current_tool_args.lock().unwrap().clear();
+        *self.current_output_line.lock().unwrap() = None;
+        *self.output_line_printed.lock().unwrap() = false;
     }
 
     fn print_agent_prompt(&self) {
@@ -250,6 +275,11 @@ impl UiWriter for RetroTuiWriter {
             .lock()
             .unwrap()
             .push("Output:".to_string());
+    }
+
+    fn update_tool_output_line(&self, line: &str) {
+        // For retro mode, we'll just add to the output buffer
+        self.current_tool_output.lock().unwrap().push(line.to_string());
     }
 
     fn print_tool_output_line(&self, line: &str) {

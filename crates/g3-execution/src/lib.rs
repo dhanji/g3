@@ -203,3 +203,82 @@ impl Default for CodeExecutor {
         Self::new()
     }
 }
+
+/// Trait for receiving streaming output from command execution
+pub trait OutputReceiver: Send + Sync {
+    /// Called when a new line of output is available
+    fn on_output_line(&self, line: &str);
+}
+
+impl CodeExecutor {
+    /// Execute bash command with streaming output
+    pub async fn execute_bash_streaming<R: OutputReceiver>(
+        &self, 
+        code: &str, 
+        receiver: &R
+    ) -> Result<ExecutionResult> {
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::process::Command as TokioCommand;
+        
+        let mut child = TokioCommand::new("bash")
+            .arg("-c")
+            .arg(code)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+        
+        let mut stdout_lines = stdout_reader.lines();
+        let mut stderr_lines = stderr_reader.lines();
+        
+        let mut stdout_output = Vec::new();
+        let mut stderr_output = Vec::new();
+        
+        // Read output lines as they come
+        loop {
+            tokio::select! {
+                line = stdout_lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            receiver.on_output_line(&line);
+                            stdout_output.push(line);
+                        }
+                        Ok(None) => break, // EOF
+                        Err(e) => {
+                            error!("Error reading stdout: {}", e);
+                            break;
+                        }
+                    }
+                }
+                line = stderr_lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            receiver.on_output_line(&format!("stderr: {}", line));
+                            stderr_output.push(line);
+                        }
+                        Ok(None) => {}, // stderr EOF, continue
+                        Err(e) => {
+                            error!("Error reading stderr: {}", e);
+                        }
+                    }
+                }
+                else => break
+            }
+        }
+        
+        let status = child.wait().await?;
+        
+        Ok(ExecutionResult {
+            stdout: stdout_output.join("\n"),
+            stderr: stderr_output.join("\n"),
+            exit_code: status.code().unwrap_or(-1),
+            success: status.success(),
+        })
+    }
+}

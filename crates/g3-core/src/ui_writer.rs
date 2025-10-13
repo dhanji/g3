@@ -26,6 +26,9 @@ pub trait UiWriter: Send + Sync {
     /// Print tool output header
     fn print_tool_output_header(&self);
     
+    /// Update the current tool output line (replaces previous line)
+    fn update_tool_output_line(&self, line: &str);
+    
     /// Print a tool output line
     fn print_tool_output_line(&self, line: &str);
     
@@ -60,6 +63,7 @@ impl UiWriter for NullUiWriter {
     fn print_tool_header(&self, _tool_name: &str) {}
     fn print_tool_arg(&self, _key: &str, _value: &str) {}
     fn print_tool_output_header(&self) {}
+    fn update_tool_output_line(&self, _line: &str) {}
     fn print_tool_output_line(&self, _line: &str) {}
     fn print_tool_output_summary(&self, _hidden_count: usize) {}
     fn print_tool_timing(&self, _duration_str: &str) {}

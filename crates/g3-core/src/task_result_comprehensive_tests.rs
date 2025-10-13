@@ -245,32 +245,3 @@ fn test_concurrent_access() {
     }
 }
 
-fn main() {
-    println!("Running TaskResult comprehensive tests...");
-    
-    test_task_result_basic_functionality();
-    println!("✅ Basic functionality test passed");
-    
-    test_extract_last_block_various_formats();
-    println!("✅ Extract last block test passed");
-    
-    test_is_approved_detection();
-    println!("✅ Approval detection test passed");
-    
-    test_context_window_preservation();
-    println!("✅ Context window preservation test passed");
-    
-    test_coach_feedback_extraction_scenarios();
-    println!("✅ Coach feedback extraction test passed");
-    
-    test_edge_cases_and_special_characters();
-    println!("✅ Edge cases test passed");
-    
-    test_large_response_handling();
-    println!("✅ Large response handling test passed");
-    
-    test_concurrent_access();
-    println!("✅ Concurrent access test passed");
-    
-    println!("\n🎉 All TaskResult tests passed successfully!");
-}

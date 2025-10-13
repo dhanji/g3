@@ -1442,6 +1442,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 };
 
                             if !new_content.trim().is_empty() {
+                                #[allow(unused_assignments)]
                                 if !response_started {
                                     self.ui_writer.print_agent_prompt();
                                     response_started = true;
@@ -1968,7 +1969,23 @@ The tool will execute immediately and you'll receive the result (success or erro
                         let escaped_command = shell_escape_command(command_str);
 
                         let executor = CodeExecutor::new();
-                        match executor.execute_code("bash", &escaped_command).await {
+                        
+                        // Create a receiver for streaming output
+                        struct ToolOutputReceiver<'a, W: UiWriter> {
+                            ui_writer: &'a W,
+                        }
+                        
+                        impl<'a, W: UiWriter> g3_execution::OutputReceiver for ToolOutputReceiver<'a, W> {
+                            fn on_output_line(&self, line: &str) {
+                                self.ui_writer.update_tool_output_line(line);
+                            }
+                        }
+                        
+                        let receiver = ToolOutputReceiver {
+                            ui_writer: &self.ui_writer,
+                        };
+                        
+                        match executor.execute_bash_streaming(&escaped_command, &receiver).await {
                             Ok(result) => {
                                 if result.success {
                                     Ok(if result.stdout.is_empty() {
