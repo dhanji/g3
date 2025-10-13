@@ -718,7 +718,7 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 5. Call the final_output tool with a detailed summary when done.
 
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
-If you create temporary files or data for testing, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
+If you create test or data files temporarily, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
 
@@ -960,7 +960,7 @@ The tool will execute immediately and you'll receive the result (success or erro
     pub fn get_tool_call_metrics(&self) -> &Vec<(String, Duration, bool)> {
         &self.tool_call_metrics
     }
-    
+
     pub fn get_config(&self) -> &Config {
         &self.config
     }
@@ -1476,7 +1476,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                                 } else {
                                                     if s.len() > 100 {
                                                         // Use char_indices to respect UTF-8 boundaries
-                                                        let truncated = s.char_indices()
+                                                        let truncated = s
+                                                            .char_indices()
                                                             .take(100)
                                                             .map(|(_, c)| c)
                                                             .collect::<String>();
@@ -1510,18 +1511,21 @@ The tool will execute immediately and you'll receive the result (success or erro
                             // Display tool execution result with proper indentation
                             if tool_call.tool != "final_output" {
                                 let output_lines: Vec<&str> = tool_result.lines().collect();
-                                
+
                                 // Helper function to safely truncate strings at character boundaries
                                 let truncate_line = |line: &str, max_width: usize| -> String {
                                     let char_count = line.chars().count();
                                     if char_count <= max_width {
                                         line.to_string()
                                     } else {
-                                        let truncated: String = line.chars().take(max_width.saturating_sub(3)).collect();
+                                        let truncated: String = line
+                                            .chars()
+                                            .take(max_width.saturating_sub(3))
+                                            .collect();
                                         format!("{}...", truncated)
                                     }
                                 };
-                                
+
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
 
@@ -1694,10 +1698,14 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         .replace("[/INST]", "")
                                         .replace("<</SYS>>", "");
                                     let filtered_text = filter_json_tool_calls(&clean_text);
-                                    
+
                                     // Only use this if we truly have nothing else
-                                    if !filtered_text.trim().is_empty() && full_response.is_empty() {
-                                        debug!("Using filtered parser text as last resort: {} chars", filtered_text.len());
+                                    if !filtered_text.trim().is_empty() && full_response.is_empty()
+                                    {
+                                        debug!(
+                                            "Using filtered parser text as last resort: {} chars",
+                                            filtered_text.len()
+                                        );
                                         current_response = filtered_text;
                                     }
                                 }
@@ -1874,8 +1882,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                 // The text has already been displayed during streaming via current_response.
                 // The parser buffer accumulates ALL text and would cause duplication.
                 debug!("Stream completed without tool execution. Response already displayed during streaming.");
-                debug!("Current response length: {}, Full response length: {}", 
-                    current_response.len(), full_response.len());
+                debug!(
+                    "Current response length: {}, Full response length: {}",
+                    current_response.len(),
+                    full_response.len()
+                );
 
                 let has_response = !current_response.is_empty() || !full_response.is_empty();
 
@@ -1889,7 +1900,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                     // This prevents duplication when the agent responds without calling final_output
                     if full_response.is_empty() && !current_response.is_empty() {
                         full_response = current_response.clone();
-                        debug!("Set full_response from current_response: {} chars", full_response.len());
+                        debug!(
+                            "Set full_response from current_response: {} chars",
+                            full_response.len()
+                        );
                     }
                     self.ui_writer.println("");
                 }
