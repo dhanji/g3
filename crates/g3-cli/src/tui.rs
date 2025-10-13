@@ -40,7 +40,7 @@ impl SimpleOutput {
     }
 
     pub fn print_context(&self, used: u32, total: u32, percentage: f32) {
-        let bar_width = 10;
+        let bar_width: usize = 10;
         let filled_width = ((percentage / 100.0) * bar_width as f32) as usize;
         let empty_width = bar_width.saturating_sub(filled_width);
 
