@@ -1510,27 +1510,31 @@ The tool will execute immediately and you'll receive the result (success or erro
                             // Display tool execution result with proper indentation
                             if tool_call.tool != "final_output" {
                                 let output_lines: Vec<&str> = tool_result.lines().collect();
+                                
+                                // Helper function to safely truncate strings at character boundaries
+                                let truncate_line = |line: &str, max_width: usize| -> String {
+                                    let char_count = line.chars().count();
+                                    if char_count <= max_width {
+                                        line.to_string()
+                                    } else {
+                                        let truncated: String = line.chars().take(max_width.saturating_sub(3)).collect();
+                                        format!("{}...", truncated)
+                                    }
+                                };
+                                
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
 
                                 if output_lines.len() <= MAX_LINES {
                                     for line in output_lines {
                                         // Clip line to max width
-                                        let clipped_line = if line.len() > MAX_LINE_WIDTH {
-                                            format!("{}...", &line[..MAX_LINE_WIDTH.saturating_sub(3)])
-                                        } else {
-                                            line.to_string()
-                                        };
+                                        let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
                                         self.ui_writer.print_tool_output_line(&clipped_line);
                                     }
                                 } else {
                                     for line in output_lines.iter().take(MAX_LINES) {
                                         // Clip line to max width
-                                        let clipped_line = if line.len() > MAX_LINE_WIDTH {
-                                            format!("{}...", &line[..MAX_LINE_WIDTH.saturating_sub(3)])
-                                        } else {
-                                            line.to_string()
-                                        };
+                                        let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
                                         self.ui_writer.print_tool_output_line(&clipped_line);
                                     }
                                     let hidden_count = output_lines.len() - MAX_LINES;
@@ -1682,7 +1686,20 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     // Only use parser text if we truly have no response
                                     // This should be rare - only if streaming failed to display anything
                                     debug!("Warning: Using parser buffer text as fallback - this may duplicate output");
-                                    // Don't add it - it's already been displayed
+                                    // Extract only the undisplayed portion from parser buffer
+                                    // Parser buffer accumulates across iterations, so we need to be careful
+                                    let clean_text = text_content
+                                        .replace("<|im_end|>", "")
+                                        .replace("</s>", "")
+                                        .replace("[/INST]", "")
+                                        .replace("<</SYS>>", "");
+                                    let filtered_text = filter_json_tool_calls(&clean_text);
+                                    
+                                    // Only use this if we truly have nothing else
+                                    if !filtered_text.trim().is_empty() && full_response.is_empty() {
+                                        debug!("Using filtered parser text as last resort: {} chars", filtered_text.len());
+                                        current_response = filtered_text;
+                                    }
                                 }
 
                                 if !has_text_response && full_response.is_empty() {
@@ -1786,6 +1803,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 // Appending would duplicate the output
                                 if !current_response.is_empty() && full_response.is_empty() {
                                     full_response = current_response.clone();
+                                    debug!("Set full_response from current_response (no tool): {} chars", full_response.len());
                                 }
 
                                 self.ui_writer.println("");
@@ -1852,10 +1870,12 @@ The tool will execute immediately and you'll receive the result (success or erro
 
             // If we get here and no tool was executed, we're done
             if !tool_executed {
-                // Don't add parser text_content here - it's already been displayed during streaming
-                // The parser buffer contains ALL accumulated text, including what was already shown
-                // Adding it here would cause duplication of the entire response
+                // IMPORTANT: Do NOT add parser text_content here!
+                // The text has already been displayed during streaming via current_response.
+                // The parser buffer accumulates ALL text and would cause duplication.
                 debug!("Stream completed without tool execution. Response already displayed during streaming.");
+                debug!("Current response length: {}, Full response length: {}", 
+                    current_response.len(), full_response.len());
 
                 let has_response = !current_response.is_empty() || !full_response.is_empty();
 
@@ -1865,10 +1885,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                         iteration_count
                     );
                 } else {
-                    // Don't add current_response to full_response here - it was already displayed during streaming
-                    // Only add it if full_response is empty (meaning no tools were executed)
+                    // Only set full_response if it's empty (first iteration without tools)
+                    // This prevents duplication when the agent responds without calling final_output
                     if full_response.is_empty() && !current_response.is_empty() {
                         full_response = current_response.clone();
+                        debug!("Set full_response from current_response: {} chars", full_response.len());
                     }
                     self.ui_writer.println("");
                 }

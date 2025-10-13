@@ -67,8 +67,10 @@ impl EmbeddedProvider {
             .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
 
         // Create session with parameters
-        let mut session_params = SessionParams::default();
-        session_params.n_ctx = context_size;
+        let mut session_params = SessionParams {
+            n_ctx: context_size,
+            ..Default::default()
+        };
         if let Some(threads) = threads {
             session_params.n_threads = threads;
         }
@@ -137,7 +139,7 @@ impl EmbeddedProvider {
                         in_conversation = false;
                     }
                     MessageRole::Assistant => {
-                        formatted.push_str(" ");
+                        formatted.push(' ');
                         formatted.push_str(&message.content);
                         formatted.push_str("</s> ");
                         in_conversation = false;
@@ -146,8 +148,8 @@ impl EmbeddedProvider {
             }
             
             // If the last message was from user, add a space for the assistant's response
-            if messages.last().map_or(false, |m| matches!(m.role, MessageRole::User)) {
-                formatted.push_str(" ");
+            if messages.last().is_some_and(|m| matches!(m.role, MessageRole::User)) {
+                formatted.push(' ');
             }
             
             formatted
@@ -439,7 +441,7 @@ impl EmbeddedProvider {
         
         // Use curl with progress bar for download
         let output = Command::new("curl")
-            .args(&[
+            .args([
                 "-L",  // Follow redirects
                 "-#",  // Show progress bar
                 "-f",  // Fail on HTTP errors

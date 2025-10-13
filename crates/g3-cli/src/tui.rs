@@ -1,4 +1,5 @@
 use crossterm::style::Color;
+use crossterm::style::{Stylize, SetForegroundColor, ResetColor};
 use termimad::MadSkin;
 
 /// Simple output handler with markdown support
@@ -45,11 +46,21 @@ impl SimpleOutput {
 
         let filled_chars = "●".repeat(filled_width);
         let empty_chars = "○".repeat(empty_width);
-        let progress_bar = format!("{}{}", filled_chars, empty_chars);
+        
+        // Determine color based on percentage
+        let color = if percentage < 60.0 {
+            crossterm::style::Color::Green
+        } else if percentage < 80.0 {
+            crossterm::style::Color::Yellow
+        } else {
+            crossterm::style::Color::Red
+        };
 
-        println!(
-            "Context: {} {:.1}% | {}/{} tokens",
-            progress_bar, percentage, used, total
-        );
+        // Print with colored progress bar
+        print!("Context: ");
+        print!("{}", SetForegroundColor(color));
+        print!("{}{}", filled_chars, empty_chars);
+        print!("{}", ResetColor);
+        println!(" {:.1}% | {}/{} tokens", percentage, used, total);
     }
 }

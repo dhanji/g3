@@ -52,7 +52,7 @@ impl TokenCache {
         hasher.update(scopes.join(",").as_bytes());
         let hash = format!("{:x}", hasher.finalize());
 
-        fs::create_dir_all(get_base_path()).unwrap_or_else(|_| {});
+        fs::create_dir_all(get_base_path()).unwrap_or(());
         let cache_path = get_base_path().join(format!("{}.json", hash));
 
         Self { cache_path }
