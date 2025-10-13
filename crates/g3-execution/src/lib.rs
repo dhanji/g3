@@ -259,7 +259,7 @@ impl CodeExecutor {
                 line = stderr_lines.next_line() => {
                     match line {
                         Ok(Some(line)) => {
-                            receiver.on_output_line(&format!("stderr: {}", line));
+                            receiver.on_output_line(&format!("{}", line));
                             stderr_output.push(line);
                         }
                         Ok(None) => {}, // stderr EOF, continue
