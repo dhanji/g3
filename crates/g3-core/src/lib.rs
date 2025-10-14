@@ -9,6 +9,24 @@ mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
 
 #[cfg(test)]
+mod filter_json_tests;
+mod new_filter_json;
+
+mod correct_filter_json;
+#[cfg(test)]
+mod comprehensive_filter_tests;
+mod fixed_filter_json;
+#[cfg(test)]
+mod fixed_filter_tests;
+mod final_filter_json;
+
+#[cfg(test)]
+mod final_filter_tests;
+
+#[cfg(test)]
+mod final_corrected_tests;
+
+#[cfg(test)]
 mod error_handling_test;
 use anyhow::Result;
 use g3_config::Config;
@@ -1414,7 +1432,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("<</SYS>>", "");
 
                             // Filter out JSON tool calls from the display
-                            let filtered_content = filter_json_tool_calls(&clean_content);
+                            let filtered_content = final_filter_json::final_filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
 
                             // Display any new content before tool execution
@@ -1635,7 +1653,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("<</SYS>>", "");
 
                             if !clean_content.is_empty() {
-                                let filtered_content = filter_json_tool_calls(&clean_content);
+                                let filtered_content = final_filter_json::final_filter_json_tool_calls(&clean_content);
 
                                 if !filtered_content.is_empty() {
                                     if !response_started {
@@ -1678,7 +1696,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         .replace("</s>", "")
                                         .replace("[/INST]", "")
                                         .replace("<</SYS>>", "");
-                                    let filtered_text = filter_json_tool_calls(&clean_text);
+                                    let filtered_text = final_filter_json::final_filter_json_tool_calls(&clean_text);
 
                                     // Only use this if we truly have nothing else
                                     if !filtered_text.trim().is_empty() && full_response.is_empty()
