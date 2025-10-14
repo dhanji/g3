@@ -181,6 +181,7 @@ fn extract_final_content(full_content: &str, json_start: usize) -> String {
 }
 
 // Reset function for testing
+#[allow(dead_code)]
 pub fn reset_final_json_tool_state() {
     FINAL_JSON_TOOL_STATE.with(|state| {
         let mut state = state.borrow_mut();

@@ -11,6 +11,7 @@ thread_local! {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct NewJsonToolState {
     suppression_mode: bool,
     brace_depth: i32,
@@ -19,7 +20,8 @@ struct NewJsonToolState {
 }
 
 impl NewJsonToolState {
-    fn new() -> Self {
+    #[allow(dead_code)]
+fn new() -> Self {
         Self {
             suppression_mode: false,
             brace_depth: 0,
@@ -28,7 +30,8 @@ impl NewJsonToolState {
         }
     }
 
-    fn reset(&mut self) {
+    #[allow(dead_code)]
+fn reset(&mut self) {
         self.suppression_mode = false;
         self.brace_depth = 0;
         self.accumulated_content.clear();
@@ -41,6 +44,7 @@ impl NewJsonToolState {
 // 2. Enter suppression mode and use brace counting to find complete JSON
 // 3. Only elide JSON content between first '{' and last '}' (inclusive)
 // 4. Return everything else as the final filtered string
+#[allow(dead_code)]
 pub fn new_filter_json_tool_calls(content: &str) -> String {
     NEW_JSON_TOOL_STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -136,6 +140,7 @@ pub fn new_filter_json_tool_calls(content: &str) -> String {
 
 // Helper function to extract content with JSON tool call filtered out
 // Returns everything except the JSON between the first '{' and last '}' (inclusive)
+#[allow(dead_code)]
 fn extract_filtered_content(full_content: &str, json_start: usize) -> String {
     // Find the end of the JSON using proper brace counting
     let mut brace_depth = 0;
@@ -178,6 +183,7 @@ fn extract_filtered_content(full_content: &str, json_start: usize) -> String {
 }
 
 // Reset function for testing
+#[allow(dead_code)]
 pub fn reset_new_json_tool_state() {
     NEW_JSON_TOOL_STATE.with(|state| {
         let mut state = state.borrow_mut();

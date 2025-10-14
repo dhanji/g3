@@ -32,6 +32,7 @@ use anyhow::Result;
 use g3_config::Config;
 use g3_execution::CodeExecutor;
 use g3_providers::{CompletionRequest, Message, MessageRole, ProviderRegistry, Tool};
+#[allow(unused_imports)]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -755,31 +756,31 @@ Do not explain what you're going to do - just do it by calling the tools.
 
 When you need to execute a tool, write ONLY the JSON tool call on a new line:
 
-{\"tool\": \"tool_name\", \"args\": {\"param\": \"value\"}}
+{\"tool\": \"tool_name\", \"args\": {\"param\": \"value\"}
 
 The tool will execute immediately and you'll receive the result (success or error) to continue with.
 
 # Available Tools
 
 - **shell**: Execute shell commands
-  - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}}
-  - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}}
+  - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}
+  - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}
 
 - **read_file**: Read the contents of a file (supports partial reads via start/end)
-  - Format: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"path/to/file\", \"start\": 0, \"end\": 100}}
-  - Example: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"src/main.rs\"}}
-  - Example (partial): {\"tool\": \"read_file\", \"args\": {\"file_path\": \"large.log\", \"start\": 0, \"end\": 1000}}
+  - Format: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"path/to/file\", \"start\": 0, \"end\": 100}
+  - Example: {\"tool\": \"read_file\", \"args\": {\"file_path\": \"src/main.rs\"}
+  - Example (partial): {\"tool\": \"read_file\", \"args\": {\"file_path\": \"large.log\", \"start\": 0, \"end\": 1000}
 
 - **write_file**: Write content to a file (creates or overwrites)
-  - Format: {\"tool\": \"write_file\", \"args\": {\"file_path\": \"path/to/file\", \"content\": \"file content\"}}
-  - Example: {\"tool\": \"write_file\", \"args\": {\"file_path\": \"src/lib.rs\", \"content\": \"pub fn hello() {}\"}}
+  - Format: {\"tool\": \"write_file\", \"args\": {\"file_path\": \"path/to/file\", \"content\": \"file content\"}
+  - Example: {\"tool\": \"write_file\", \"args\": {\"file_path\": \"src/lib.rs\", \"content\": \"pub fn hello() {}\"}
 
 - **str_replace**: Replace text in a file using a diff
-  - Format: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"path/to/file\", \"diff\": \"--- old\\n-old text\\n+++ new\\n+new text\"}}
-  - Example: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"src/main.rs\", \"diff\": \"--- old\\n-old_code();\\n+++ new\\n+new_code();\"}}
+  - Format: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"path/to/file\", \"diff\": \"--- old\\n-old text\\n+++ new\\n+new text\"}
+  - Example: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"src/main.rs\", \"diff\": \"--- old\\n-old_code();\\n+++ new\\n+new_code();\"}
 
 - **final_output**: Signal task completion with a detailed summary of work done in markdown format
-  - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}}
+  - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}
 
 # Instructions
 
@@ -1507,7 +1508,17 @@ The tool will execute immediately and you'll receive the result (success or erro
                             }
 
                             let exec_start = Instant::now();
-                            let tool_result = self.execute_tool(&tool_call).await?;
+                            // Add 8-minute timeout for tool execution
+                            let tool_result = match tokio::time::timeout(
+                                Duration::from_secs(8 * 60), // 8 minutes
+                                self.execute_tool(&tool_call)
+                            ).await {
+                                Ok(result) => result?,
+                                Err(_) => {
+                                    warn!("Tool call {} timed out after 8 minutes", tool_call.tool);
+                                    format!("❌ Tool execution timed out after 8 minutes")
+                                }
+                            };
                             let exec_duration = exec_start.elapsed();
                             total_execution_time += exec_duration;
 
@@ -2380,167 +2391,11 @@ The tool will execute immediately and you'll receive the result (success or erro
     }
 }
 
-use std::cell::RefCell;
-
-// Thread-local state for tracking JSON tool call suppression
-thread_local! {
-    static JSON_TOOL_STATE: RefCell<JsonToolState> = RefCell::new(JsonToolState::new());
-}
-
-#[derive(Debug, Clone)]
-struct JsonToolState {
-    suppression_mode: bool,
-    brace_depth: i32,
-    buffer: String,
-}
-
-impl JsonToolState {
-    fn new() -> Self {
-        Self {
-            suppression_mode: false,
-            brace_depth: 0,
-            buffer: String::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.suppression_mode = false;
-        self.brace_depth = 0;
-        self.buffer.clear();
-    }
-}
-
-// Helper function to filter JSON tool calls from display content
+// Helper function to filter JSON tool calls from display content (unused)
+#[allow(dead_code)]
 fn filter_json_tool_calls(content: &str) -> String {
-    JSON_TOOL_STATE.with(|state| {
-        let mut state = state.borrow_mut();
-
-        // If we're already in suppression mode, continue tracking
-        if state.suppression_mode {
-            // Add content to buffer for tracking
-            state.buffer.push_str(content);
-
-            // Count braces to track JSON nesting depth
-            for ch in content.chars() {
-                match ch {
-                    '{' => state.brace_depth += 1,
-                    '}' => {
-                        state.brace_depth -= 1;
-                        // Exit suppression mode when we've closed all braces
-                        if state.brace_depth <= 0 {
-                            debug!("Exiting JSON tool suppression mode - completed JSON object");
-                            state.reset();
-                            // Check if there's any content after the JSON
-                            if let Some(close_pos) = content.rfind('}') {
-                                if close_pos + 1 < content.len() {
-                                    // Return any content after the JSON
-                                    return content[close_pos + 1..].to_string();
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // While in suppression mode, return empty string
-            return String::new();
-        }
-
-        // Check if content contains any JSON tool call patterns
-        let patterns = [
-            r#"{"tool":"#,
-            r#"{"tool"#,  // Partial pattern
-            r#"{"too"#,   // Even more partial
-            r#"{"to"#,    // Very partial
-            r#"{"t"#,     // Extremely partial
-            r#"{ "tool":"#,
-            r#"{"tool" :"#,
-            r#"{ "tool" :"#,
-            r#"{"tool": "#,  // Pattern with space after colon
-            r#"{ "tool": "#, // Pattern with spaces
-        ];
-
-        // Check if any pattern is found in the content
-        for pattern in &patterns {
-            if let Some(pos) = content.find(pattern) {
-                debug!("Detected JSON tool call pattern '{}' at position {} - entering suppression mode", pattern, pos);
-                // Found a tool call pattern - enter suppression mode
-                state.suppression_mode = true;
-                state.brace_depth = 0;
-                state.buffer.clear();
-                state.buffer.push_str(&content[pos..]);
-
-                // Count braces in the remaining content after the pattern
-                for ch in content[pos..].chars() {
-                    match ch {
-                        '{' => state.brace_depth += 1,
-                        '}' => {
-                            state.brace_depth -= 1;
-                            if state.brace_depth <= 0 {
-                                debug!("JSON tool call completed in same chunk - exiting suppression mode");
-                                state.reset();
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Return any content before the JSON tool call
-                if pos > 0 {
-                    return content[..pos].to_string();
-                } else {
-                    return String::new();
-                }
-            }
-        }
-
-        // Check for partial JSON patterns that might be split across chunks
-        let trimmed = content.trim();
-
-        // Special case: single character chunks that might be part of a JSON tool call
-        if content.len() <= 3 && state.buffer.len() < 20 {
-            // Accumulate small chunks to check for patterns
-            state.buffer.push_str(content);
-            if state.buffer.contains(r#"{"tool"#) || state.buffer.contains(r#"{ "tool"#) {
-                state.suppression_mode = true;
-                state.brace_depth = state.buffer.chars().filter(|&c| c == '{').count() as i32;
-                return String::new();
-            }
-        }
-
-        // Check if this looks like the start of a JSON tool call (larger chunks)
-        let pattern = Regex::new(r#"\s*\{\s*"tool"\s*:"#).unwrap();
-        if pattern.is_match(trimmed) {
-            // This might be the start of a JSON tool call
-            // Enter suppression mode preemptively
-            debug!("Detected potential JSON tool call start - entering suppression mode");
-            state.suppression_mode = true;
-            state.brace_depth = 0;
-            state.buffer.clear();
-            state.buffer.push_str(content);
-
-            // Count braces
-            for ch in content.chars() {
-                match ch {
-                    '{' => state.brace_depth += 1,
-                    '}' => {
-                        state.brace_depth -= 1;
-                        if state.brace_depth <= 0 {
-                            state.reset();
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            return String::new();
-        }
-
-        // No JSON tool call detected, return content as-is
-        content.to_string()
-    })
+    // This function is no longer used - replaced by final_filter_json::final_filter_json_tool_calls
+    content.to_string()
 }
 
 // Apply unified diff to an input string with optional [start, end) bounds
@@ -2813,7 +2668,7 @@ fn shell_escape_command(command: &str) -> String {
 fn fix_nested_quotes_in_shell_command(json_str: &str) -> String {
     let mut _result = String::new();
     let _chars = json_str.chars().peekable();
-    // Example: {"tool": "shell", "args": {"command": "python -c 'import os; print("hello")'"}}
+    // Example: {"tool": "shell", "args": {"command": "python -c 'import os; print("hello")'"}
 
     // Look for the pattern: "command": "
     if let Some(command_start) = json_str.find(r#""command": ""#) {
