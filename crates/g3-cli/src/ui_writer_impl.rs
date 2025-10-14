@@ -59,18 +59,18 @@ impl UiWriter for ConsoleUiWriter {
         // Collect arguments instead of printing immediately
         // Filter out any keys that look like they might be agent message content
         // (e.g., keys that are suspiciously long or contain message-like content)
-        let is_valid_arg_key = key.len() < 50 && 
-            !key.contains('\n') && 
-            !key.contains("I'll") && 
-            !key.contains("Let me") &&
-            !key.contains("Here's") &&
-            !key.contains("I can");
-        
+        let is_valid_arg_key = key.len() < 50
+            && !key.contains('\n')
+            && !key.contains("I'll")
+            && !key.contains("Let me")
+            && !key.contains("Here's")
+            && !key.contains("I can");
+
         if is_valid_arg_key {
             self.current_tool_args
-            .lock()
-            .unwrap()
-            .push((key.to_string(), value.to_string()));
+                .lock()
+                .unwrap()
+                .push((key.to_string(), value.to_string()));
         }
     }
 
@@ -90,14 +90,14 @@ impl UiWriter for ConsoleUiWriter {
             if let Some((_, value)) = important_arg {
                 // For multi-line values, only show the first line
                 let first_line = value.lines().next().unwrap_or("");
-                
+
                 // Truncate long values for display
                 let display_value = if first_line.len() > 80 {
                     format!("{}...", &first_line[..77])
                 } else {
                     first_line.to_string()
                 };
-                
+
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {} | {}\x1b[0m", tool_name, display_value);
             } else {
@@ -110,31 +110,31 @@ impl UiWriter for ConsoleUiWriter {
     fn update_tool_output_line(&self, line: &str) {
         let mut current_line = self.current_output_line.lock().unwrap();
         let mut line_printed = self.output_line_printed.lock().unwrap();
-        
+
         // If we've already printed a line, clear it first
         if *line_printed {
             // Move cursor up one line and clear it
             print!("\x1b[1A\x1b[2K");
         }
-        
+
         // Print the new line
         println!("│ \x1b[2m{}\x1b[0m", line);
         let _ = io::stdout().flush();
-        
+
         // Update state
         *current_line = Some(line.to_string());
         *line_printed = true;
     }
-    
+
     fn print_tool_output_line(&self, line: &str) {
         println!("│ \x1b[2m{}\x1b[0m", line);
     }
 
-    fn print_tool_output_summary(&self, hidden_count: usize) {
+    fn print_tool_output_summary(&self, count: usize) {
         println!(
-            "│ \x1b[2m... ({} more line{})\x1b[0m",
-            hidden_count,
-            if hidden_count == 1 { "" } else { "s" }
+            "│ \x1b[2m({} line{})\x1b[0m",
+            count,
+            if count == 1 { "" } else { "s" }
         );
     }
 
@@ -233,20 +233,20 @@ impl UiWriter for RetroTuiWriter {
     fn print_tool_arg(&self, key: &str, value: &str) {
         // Filter out any keys that look like they might be agent message content
         // (e.g., keys that are suspiciously long or contain message-like content)
-        let is_valid_arg_key = key.len() < 50 && 
-            !key.contains('\n') && 
-            !key.contains("I'll") && 
-            !key.contains("Let me") &&
-            !key.contains("Here's") &&
-            !key.contains("I can");
-        
+        let is_valid_arg_key = key.len() < 50
+            && !key.contains('\n')
+            && !key.contains("I'll")
+            && !key.contains("Let me")
+            && !key.contains("Here's")
+            && !key.contains("I can");
+
         if is_valid_arg_key {
             self.current_tool_output
                 .lock()
                 .unwrap()
                 .push(format!("{}: {}", key, value));
         }
-        
+
         // Build caption from first argument (usually the most important one)
         let mut caption = self.current_tool_caption.lock().unwrap();
         if caption.is_empty() && (key == "file_path" || key == "command" || key == "path") {
@@ -279,7 +279,10 @@ impl UiWriter for RetroTuiWriter {
 
     fn update_tool_output_line(&self, line: &str) {
         // For retro mode, we'll just add to the output buffer
-        self.current_tool_output.lock().unwrap().push(line.to_string());
+        self.current_tool_output
+            .lock()
+            .unwrap()
+            .push(line.to_string());
     }
 
     fn print_tool_output_line(&self, line: &str) {

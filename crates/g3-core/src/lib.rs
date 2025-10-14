@@ -706,7 +706,7 @@ impl<W: UiWriter> Agent<W> {
             let provider = self.providers.get(None)?;
             let system_prompt = if provider.has_native_tool_calling() {
                 // For native tool calling providers, use a more explicit system prompt
-                "You are G3, an AI programming agent. Your goal is to analyze, write and modify code to achieve given goals.
+                "You are G3, an AI programming agent of the same skill level as a seasoned engineer at a major technology company. You analyze given tasks and write code to achieve goals.
 
 You have access to tools. When you need to accomplish a task, you MUST use the appropriate tool. Do not just describe what you would do - actually use the tools.
 
@@ -1278,7 +1278,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
             // Add a small delay between iterations to prevent "model busy" errors
             if iteration_count > 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
 
             let provider = self.providers.get(None)?;
@@ -1389,14 +1389,6 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 "First chunk received: content_len={}, finished={}",
                                 chunk.content.len(),
                                 chunk.finished
-                            );
-                        }
-
-                        // Log raw chunk data for debugging
-                        if chunks_received <= 5 || chunk.finished {
-                            debug!(
-                                "Chunk #{}: content={:?}, finished={}, tool_calls={:?}",
-                                chunks_received, chunk.content, chunk.finished, chunk.tool_calls
                             );
                         }
 
@@ -1529,21 +1521,16 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
+                                let output_len = output_lines.len();
 
-                                if output_lines.len() <= MAX_LINES {
-                                    for line in output_lines {
-                                        // Clip line to max width
-                                        let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
-                                        self.ui_writer.print_tool_output_line(&clipped_line);
-                                    }
-                                } else {
-                                    for line in output_lines.iter().take(MAX_LINES) {
-                                        // Clip line to max width
-                                        let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
-                                        self.ui_writer.print_tool_output_line(&clipped_line);
-                                    }
-                                    let hidden_count = output_lines.len() - MAX_LINES;
-                                    self.ui_writer.print_tool_output_summary(hidden_count);
+                                for line in output_lines {
+                                    // Clip line to max width
+                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
+                                    self.ui_writer.update_tool_output_line(&clipped_line);
+                                }
+
+                                if output_len > MAX_LINES {
+                                    self.ui_writer.print_tool_output_summary(output_len);
                                 }
                             }
 
@@ -1552,14 +1539,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 full_response.push_str(final_display_content);
                                 if let Some(summary) = tool_call.args.get("summary") {
                                     if let Some(summary_str) = summary.as_str() {
-                                        // Don't add the "=> " prefix in autonomous mode
-                                        // as it interferes with coach feedback parsing
-                                        if !self.is_autonomous {
-                                            full_response
-                                                .push_str(&format!("\n\n=> {}", summary_str));
-                                        } else {
-                                            full_response.push_str(&format!("\n\n{}", summary_str));
-                                        }
+                                        full_response.push_str(&format!("\n\n{}", summary_str));
                                     }
                                 }
                                 self.ui_writer.println("");
@@ -1569,7 +1549,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 // Add timing if needed
                                 let final_response = if show_timing {
                                     format!(
-                                        "{}\n\n⏱️ {} | 💭 {}",
+                                        "{}\n\n🕝 {} | 💭 {}",
                                         full_response,
                                         Self::format_duration(total_execution_time),
                                         Self::format_duration(_ttft)
@@ -1969,23 +1949,26 @@ The tool will execute immediately and you'll receive the result (success or erro
                         let escaped_command = shell_escape_command(command_str);
 
                         let executor = CodeExecutor::new();
-                        
+
                         // Create a receiver for streaming output
                         struct ToolOutputReceiver<'a, W: UiWriter> {
                             ui_writer: &'a W,
                         }
-                        
+
                         impl<'a, W: UiWriter> g3_execution::OutputReceiver for ToolOutputReceiver<'a, W> {
                             fn on_output_line(&self, line: &str) {
                                 self.ui_writer.update_tool_output_line(line);
                             }
                         }
-                        
+
                         let receiver = ToolOutputReceiver {
                             ui_writer: &self.ui_writer,
                         };
-                        
-                        match executor.execute_bash_streaming(&escaped_command, &receiver).await {
+
+                        match executor
+                            .execute_bash_streaming(&escaped_command, &receiver)
+                            .await
+                        {
                             Ok(result) => {
                                 if result.success {
                                     Ok(if result.stdout.is_empty() {
@@ -2292,120 +2275,6 @@ The tool will execute immediately and you'll receive the result (success or erro
                     ))
                 }
             }
-            "edit_file" => {
-                debug!("Processing edit_file tool call");
-
-                // Extract arguments with better error handling
-                let args_obj = match tool_call.args.as_object() {
-                    Some(obj) => obj,
-                    None => return Ok("❌ Invalid arguments: expected object".to_string()),
-                };
-
-                let file_path = match args_obj.get("file_path").and_then(|v| v.as_str()) {
-                    Some(path) => path,
-                    None => return Ok("❌ Missing or invalid file_path argument".to_string()),
-                };
-
-                let content = match args_obj.get("content").and_then(|v| v.as_str()) {
-                    Some(c) => c,
-                    None => return Ok("❌ Missing or invalid content argument".to_string()),
-                };
-
-                let start_line = match args_obj.get("start_of_range").and_then(|v| v.as_i64()) {
-                    Some(n) if n >= 1 => n as usize,
-                    Some(_) => {
-                        return Ok(
-                            "❌ start_of_range must be >= 1 (lines are 1-indexed)".to_string()
-                        )
-                    }
-                    None => return Ok("❌ Missing or invalid start_of_range argument".to_string()),
-                };
-
-                let end_line = match args_obj.get("end_of_range").and_then(|v| v.as_i64()) {
-                    Some(n) if n >= start_line as i64 => n as usize,
-                    Some(_) => return Ok("❌ end_of_range must be >= start_of_range".to_string()),
-                    None => return Ok("❌ Missing or invalid end_of_range argument".to_string()),
-                };
-
-                debug!(
-                    "edit_file: path={}, start={}, end={}",
-                    file_path, start_line, end_line
-                );
-
-                // Read the existing file
-                let existing_content = match std::fs::read_to_string(file_path) {
-                    Ok(content) => content,
-                    Err(e) => return Ok(format!("❌ Failed to read file '{}': {}", file_path, e)),
-                };
-
-                // Split into lines, preserving empty lines
-                let mut lines: Vec<String> =
-                    existing_content.lines().map(|s| s.to_string()).collect();
-                let original_line_count = lines.len();
-
-                // Validate the range
-                if start_line > lines.len() {
-                    // Allow appending at the end if start_line == lines.len() + 1
-                    if start_line == lines.len() + 1 && end_line == start_line {
-                        // This is an append operation
-                        lines.extend(content.lines().map(|s| s.to_string()));
-
-                        // Write back to file
-                        let new_content = lines.join("\n");
-                        match std::fs::write(file_path, &new_content) {
-                            Ok(()) => {
-                                let lines_added = content.lines().count();
-                                return Ok(format!(
-                                    "✅ Successfully appended {} lines to '{}'. File now has {} lines (was {} lines)",
-                                    lines_added, file_path, lines.len(), original_line_count
-                                ));
-                            }
-                            Err(e) => {
-                                return Ok(format!(
-                                    "❌ Failed to write to file '{}': {}",
-                                    file_path, e
-                                ))
-                            }
-                        }
-                    } else {
-                        return Ok(format!(
-                            "❌ start_of_range {} exceeds file length ({} lines)",
-                            start_line,
-                            lines.len()
-                        ));
-                    }
-                }
-
-                // Split the new content into lines
-                let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-
-                // Perform the replacement
-                // Convert from 1-indexed (inclusive) to 0-indexed range for splice
-                // splice takes start..end where end is EXCLUSIVE, so for inclusive end_line, we need end_line + 1
-                let start_idx = start_line - 1;
-                let end_idx = (end_line + 1).min(lines.len() + 1); // +1 because splice end is exclusive
-                let actual_end_line = end_line.min(lines.len()); // For reporting
-                let lines_being_replaced = actual_end_line - start_line + 1;
-
-                debug!(
-                    "Replacing lines {}..={} (0-indexed splice: {}..{})",
-                    start_line, end_line, start_idx, end_idx
-                );
-                lines.splice(start_idx..end_idx, new_lines.clone());
-
-                // Write the result back to the file
-                let new_content = lines.join("\n");
-                match std::fs::write(file_path, &new_content) {
-                    Ok(()) => {
-                        Ok(format!(
-                            "✅ Successfully edited '{}': replaced {} lines ({}-{}) with {} lines. File now has {} lines (was {} lines)",
-                            file_path, lines_being_replaced, start_line, actual_end_line,
-                            new_lines.len(), lines.len(), original_line_count
-                        ))
-                    }
-                    Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
-                }
-            }
             "str_replace" => {
                 debug!("Processing str_replace tool call");
 
@@ -2464,10 +2333,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                     if let Some(summary_str) = summary.as_str() {
                         Ok(format!("{}", summary_str))
                     } else {
-                        Ok("✅ Task completed".to_string())
+                        Ok("✅ Turn completed".to_string())
                     }
                 } else {
-                    Ok("✅ Task completed".to_string())
+                    Ok("✅ Turn completed".to_string())
                 }
             }
             _ => {
