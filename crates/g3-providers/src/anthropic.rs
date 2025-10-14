@@ -274,22 +274,37 @@ impl AnthropicProvider {
         let mut current_tool_calls: Vec<ToolCall> = Vec::new();
         let mut partial_tool_json = String::new(); // Accumulate partial JSON for tool calls
         let mut accumulated_usage: Option<Usage> = None;
+        let mut byte_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
         
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
-                    let chunk_str = match std::str::from_utf8(&chunk) {
-                        Ok(s) => s,
+                    // Append new bytes to our buffer
+                    byte_buffer.extend_from_slice(&chunk);
+                    
+                    // Try to convert the entire buffer to UTF-8
+                    let chunk_str = match std::str::from_utf8(&byte_buffer) {
+                        Ok(s) => {
+                            // Successfully converted entire buffer, clear it and use the string
+                            let result = s.to_string();
+                            byte_buffer.clear();
+                            result
+                        }
                         Err(e) => {
-                            error!("Invalid UTF-8 in stream chunk: {}", e);
-                            let _ = tx
-                                .send(Err(anyhow!("Invalid UTF-8 in stream chunk: {}", e)))
-                                .await;
-                            return accumulated_usage;
+                            // Check if this is an incomplete sequence at the end
+                            let valid_up_to = e.valid_up_to();
+                            if valid_up_to > 0 {
+                                // We have some valid UTF-8, extract it and keep the rest for next iteration
+                                let valid_bytes = byte_buffer.drain(..valid_up_to).collect::<Vec<_>>();
+                                std::str::from_utf8(&valid_bytes).unwrap().to_string()
+                            } else {
+                                // No valid UTF-8 at all, skip this chunk and continue
+                                continue;
+                            }
                         }
                     };
 
-                    buffer.push_str(chunk_str);
+                    buffer.push_str(&chunk_str);
 
                     // Process complete lines
                     while let Some(line_end) = buffer.find('\n') {

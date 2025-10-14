@@ -1,4 +1,4 @@
-# G3 General Purpose AI Agent - Design Document
+# G3 - AI Coding Agent - Design Document
 
 ## Overview
 
@@ -8,7 +8,7 @@ The agent follows a **tool-first philosophy**: instead of just providing advice,
 
 ## Core Principles
 
-1. **Tool-First Philosophy**: Solve problems by actively using tools rather than just describing solutions
+1. **Tool-First Philosophy**: Solve problems by actively using tools rather than just providing advice
 2. **Modular Architecture**: Clear separation of concerns across multiple Rust crates
 3. **Provider Flexibility**: Support multiple LLM providers through a unified interface
 4. **Modularity**: Clear separation of concerns
@@ -23,11 +23,11 @@ G3 is organized as a Rust workspace with the following crates:
 
 ```
 g3/
-├── src/main.rs                    # Main entry point
+├── src/main.rs                   # Main entry point (delegates to g3-cli)
 ├── crates/
-│   ├── g3-cli/                   # Command-line interface and TUI
-│   ├── g3-core/                  # Core agent engine and logic
-│   ├── g3-providers/             # LLM provider abstractions
+│   ├── g3-cli/                   # Command-line interface, TUI, and retro mode
+│   ├── g3-core/                  # Core agent engine, tools, and streaming logic
+│   ├── g3-providers/             # LLM provider abstractions and implementations
 │   ├── g3-config/                # Configuration management
 │   └── g3-execution/             # Code execution engine
 ├── logs/                         # Session logs (auto-created)
@@ -74,7 +74,7 @@ g3/
 - Error handling with automatic retry logic
 
 **Key Features:**
-- **Context Window Intelligence**: Automatic monitoring with percentage-based tracking (~80% capacity triggers auto-summarization)
+- **Context Window Intelligence**: Automatic monitoring with percentage-based tracking (80% capacity triggers auto-summarization)
 - **Tool System**: Built-in tools for file operations (read, write, edit), shell commands, and structured output
 - **Streaming Parser**: Real-time parsing of LLM responses with tool call detection and execution
 - **Session Management**: Automatic session logging with detailed conversation history and token usage
@@ -86,6 +86,7 @@ g3/
 - `write_file`: Create or overwrite files with content
 - `str_replace`: Apply unified diffs to files with precise editing
 - `final_output`: Signal task completion with detailed summaries
+- **Project Management**: Workspace handling, requirements.md processing for autonomous mode
 
 ### 2. g3-providers: LLM Provider Abstraction
 
@@ -97,7 +98,7 @@ g3/
 
 **Supported Providers:**
 - **Anthropic**: Claude models via API with native tool calling support
-- **Databricks**: Foundation Model APIs with OAuth and token-based authentication
+- **Databricks**: Foundation Model APIs with OAuth and token-based authentication (default provider)
 - **Embedded**: Local models via llama.cpp with GPU acceleration (Metal/CUDA)
 - **Provider Registry**: Dynamic provider management and hot-swapping
 
@@ -119,7 +120,7 @@ g3/
 
 **Execution Modes:**
 - **Single-shot**: Execute one task and exit
-- **Interactive**: REPL-style conversation with the agent
+- **Interactive**: REPL-style conversation with the agent (default mode)
 - **Autonomous**: Coach-player feedback loop for complex projects
 - **Retro TUI**: Full-screen terminal interface with real-time updates
 
@@ -139,11 +140,10 @@ g3/
 - Multi-language code execution support
 - Error handling and result formatting
 
-**Supported Languages:**
-- **Bash/Shell**: Direct command execution with streaming output
-- **Python**: Script execution via temporary files
-- **JavaScript**: Node.js-based execution
-- **Extensible**: Framework for adding additional language support
+**Supported Execution:**
+- **Bash/Shell**: Direct command execution with streaming output (primary use case)
+- **Python**: Script execution via temporary files (legacy support)
+- **JavaScript**: Node.js-based execution (legacy support)
 
 **Key Features:**
 - **Streaming Output**: Real-time command output display
@@ -161,7 +161,7 @@ g3/
 - CLI argument integration
 
 **Configuration Hierarchy:**
-1. Default configuration (embedded in code)
+1. Default configuration (Databricks provider with OAuth)
 2. Configuration files (`~/.config/g3/config.toml`, `./g3.toml`)
 3. Environment variables (`G3_*`)
 4. CLI arguments (highest priority)
@@ -216,7 +216,7 @@ Advanced autonomous operation with coach-player feedback:
 
 ## Provider Comparison
 
-| Feature | Anthropic | Databricks | Embedded |
+| Feature | Anthropic | Databricks (Default) | Embedded |
 |---------|-----------|------------|----------|
 | **Cost** | Pay per token | Pay per token | Free after download |
 | **Privacy** | Data sent to API | Data sent to API | Completely local |
@@ -242,7 +242,7 @@ max_tokens = 8192
 temperature = 0.1
 ```
 
-### Enterprise Setup (Databricks)
+### Enterprise Setup (Databricks - Default)
 ```toml
 [providers]
 default_provider = "databricks"
@@ -314,7 +314,7 @@ g3 --retro --theme dracula
 # Full-screen terminal interface
 ```
 
-## Future Enhancements
+## Implementation Details
 
 ### Planned Features
 - **Plugin System**: Custom tool and provider plugins
@@ -341,10 +341,38 @@ g3 --retro --theme dracula
 - **Testing**: Unit tests, integration tests, and property-based testing
 
 ### Performance Considerations
-- **Async-First**: All I/O operations are asynchronous
+- **Async-First**: All I/O operations are asynchronous (Tokio runtime)
 - **Streaming**: Real-time response processing where possible
 - **Memory Efficiency**: Careful memory management for large contexts
 - **Caching**: Strategic caching of expensive operations
 - **Profiling**: Regular performance profiling and optimization
 
 This design document reflects the current state of G3 as a mature, production-ready AI coding agent with sophisticated architecture and comprehensive feature set.
+
+## Current Implementation Status
+
+### Fully Implemented
+- ✅ **Core Agent Engine**: Complete with streaming, tool execution, and context management
+- ✅ **Provider System**: Anthropic, Databricks, and Embedded providers with OAuth support
+- ✅ **Tool System**: All 5 core tools (shell, read_file, write_file, str_replace, final_output)
+- ✅ **CLI Interface**: Interactive mode, single-shot mode, retro TUI
+- ✅ **Autonomous Mode**: Coach-player feedback loop with requirements.md processing
+- ✅ **Configuration**: TOML-based config with environment overrides
+- ✅ **Error Handling**: Comprehensive retry logic and error classification
+- ✅ **Session Logging**: Automatic session tracking and JSON logs
+- ✅ **Context Management**: Auto-summarization at 80% capacity
+
+### Architecture Highlights
+- **Workspace**: 5 crates with clear separation of concerns
+- **Dependencies**: Modern Rust ecosystem (Tokio, Clap, Serde, etc.)
+- **Streaming**: Real-time response processing with tool call detection
+- **Cross-Platform**: Works on macOS, Linux, and Windows
+- **GPU Support**: Metal acceleration for local models on macOS
+
+### Key Files
+- `src/main.rs`: 6-line entry point delegating to g3-cli
+- `crates/g3-core/src/lib.rs`: 2953 lines - main agent implementation
+- `crates/g3-cli/src/lib.rs`: 1354 lines - CLI and interaction modes
+- `crates/g3-providers/src/lib.rs`: 144 lines - provider trait and registry
+- `crates/g3-config/src/lib.rs`: 265 lines - configuration management
+- `crates/g3-execution/src/lib.rs`: 284 lines - code execution engine

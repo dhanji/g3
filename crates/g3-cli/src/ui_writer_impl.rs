@@ -149,7 +149,6 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_agent_prompt(&self) {
-        print!(" ");
         let _ = io::stdout().flush();
     }
 
