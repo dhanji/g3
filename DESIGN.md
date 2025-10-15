@@ -370,9 +370,9 @@ This design document reflects the current state of G3 as a mature, production-re
 - **GPU Support**: Metal acceleration for local models on macOS
 
 ### Key Files
-- `src/main.rs`: 6-line entry point delegating to g3-cli
-- `crates/g3-core/src/lib.rs`: 2953 lines - main agent implementation
-- `crates/g3-cli/src/lib.rs`: 1354 lines - CLI and interaction modes
-- `crates/g3-providers/src/lib.rs`: 144 lines - provider trait and registry
-- `crates/g3-config/src/lib.rs`: 265 lines - configuration management
-- `crates/g3-execution/src/lib.rs`: 284 lines - code execution engine
+- `src/main.rs`: main entry point delegating to g3-cli
+- `crates/g3-core/src/lib.rs`: main agent implementation
+- `crates/g3-cli/src/lib.rs`: CLI and interaction modes
+- `crates/g3-providers/src/lib.rs`: provider trait and registry
+- `crates/g3-config/src/lib.rs`: configuration management
+- `crates/g3-execution/src/lib.rs`: code execution engine

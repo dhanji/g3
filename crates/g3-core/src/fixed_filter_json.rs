@@ -14,7 +14,6 @@ thread_local! {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct FixedJsonToolState {
     suppression_mode: bool,
     brace_depth: i32,
@@ -24,7 +23,7 @@ struct FixedJsonToolState {
 }
 
 impl FixedJsonToolState {
-    #[allow(dead_code)]
+
 fn new() -> Self {
         Self {
             suppression_mode: false,
@@ -35,7 +34,7 @@ fn new() -> Self {
         }
     }
 
-    #[allow(dead_code)]
+
 fn reset(&mut self) {
         self.suppression_mode = false;
         self.brace_depth = 0;
@@ -46,7 +45,7 @@ fn reset(&mut self) {
 }
 
 // FINAL CORRECTED implementation according to specification
-#[allow(dead_code)]
+
 pub fn fixed_filter_json_tool_calls(content: &str) -> String {
     if content.is_empty() {
         return String::new();
@@ -166,7 +165,7 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
 
 // Helper function to extract content with JSON tool call filtered out
 // Returns everything except the JSON between the first '{' and last '}' (inclusive)
-#[allow(dead_code)]
+
 fn extract_fixed_content(full_content: &str, json_start: usize) -> String {
     // Find the end of the JSON using proper brace counting with string handling
     let mut brace_depth = 0;
@@ -209,7 +208,7 @@ fn extract_fixed_content(full_content: &str, json_start: usize) -> String {
 }
 
 // Reset function for testing
-#[allow(dead_code)]
+
 pub fn reset_fixed_json_tool_state() {
     FIXED_JSON_TOOL_STATE.with(|state| {
         let mut state = state.borrow_mut();
