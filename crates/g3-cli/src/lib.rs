@@ -236,7 +236,7 @@ pub async fn run() -> Result<()> {
         let result = agent
             .execute_task_with_timing(&task, None, false, cli.show_prompt, cli.show_code, true)
             .await?;
-        output.print_markdown(&result.response);
+        output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
         if !cli.retro {
@@ -809,7 +809,7 @@ async fn execute_task<W: UiWriter>(
                 if attempt > 1 {
                     output.print(&format!("✅ Request succeeded after {} attempts", attempt));
                 }
-                output.print_markdown(&result.response);
+                output.print_smart(&result.response);
                 return;
             }
             Err(e) => {
@@ -1087,7 +1087,7 @@ async fn run_autonomous(
                     Ok(result) => {
                         // Display player's implementation result
                         output.print("📝 Player implementation completed:");
-                        output.print_markdown(&result.response);
+                        output.print_smart(&result.response);
                         break;
                     }
                     Err(e) => {
@@ -1332,7 +1332,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
             continue;
         }
 
-        output.print(&format!("Coach feedback:\n{}", coach_feedback_text));
+        output.print_smart(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
         if coach_result.is_approved() {

@@ -27,8 +27,38 @@ impl SimpleOutput {
         Self { mad_skin }
     }
 
+    /// Detect if text contains markdown formatting
+    fn has_markdown(&self, text: &str) -> bool {
+        // Check for common markdown patterns
+        text.contains("**") ||
+        text.contains("```") ||
+        text.contains("`") ||
+        text.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with('#') ||
+            trimmed.starts_with("- ") ||
+            trimmed.starts_with("* ") ||
+            trimmed.starts_with("+ ") ||
+            (trimmed.len() > 2 && 
+             trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) &&
+             trimmed.chars().nth(1) == Some('.') &&
+             trimmed.chars().nth(2) == Some(' ')) ||
+            (trimmed.contains('[') && trimmed.contains("]("))
+        }) ||
+        (text.matches('*').count() >= 2 && !text.contains("/*") && !text.contains("*/"))
+    }
+
     pub fn print(&self, text: &str) {
         println!("{}", text);
+    }
+
+    /// Smart print that automatically detects and renders markdown
+    pub fn print_smart(&self, text: &str) {
+        if self.has_markdown(text) {
+            self.print_markdown(text);
+        } else {
+            self.print(text);
+        }
     }
 
     pub fn print_markdown(&self, markdown: &str) {
@@ -62,5 +92,35 @@ impl SimpleOutput {
         print!("{}{}", filled_chars, empty_chars);
         print!("{}", ResetColor);
         println!(" {:.1}% | {}/{} tokens", percentage, used, total);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_markdown_detection() {
+        let output = SimpleOutput::new();
+        
+        // Should detect markdown
+        assert!(output.has_markdown("**bold text**"));
+        assert!(output.has_markdown("`code`"));
+        assert!(output.has_markdown("```\ncode block\n```"));
+        assert!(output.has_markdown("# Header"));
+        assert!(output.has_markdown("- list item"));
+        assert!(output.has_markdown("* list item"));
+        assert!(output.has_markdown("+ list item"));
+        assert!(output.has_markdown("1. numbered item"));
+        assert!(output.has_markdown("[link](url)"));
+        assert!(output.has_markdown("*italic* text"));
+        
+        // Should NOT detect markdown
+        assert!(!output.has_markdown("plain text"));
+        assert!(!output.has_markdown("file.txt"));
+        assert!(!output.has_markdown("/* comment */"));
+        assert!(!output.has_markdown("just one * asterisk"));
+        assert!(!output.has_markdown("📁 Workspace: /path/to/dir"));
+        assert!(!output.has_markdown("✅ Success message"));
     }
 }

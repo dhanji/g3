@@ -98,8 +98,25 @@ impl UiWriter for ConsoleUiWriter {
                     first_line.to_string()
                 };
 
+                // Add range information for read_file tool calls
+                let header_suffix = if tool_name == "read_file" {
+                    // Check if start or end parameters are present
+                    let has_start = args.iter().any(|(k, _)| k == "start");
+                    let has_end = args.iter().any(|(k, _)| k == "end");
+                    
+                    if has_start || has_end {
+                        let start_val = args.iter().find(|(k, _)| k == "start").map(|(_, v)| v.as_str()).unwrap_or("0");
+                        let end_val = args.iter().find(|(k, _)| k == "end").map(|(_, v)| v.as_str()).unwrap_or("end");
+                        format!(" [{}..{}]", start_val, end_val)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
                 // Print with bold green formatting using ANSI escape codes
-                println!("┌─\x1b[1;32m {} | {}\x1b[0m", tool_name, display_value);
+                println!("┌─\x1b[1;32m {} | {}{}\x1b[0m", tool_name, display_value, header_suffix);
             } else {
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {}\x1b[0m", tool_name);
@@ -255,7 +272,18 @@ impl UiWriter for RetroTuiWriter {
             } else {
                 value.to_string()
             };
-            *caption = truncated;
+            
+            // Add range information for read_file tool calls
+            let tool_name = self.current_tool_name.lock().unwrap();
+            let range_suffix = if tool_name.as_ref().map_or(false, |name| name == "read_file") {
+                // We need to check if start/end args will be provided - for now just check if this is a partial read
+                // This is a simplified approach since we're building the caption incrementally
+                String::new() // We'll handle this in print_tool_output_header instead
+            } else {
+                String::new()
+            };
+            
+            *caption = format!("{}{}", truncated, range_suffix);
         }
     }
 
@@ -263,7 +291,21 @@ impl UiWriter for RetroTuiWriter {
         // This is called right before tool execution starts
         // Send the initial tool header to the TUI now
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
-            let caption = self.current_tool_caption.lock().unwrap().clone();
+            let mut caption = self.current_tool_caption.lock().unwrap().clone();
+            
+            // Add range information for read_file tool calls
+            if tool_name == "read_file" {
+                // Check the tool output for start/end parameters
+                let output = self.current_tool_output.lock().unwrap();
+                let has_start = output.iter().any(|line| line.starts_with("start:"));
+                let has_end = output.iter().any(|line| line.starts_with("end:"));
+                
+                if has_start || has_end {
+                    let start_val = output.iter().find(|line| line.starts_with("start:")).map(|line| line.split(':').nth(1).unwrap_or("0").trim()).unwrap_or("0");
+                    let end_val = output.iter().find(|line| line.starts_with("end:")).map(|line| line.split(':').nth(1).unwrap_or("end").trim()).unwrap_or("end");
+                    caption = format!("{} [{}..{}]", caption, start_val, end_val);
+                }
+            }
 
             // Send the tool output with initial header
             self.tui.tool_output(tool_name, &caption, "");
