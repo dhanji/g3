@@ -620,6 +620,11 @@ impl<W: UiWriter> Agent<W> {
         Ok((provider.name().to_string(), provider.model().to_string()))
     }
 
+    /// Get the current session ID for this agent
+    pub fn get_session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
     pub async fn execute_task(
         &mut self,
         description: &str,

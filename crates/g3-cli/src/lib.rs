@@ -1,4 +1,43 @@
-use anyhow::Result;
+
+/// Extract coach feedback by reading from the coach agent's specific log file
+/// Uses the coach agent's session ID to find the exact log file
+fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_agent: &g3_core::Agent<ConsoleUiWriter>, output: &SimpleOutput) -> Result<String> {
+    // CORRECT APPROACH: Get the session ID from the current coach agent
+    // and read its specific log file directly
+    
+    // Get the coach agent's session ID
+    let session_id = coach_agent.get_session_id()
+        .ok_or_else(|| anyhow::anyhow!("Coach agent has no session ID"))?;
+    
+    // Construct the log file path for this specific coach session
+    let logs_dir = std::path::Path::new("logs");
+    let log_file_path = logs_dir.join(format!("g3_session_{}.json", session_id));
+    
+    // Read the coach agent's specific log file
+    if log_file_path.exists() {
+        if let Ok(log_content) = std::fs::read_to_string(&log_file_path) {
+            if let Ok(log_json) = serde_json::from_str::<serde_json::Value>(&log_content) {
+                if let Some(context_window) = log_json.get("context_window") {
+                    if let Some(conversation_history) = context_window.get("conversation_history") {
+                        if let Some(messages) = conversation_history.as_array() {
+                            // Simply get the last message content - this is the coach's final feedback
+                            if let Some(last_message) = messages.last() {
+                                if let Some(content) = last_message.get("content") {
+                                    if let Some(content_str) = content.as_str() {
+                                        output.print(&format!("✅ Extracted coach feedback from session: {}", session_id));
+                                        return Ok(content_str.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(anyhow::anyhow!("Could not extract feedback from coach session: {}", session_id))
+}use anyhow::Result;
 use clap::Parser;
 use g3_config::Config;
 use g3_core::{project::Project, ui_writer::UiWriter, Agent};
@@ -1015,6 +1054,19 @@ async fn run_autonomous(
 
             output.print("🎯 Starting player implementation...");
 
+            // Display what feedback the player is receiving
+            // If there's no coach feedback on subsequent turns, this is an error
+            if coach_feedback.is_empty() {
+                if turn > 1 {
+                    return Err(anyhow::anyhow!("Player mode error: No coach feedback received on turn {}", turn));
+                }
+                output.print("📋 Player starting initial implementation (no prior coach feedback)");
+            } else {
+                output.print(&format!("📋 Player received coach feedback ({} chars):", coach_feedback.len()));
+                output.print(&format!("{}", coach_feedback));
+            }
+            output.print(""); // Empty line for readability
+
             // Execute player task with retry on error
             let mut player_retry_count = 0;
             const MAX_PLAYER_RETRIES: u32 = 3;
@@ -1263,7 +1315,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         let coach_result = coach_result_opt.unwrap();
 
         // Extract the complete coach feedback from final_output
-        let coach_feedback_text = coach_result.extract_final_output();
+        let coach_feedback_text = extract_coach_feedback_from_logs(&coach_result, &coach_agent, &output)?;
 
         // Log the size of the feedback for debugging
         info!(
