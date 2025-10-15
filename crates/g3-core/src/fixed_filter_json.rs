@@ -4,8 +4,8 @@
 // 3. Only elide JSON content between first '{' and last '}' (inclusive)
 // 4. Return everything else as the final filtered string
 
-use std::cell::RefCell;
 use regex::Regex;
+use std::cell::RefCell;
 use tracing::debug;
 
 // Thread-local state for tracking JSON tool call suppression
@@ -23,8 +23,7 @@ struct FixedJsonToolState {
 }
 
 impl FixedJsonToolState {
-
-fn new() -> Self {
+    fn new() -> Self {
         Self {
             suppression_mode: false,
             brace_depth: 0,
@@ -34,8 +33,7 @@ fn new() -> Self {
         }
     }
 
-
-fn reset(&mut self) {
+    fn reset(&mut self) {
         self.suppression_mode = false;
         self.brace_depth = 0;
         self.buffer.clear();
@@ -50,10 +48,10 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
     if content.is_empty() {
         return String::new();
     }
-    
+
     FIXED_JSON_TOOL_STATE.with(|state| {
         let mut state = state.borrow_mut();
-        
+
         // Add new content to buffer
         state.buffer.push_str(content);
 
@@ -68,17 +66,20 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
                         // Exit suppression mode when all braces are closed
                         if state.brace_depth <= 0 {
                             debug!("JSON tool call completed - exiting suppression mode");
-                            
+
                             // Extract the complete result with JSON filtered out
-                            let result = extract_fixed_content(&state.buffer, state.json_start_in_buffer.unwrap_or(0));
-                            
-                            // Return only the part we haven't returned yet 
+                            let result = extract_fixed_content(
+                                &state.buffer,
+                                state.json_start_in_buffer.unwrap_or(0),
+                            );
+
+                            // Return only the part we haven't returned yet
                             let new_content = if result.len() > state.content_returned_up_to {
                                 result[state.content_returned_up_to..].to_string()
                             } else {
                                 String::new()
                             };
-                            
+
                             state.reset();
                             return new_content;
                         }
@@ -89,34 +90,37 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
             // Still in suppression mode, return empty string (content is being accumulated)
             return String::new();
         }
-        
+
         // Check for tool call pattern using corrected regex
         // More flexible than the strict specification to handle real-world JSON
-        let tool_call_regex = Regex::new(r#"(?m)^.*\{\s*"tool"\s*:\s*""#).unwrap();
-        
+        let tool_call_regex = Regex::new(r#"(?m)^\s*\{\s*"tool"\s*:\s*""#).unwrap();
+
         if let Some(captures) = tool_call_regex.find(&state.buffer) {
             let match_text = captures.as_str();
-            
+
             // Find the position of the opening brace in the match
             if let Some(brace_offset) = match_text.find('{') {
                 let json_start = captures.start() + brace_offset;
-                
-                debug!("Detected JSON tool call at position {} - entering suppression mode", json_start);
-                
+
+                debug!(
+                    "Detected JSON tool call at position {} - entering suppression mode",
+                    json_start
+                );
+
                 // Return content before JSON that we haven't returned yet
                 let content_before_json = if json_start >= state.content_returned_up_to {
                     state.buffer[state.content_returned_up_to..json_start].to_string()
                 } else {
                     String::new()
                 };
-                
+
                 state.content_returned_up_to = json_start;
-                
+
                 // Enter suppression mode
                 state.suppression_mode = true;
                 state.brace_depth = 0;
                 state.json_start_in_buffer = Some(json_start);
-                
+
                 // Count braces from the JSON start to see if it's complete
                 let buffer_clone = state.buffer.clone();
                 for ch in buffer_clone[json_start..].chars() {
@@ -128,15 +132,16 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
                                 // JSON is complete in this chunk
                                 debug!("JSON tool call completed in same chunk");
                                 let result = extract_fixed_content(&buffer_clone, json_start);
-                                
+
                                 // Return content before JSON plus content after JSON
                                 let content_after_json = if result.len() > json_start {
                                     &result[json_start..]
                                 } else {
                                     ""
                                 };
-                                
-                                let final_result = format!("{}{}", content_before_json, content_after_json);
+
+                                let final_result =
+                                    format!("{}{}", content_before_json, content_after_json);
                                 state.reset();
                                 return final_result;
                             }
@@ -144,7 +149,7 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
                         _ => {}
                     }
                 }
-                
+
                 // JSON is incomplete, return only the content before JSON
                 return content_before_json;
             }
@@ -158,7 +163,7 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
         } else {
             String::new()
         };
-        
+
         new_content
     })
 }
@@ -172,13 +177,13 @@ fn extract_fixed_content(full_content: &str, json_start: usize) -> String {
     let mut json_end = json_start;
     let mut in_string = false;
     let mut escape_next = false;
-    
+
     for (i, ch) in full_content[json_start..].char_indices() {
         if escape_next {
             escape_next = false;
             continue;
         }
-        
+
         match ch {
             '\\' if in_string => escape_next = true,
             '"' if !escape_next => in_string = !in_string,
@@ -195,7 +200,7 @@ fn extract_fixed_content(full_content: &str, json_start: usize) -> String {
             _ => {}
         }
     }
-    
+
     // Return content before and after the JSON (excluding the JSON itself)
     let before = &full_content[..json_start];
     let after = if json_end < full_content.len() {
@@ -203,7 +208,7 @@ fn extract_fixed_content(full_content: &str, json_start: usize) -> String {
     } else {
         ""
     };
-    
+
     format!("{}{}", before, after)
 }
 

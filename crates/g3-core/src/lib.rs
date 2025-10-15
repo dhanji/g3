@@ -706,6 +706,10 @@ impl<W: UiWriter> Agent<W> {
         show_timing: bool,
         cancellation_token: CancellationToken,
     ) -> Result<TaskResult> {
+        // Reset the JSON tool call filter state at the start of each new task
+        // This prevents the filter from staying in suppression mode between user interactions
+        fixed_filter_json::reset_fixed_json_tool_state();
+        
         // Generate session ID based on the initial prompt if this is a new session
         if self.session_id.is_none() {
             self.session_id = Some(self.generate_session_id(description));
@@ -1634,6 +1638,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 full_response.push_str(final_display_content);
                             }
                             tool_executed = true;
+
+                            // Reset the JSON tool call filter state after each tool execution
+                            // This ensures the filter doesn't stay in suppression mode for subsequent streaming content
+                            fixed_filter_json::reset_fixed_json_tool_state();
 
                             // Reset parser for next iteration
                             parser.reset();
