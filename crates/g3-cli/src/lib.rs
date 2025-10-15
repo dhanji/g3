@@ -94,6 +94,10 @@ pub struct Cli {
     #[arg(long, default_value = "5")]
     pub max_turns: usize,
 
+    /// Override requirements text for autonomous mode (instead of reading from requirements.md)
+    #[arg(long, value_name = "TEXT")]
+    pub requirements: Option<String>,
+
     /// Use retro terminal UI (inspired by 80s sci-fi)
     #[arg(long)]
     pub retro: bool,
@@ -174,7 +178,13 @@ pub async fn run() -> Result<()> {
 
     // Create project model
     let project = if cli.autonomous {
-        Project::new_autonomous(workspace_dir.clone())?
+        if let Some(requirements_text) = cli.requirements {
+            // Use requirements text override
+            Project::new_autonomous_with_requirements(workspace_dir.clone(), requirements_text)?
+        } else {
+            // Use traditional requirements.md file
+            Project::new_autonomous(workspace_dir.clone())?
+        }
     } else {
         Project::new(workspace_dir.clone())
     };
@@ -933,11 +943,12 @@ async fn run_autonomous(
     // Check if requirements exist
     if !project.has_requirements() {
         output.print("❌ Error: requirements.md not found in workspace directory");
-        output.print("   Please create a requirements.md file with your project requirements at:");
-        output.print(&format!(
-            "   {}/requirements.md",
-            project.workspace().display()
-        ));
+        output.print("   Please either:");
+        output.print("   1. Create a requirements.md file with your project requirements at:");
+        output.print(&format!("      {}/requirements.md", project.workspace().display()));
+        output.print("   2. Or use the --requirements flag to provide requirements text directly:");
+        output.print("      g3 --autonomous --requirements \"Your requirements here\"");
+        output.print("");
 
         // Generate final report even for early exit
         let elapsed = start_time.elapsed();
@@ -977,7 +988,7 @@ async fn run_autonomous(
     let requirements = match project.read_requirements()? {
         Some(content) => content,
         None => {
-            output.print("❌ Error: Could not read requirements.md");
+            output.print("❌ Error: Could not read requirements (neither --requirements flag nor requirements.md file provided)");
 
             // Generate final report even for early exit
             let elapsed = start_time.elapsed();
@@ -1014,7 +1025,12 @@ async fn run_autonomous(
         }
     };
 
-    output.print("📋 Requirements loaded from requirements.md");
+    // Display appropriate message based on requirements source
+    if project.requirements_text.is_some() {
+        output.print("📋 Requirements loaded from --requirements flag");
+    } else {
+        output.print("📋 Requirements loaded from requirements.md");
+    }
     output.print("🔄 Starting coach-player feedback loop...");
 
     // Check if implementation files already exist

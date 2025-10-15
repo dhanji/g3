@@ -11,6 +11,9 @@ pub struct Project {
     /// Path to the requirements document (for autonomous mode)
     pub requirements_path: Option<PathBuf>,
     
+    /// Override requirements text (takes precedence over requirements_path)
+    pub requirements_text: Option<String>,
+    
     /// Whether the project is in autonomous mode
     pub autonomous: bool,
     
@@ -33,6 +36,7 @@ impl Project {
         Self {
             workspace_dir,
             requirements_path: None,
+            requirements_text: None,
             autonomous: false,
             name,
             session_id: None,
@@ -49,6 +53,18 @@ impl Project {
         if requirements_path.exists() {
             project.requirements_path = Some(requirements_path);
         }
+        
+        Ok(project)
+    }
+    
+    /// Create a project for autonomous mode with requirements text override
+    pub fn new_autonomous_with_requirements(workspace_dir: PathBuf, requirements_text: String) -> Result<Self> {
+        let mut project = Self::new(workspace_dir.clone());
+        project.autonomous = true;
+        project.requirements_text = Some(requirements_text);
+        
+        // Don't look for requirements.md file when text is provided
+        // The text override takes precedence
         
         Ok(project)
     }
@@ -78,7 +94,8 @@ impl Project {
     
     /// Check if requirements file exists
     pub fn has_requirements(&self) -> bool {
-        self.requirements_path.is_some()
+        // Has requirements if either text override is provided or requirements file exists
+        self.requirements_text.is_some() || self.requirements_path.is_some()
     }
     
     /// Check if implementation files exist in the workspace
@@ -125,7 +142,11 @@ impl Project {
     
     /// Read the requirements file content
     pub fn read_requirements(&self) -> Result<Option<String>> {
-        if let Some(ref path) = self.requirements_path {
+        // Prioritize requirements text override
+        if let Some(ref text) = self.requirements_text {
+            Ok(Some(text.clone()))
+        } else if let Some(ref path) = self.requirements_path {
+            // Fall back to reading from file
             Ok(Some(std::fs::read_to_string(path)?))
         } else {
             Ok(None)
