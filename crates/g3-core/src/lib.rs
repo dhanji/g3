@@ -1181,7 +1181,6 @@ The tool will execute immediately and you'll receive the result (success or erro
         let mut full_response = String::new();
         let mut first_token_time: Option<Duration> = None;
         let stream_start = Instant::now();
-        let mut total_execution_time = Duration::new(0, 0);
         let mut iteration_count = 0;
         const MAX_ITERATIONS: usize = 400; // Prevent infinite loops
         let mut response_started = false;
@@ -1546,7 +1545,6 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 }
                             };
                             let exec_duration = exec_start.elapsed();
-                            total_execution_time += exec_duration;
 
                             // Track tool call metrics
                             let tool_success = !tool_result.contains("❌");
@@ -1606,7 +1604,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     format!(
                                         "{}\n\n🕝 {} | 💭 {}",
                                         full_response,
-                                        Self::format_duration(total_execution_time),
+                                        Self::format_duration(stream_start.elapsed()),
                                         Self::format_duration(_ttft)
                                     )
                                 } else {
@@ -1864,7 +1862,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                                     format!(
                                         "{}\n\n⏱️ {} | 💭 {}",
                                         full_response,
-                                        Self::format_duration(total_execution_time),
+                                        Self::format_duration(stream_start.elapsed()),
                                         Self::format_duration(_ttft)
                                     )
                                 } else {
@@ -1956,7 +1954,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                     format!(
                         "{}\n\n⏱️ {} | 💭 {}",
                         full_response,
-                        Self::format_duration(total_execution_time),
+                        Self::format_duration(stream_start.elapsed()),
                         Self::format_duration(_ttft)
                     )
                 } else {
@@ -1977,7 +1975,7 @@ The tool will execute immediately and you'll receive the result (success or erro
             format!(
                 "{}\n\n⏱️ {} | 💭 {}",
                 full_response,
-                Self::format_duration(total_execution_time),
+                Self::format_duration(stream_start.elapsed()),
                 Self::format_duration(_ttft)
             )
         } else {
