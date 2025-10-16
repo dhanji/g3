@@ -1,4 +1,4 @@
-
+use anyhow::Result;
 /// Extract coach feedback by reading from the coach agent's specific log file
 /// Uses the coach agent's session ID to find the exact log file
 fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_agent: &g3_core::Agent<ConsoleUiWriter>, output: &SimpleOutput) -> Result<String> {
@@ -37,7 +37,8 @@ fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_a
     }
     
     Err(anyhow::anyhow!("Could not extract feedback from coach session: {}", session_id))
-}use anyhow::Result;
+}
+
 use clap::Parser;
 use g3_config::Config;
 use g3_core::{project::Project, ui_writer::UiWriter, Agent};
@@ -113,6 +114,10 @@ pub struct Cli {
     /// Override the model for the selected provider
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
+
+    /// Disable log file creation (no logs/ directory or session logs)
+    #[arg(long)]
+    pub quiet: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -218,9 +223,9 @@ pub async fn run() -> Result<()> {
     // Initialize agent
     let ui_writer = ConsoleUiWriter::new();
     let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
+        Agent::new_autonomous_with_readme_and_quiet(config.clone(), ui_writer, readme_content.clone(), cli.quiet).await?
     } else {
-        Agent::new_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
+        Agent::new_with_readme_and_quiet(config.clone(), ui_writer, readme_content.clone(), cli.quiet).await?
     };
 
     // Execute task, autonomous mode, or start interactive mode
@@ -235,6 +240,7 @@ pub async fn run() -> Result<()> {
             cli.show_prompt,
             cli.show_code,
             cli.max_turns,
+            cli.quiet,
         )
         .await?;
     } else if let Some(task) = cli.task {
@@ -396,7 +402,7 @@ async fn run_interactive_retro(
 
     // Create agent with RetroTuiWriter
     let ui_writer = RetroTuiWriter::new(tui.clone());
-    let mut agent = Agent::new_with_readme(config, ui_writer, readme_content.clone()).await?;
+    let mut agent = Agent::new_with_readme_and_quiet(config, ui_writer, readme_content.clone(), false).await?;
 
     // Display initial system messages
     tui.output("SYSTEM: AGENT ONLINE\n\n");
@@ -930,6 +936,7 @@ async fn run_autonomous(
     show_prompt: bool,
     show_code: bool,
     max_turns: usize,
+    quiet: bool,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     let output = SimpleOutput::new();
@@ -1194,7 +1201,7 @@ async fn run_autonomous(
         // Use the same config with overrides that was passed to the player agent
         let config = agent.get_config().clone();
         let ui_writer = ConsoleUiWriter::new();
-        let mut coach_agent = Agent::new_autonomous(config, ui_writer).await?;
+        let mut coach_agent = Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;

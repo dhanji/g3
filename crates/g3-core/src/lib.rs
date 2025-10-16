@@ -422,11 +422,12 @@ pub struct Agent<W: UiWriter> {
     tool_call_metrics: Vec<(String, Duration, bool)>, // (tool_name, duration, success)
     ui_writer: W,
     is_autonomous: bool,
+    quiet: bool,
 }
 
 impl<W: UiWriter> Agent<W> {
     pub async fn new(config: Config, ui_writer: W) -> Result<Self> {
-        Self::new_with_mode(config, ui_writer, false).await
+        Self::new_with_mode(config, ui_writer, false, false).await
     }
 
     pub async fn new_with_readme(
@@ -434,7 +435,7 @@ impl<W: UiWriter> Agent<W> {
         ui_writer: W,
         readme_content: Option<String>,
     ) -> Result<Self> {
-        Self::new_with_mode_and_readme(config, ui_writer, false, readme_content).await
+        Self::new_with_mode_and_readme(config, ui_writer, false, readme_content, false).await
     }
 
     pub async fn new_autonomous_with_readme(
@@ -442,15 +443,37 @@ impl<W: UiWriter> Agent<W> {
         ui_writer: W,
         readme_content: Option<String>,
     ) -> Result<Self> {
-        Self::new_with_mode_and_readme(config, ui_writer, true, readme_content).await
+        Self::new_with_mode_and_readme(config, ui_writer, true, readme_content, false).await
     }
 
     pub async fn new_autonomous(config: Config, ui_writer: W) -> Result<Self> {
-        Self::new_with_mode(config, ui_writer, true).await
+        Self::new_with_mode(config, ui_writer, true, false).await
     }
 
-    async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool) -> Result<Self> {
-        Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None).await
+    pub async fn new_with_quiet(config: Config, ui_writer: W, quiet: bool) -> Result<Self> {
+        Self::new_with_mode(config, ui_writer, false, quiet).await
+    }
+
+    pub async fn new_with_readme_and_quiet(
+        config: Config,
+        ui_writer: W,
+        readme_content: Option<String>,
+        quiet: bool,
+    ) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, false, readme_content, quiet).await
+    }
+
+    pub async fn new_autonomous_with_readme_and_quiet(
+        config: Config,
+        ui_writer: W,
+        readme_content: Option<String>,
+        quiet: bool,
+    ) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, true, readme_content, quiet).await
+    }
+
+    async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool, quiet: bool) -> Result<Self> {
+        Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None, quiet).await
     }
 
     async fn new_with_mode_and_readme(
@@ -458,6 +481,7 @@ impl<W: UiWriter> Agent<W> {
         ui_writer: W,
         is_autonomous: bool,
         readme_content: Option<String>,
+        quiet: bool,
     ) -> Result<Self> {
         let mut providers = ProviderRegistry::new();
 
@@ -560,6 +584,7 @@ impl<W: UiWriter> Agent<W> {
             tool_call_metrics: Vec::new(),
             ui_writer,
             is_autonomous,
+            quiet,
         })
     }
 
@@ -922,6 +947,11 @@ The tool will execute immediately and you'll receive the result (success or erro
 
     /// Save the entire context window to a per-session file
     fn save_context_window(&self, status: &str) {
+        // Skip logging if quiet mode is enabled
+        if self.quiet {
+            return;
+        }
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1314,6 +1344,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                 last_prompt,
                 self.session_id.clone(),
                 self.context_window.used_tokens,
+                self.quiet,
             )
             .with_request(
                 serde_json::to_string(&request)
