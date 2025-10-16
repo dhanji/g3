@@ -250,7 +250,7 @@ impl TerminalState {
     }
 
     /// Parse markdown and convert to styled lines
-    fn parse_markdown_line(&self, line: &str) -> Line {
+    fn parse_markdown_line(&self, line: &str) -> Line<'_> {
         // Skip parsing for special status lines to preserve their formatting
         if line.starts_with("[SUCCESS]") || 
            line.starts_with("[FAILED]") || 
