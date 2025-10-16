@@ -1351,7 +1351,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         output.print_smart(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
-        if coach_result.is_approved() {
+        if coach_result.is_approved() || coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
             output.print("✅ Coach approved the implementation!");
             implementation_approved = true;
