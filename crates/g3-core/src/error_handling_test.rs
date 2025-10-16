@@ -17,6 +17,7 @@ mod tests {
             "test prompt".to_string(),
             None,
             100,
+            false,  // quiet parameter
         );
 
         let result = retry_with_backoff(
@@ -55,6 +56,7 @@ mod tests {
             "test prompt".to_string(),
             None,
             100,
+            false,  // quiet parameter
         );
 
         let result: Result<&str, _> = retry_with_backoff(
@@ -87,6 +89,7 @@ mod tests {
             "test prompt".to_string(),
             None,
             100,
+            false,  // quiet parameter
         );
 
         let result: Result<&str, _> = retry_with_backoff(
@@ -118,6 +121,7 @@ mod tests {
             long_prompt,
             None,
             100,
+            false,  // quiet parameter
         );
 
         // The prompt should be truncated to 1000 chars

@@ -571,17 +571,14 @@ async fn run_interactive_retro(
         }
         
         if has_readme {
-        // Extract the first heading or title from the README
-            let readme_snippet = 
-            extract_readme_heading(content)
-                .unwrap_or_else(|| "PROJECT DOCUMENTATION LOADED".to_string())
-        } else {
-            "PROJECT DOCUMENTATION LOADED".to_string()
-        };
-        tui.output(&format!(
-            "SYSTEM: PROJECT README LOADED - {}\n\n",
-            readme_snippet
-        ));
+            // Extract the first heading or title from the README
+            let readme_snippet = extract_readme_heading(content)
+                .unwrap_or_else(|| "PROJECT DOCUMENTATION LOADED".to_string());
+            
+            tui.output(&format!(
+                "SYSTEM: PROJECT README LOADED - {}\n\n",
+                readme_snippet
+            ));
         }
     }
     tui.output("SYSTEM: READY FOR INPUT\n\n");
@@ -834,15 +831,11 @@ async fn run_interactive<W: UiWriter>(
         }
         
         if has_readme {
-        // Extract the first heading or title from the README
-            let readme_snippet = 
-            extract_readme_heading(content)
-                .unwrap_or_else(|| "Project documentation loaded".to_string())
-        } else {
-            "Project documentation loaded".to_string()
-        };
+            // Extract the first heading or title from the README
+            let readme_snippet = extract_readme_heading(content)
+                .unwrap_or_else(|| "Project documentation loaded".to_string());
 
-        output.print(&format!("📚 detected: {}", readme_snippet));
+            output.print(&format!("📚 detected: {}", readme_snippet));
         }
     }
 
