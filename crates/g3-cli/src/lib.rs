@@ -1,6 +1,104 @@
-
+use anyhow::Result;
+use std::time::{Duration, Instant};
 /// Extract coach feedback by reading from the coach agent's specific log file
 /// Uses the coach agent's session ID to find the exact log file
+
+#[derive(Debug, Clone)]
+struct TurnMetrics {
+    turn_number: usize,
+    tokens_used: u32,
+    wall_clock_time: Duration,
+}
+
+/// Generate a histogram showing tokens used and wall clock time per turn
+fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
+    if turn_metrics.is_empty() {
+        return "   No turn data available".to_string();
+    }
+
+    let mut histogram = String::new();
+    
+    // Find max values for scaling
+    let max_tokens = turn_metrics.iter().map(|t| t.tokens_used).max().unwrap_or(1);
+    let max_time_ms = turn_metrics.iter()
+        .map(|t| t.wall_clock_time.as_millis() as u32)
+        .max()
+        .unwrap_or(1);
+    
+    // Constants for histogram display
+    const MAX_BAR_WIDTH: usize = 40;
+    const TOKEN_CHAR: char = '█';
+    const TIME_CHAR: char = '▓';
+    
+    histogram.push_str("\n📊 Per-Turn Performance Histogram:\n");
+    histogram.push_str(&format!("   {} = Tokens Used (max: {})\n", TOKEN_CHAR, max_tokens));
+    histogram.push_str(&format!("   {} = Wall Clock Time (max: {:.1}s)\n\n", TIME_CHAR, max_time_ms as f64 / 1000.0));
+    
+    for metrics in turn_metrics {
+        let turn_time_ms = metrics.wall_clock_time.as_millis() as u32;
+        
+        // Calculate bar lengths (proportional to max values)
+        let token_bar_len = if max_tokens > 0 {
+            ((metrics.tokens_used as f64 / max_tokens as f64) * MAX_BAR_WIDTH as f64) as usize
+        } else {
+            0
+        };
+        
+        let time_bar_len = if max_time_ms > 0 {
+            ((turn_time_ms as f64 / max_time_ms as f64) * MAX_BAR_WIDTH as f64) as usize
+        } else {
+            0
+        };
+        
+        // Format time duration
+        let time_str = if turn_time_ms < 1000 {
+            format!("{}ms", turn_time_ms)
+        } else if turn_time_ms < 60_000 {
+            format!("{:.1}s", turn_time_ms as f64 / 1000.0)
+        } else {
+            let minutes = turn_time_ms / 60_000;
+            let seconds = (turn_time_ms % 60_000) as f64 / 1000.0;
+            format!("{}m{:.1}s", minutes, seconds)
+        };
+        
+        // Create the bars
+        let token_bar = TOKEN_CHAR.to_string().repeat(token_bar_len);
+        let time_bar = TIME_CHAR.to_string().repeat(time_bar_len);
+        
+        // Add turn information
+        histogram.push_str(&format!(
+            "   Turn {:2}: {:>6} tokens │{:<40}│\n",
+            metrics.turn_number,
+            metrics.tokens_used,
+            token_bar
+        ));
+        histogram.push_str(&format!(
+            "           {:>6}       │{:<40}│\n",
+            time_str,
+            time_bar
+        ));
+        
+        // Add separator line between turns (except for last turn)
+        if metrics.turn_number != turn_metrics.last().unwrap().turn_number {
+            histogram.push_str("           ────────────┼────────────────────────────────────────┤\n");
+        }
+    }
+    
+    // Add summary statistics
+    let total_tokens: u32 = turn_metrics.iter().map(|t| t.tokens_used).sum();
+    let total_time: Duration = turn_metrics.iter().map(|t| t.wall_clock_time).sum();
+    let avg_tokens = total_tokens as f64 / turn_metrics.len() as f64;
+    let avg_time_ms = total_time.as_millis() as f64 / turn_metrics.len() as f64;
+    
+    histogram.push_str("\n📈 Summary Statistics:\n");
+    histogram.push_str(&format!("   • Total Tokens: {} across {} turns\n", total_tokens, turn_metrics.len()));
+    histogram.push_str(&format!("   • Average Tokens/Turn: {:.1}\n", avg_tokens));
+    histogram.push_str(&format!("   • Total Time: {:.1}s\n", total_time.as_secs_f64()));
+    histogram.push_str(&format!("   • Average Time/Turn: {:.1}s\n", avg_time_ms / 1000.0));
+    
+    histogram
+}
+
 fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_agent: &g3_core::Agent<ConsoleUiWriter>, output: &SimpleOutput) -> Result<String> {
     // CORRECT APPROACH: Get the session ID from the current coach agent
     // and read its specific log file directly
@@ -37,7 +135,8 @@ fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_a
     }
     
     Err(anyhow::anyhow!("Could not extract feedback from coach session: {}", session_id))
-}use anyhow::Result;
+}
+
 use clap::Parser;
 use g3_config::Config;
 use g3_core::{project::Project, ui_writer::UiWriter, Agent};
@@ -113,6 +212,10 @@ pub struct Cli {
     /// Override the model for the selected provider
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
+
+    /// Disable log file creation (no logs/ directory or session logs)
+    #[arg(long)]
+    pub quiet: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -232,9 +335,9 @@ pub async fn run() -> Result<()> {
     };
     
     let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_readme(config.clone(), ui_writer, combined_content.clone()).await?
+        Agent::new_autonomous_with_readme_and_quiet(config.clone(), ui_writer, combined_content.clone(), cli.quiet).await?
     } else {
-        Agent::new_with_readme(config.clone(), ui_writer, combined_content.clone()).await?
+        Agent::new_with_readme_and_quiet(config.clone(), ui_writer, combined_content.clone(), cli.quiet).await?
     };
 
     // Execute task, autonomous mode, or start interactive mode
@@ -249,6 +352,7 @@ pub async fn run() -> Result<()> {
             cli.show_prompt,
             cli.show_code,
             cli.max_turns,
+            cli.quiet,
         )
         .await?;
     } else if let Some(task) = cli.task {
@@ -451,7 +555,7 @@ async fn run_interactive_retro(
 
     // Create agent with RetroTuiWriter
     let ui_writer = RetroTuiWriter::new(tui.clone());
-    let mut agent = Agent::new_with_readme(config, ui_writer, combined_content.clone()).await?;
+    let mut agent = Agent::new_with_readme_and_quiet(config, ui_writer, combined_content.clone(), false).await?;
 
     // Display initial system messages
     tui.output("SYSTEM: AGENT ONLINE\n\n");
@@ -1005,9 +1109,11 @@ async fn run_autonomous(
     show_prompt: bool,
     show_code: bool,
     max_turns: usize,
+    quiet: bool,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     let output = SimpleOutput::new();
+    let mut turn_metrics: Vec<TurnMetrics> = Vec::new();
 
     output.print("🤖 G3 AI Coding Agent - Autonomous Mode");
     output.print(&format!(
@@ -1054,6 +1160,8 @@ async fn run_autonomous(
             "   • Usage Percentage: {:.1}%",
             context_window.percentage_used()
         ));
+        // Add per-turn histogram
+        output.print(&generate_turn_histogram(&turn_metrics));
         output.print(&"=".repeat(60));
 
         return Ok(());
@@ -1094,6 +1202,8 @@ async fn run_autonomous(
                 "   • Usage Percentage: {:.1}%",
                 context_window.percentage_used()
             ));
+            // Add per-turn histogram
+            output.print(&generate_turn_histogram(&turn_metrics));
             output.print(&"=".repeat(60));
 
             return Ok(());
@@ -1123,6 +1233,8 @@ async fn run_autonomous(
     let mut implementation_approved = false;
 
     loop {
+        let turn_start_time = Instant::now();
+        let turn_start_tokens = agent.get_context_window().used_tokens;
         // Skip player turn if it's the first turn and implementation files exist
         if !(turn == 1 && skip_first_player) {
             output.print(&format!(
@@ -1218,6 +1330,8 @@ async fn run_autonomous(
                                 "   • Usage Percentage: {:.1}%",
                                 context_window.percentage_used()
                             ));
+                            // Add per-turn histogram
+                            output.print(&generate_turn_histogram(&turn_metrics));
                             output.print(&"=".repeat(60));
 
                             return Err(e);
@@ -1247,6 +1361,14 @@ async fn run_autonomous(
                     "⚠️ Player turn {} failed after max retries. Moving to next turn.",
                     turn
                 ));
+                // Record turn metrics before incrementing
+                let turn_duration = turn_start_time.elapsed();
+                let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+                turn_metrics.push(TurnMetrics {
+                    turn_number: turn,
+                    tokens_used: turn_tokens,
+                    wall_clock_time: turn_duration,
+                });
                 turn += 1;
 
                 // Check if we've reached max turns
@@ -1269,7 +1391,7 @@ async fn run_autonomous(
         // Use the same config with overrides that was passed to the player agent
         let config = agent.get_config().clone();
         let ui_writer = ConsoleUiWriter::new();
-        let mut coach_agent = Agent::new_autonomous(config, ui_writer).await?;
+        let mut coach_agent = Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;
@@ -1360,6 +1482,8 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
                             "   • Usage Percentage: {:.1}%",
                             context_window.percentage_used()
                         ));
+                        // Add per-turn histogram
+                        output.print(&generate_turn_histogram(&turn_metrics));
                         output.print(&"=".repeat(60));
 
                         return Err(e);
@@ -1392,6 +1516,14 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
                 turn
             ));
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
+            // Record turn metrics before incrementing
+            let turn_duration = turn_start_time.elapsed();
+            let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+            turn_metrics.push(TurnMetrics {
+                turn_number: turn,
+                tokens_used: turn_tokens,
+                wall_clock_time: turn_duration,
+            });
             turn += 1;
 
             if turn > max_turns {
@@ -1419,6 +1551,14 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         if coach_feedback_text.is_empty() {
             output.print("⚠️ Coach did not provide feedback. This may be a model issue.");
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
+            // Record turn metrics before incrementing
+            let turn_duration = turn_start_time.elapsed();
+            let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+            turn_metrics.push(TurnMetrics {
+                turn_number: turn,
+                tokens_used: turn_tokens,
+                wall_clock_time: turn_duration,
+            });
             turn += 1;
             continue;
         }
@@ -1426,7 +1566,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         output.print_smart(&format!("Coach feedback:\n{}", coach_feedback_text));
 
         // Check if coach approved the implementation
-        if coach_result.is_approved() {
+        if coach_result.is_approved() || coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
             output.print("✅ Coach approved the implementation!");
             implementation_approved = true;
@@ -1442,6 +1582,14 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
 
         // Store coach feedback for next iteration
         coach_feedback = coach_feedback_text;
+        // Record turn metrics before incrementing
+        let turn_duration = turn_start_time.elapsed();
+        let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+        turn_metrics.push(TurnMetrics {
+            turn_number: turn,
+            tokens_used: turn_tokens,
+            wall_clock_time: turn_duration,
+        });
         turn += 1;
 
         output.print("🔄 Coach provided feedback for next iteration");
@@ -1485,6 +1633,9 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         "   • Usage Percentage: {:.1}%",
         context_window.percentage_used()
     ));
+    
+    // Add per-turn histogram
+    output.print(&generate_turn_histogram(&turn_metrics));
     output.print(&"=".repeat(60));
 
     if implementation_approved {

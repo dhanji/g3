@@ -55,6 +55,8 @@ pub struct ErrorContext {
     pub context_tokens: u32,
     /// Session ID if available
     pub session_id: Option<String>,
+    /// Whether to skip file logging (quiet mode)
+    pub quiet: bool,
 }
 
 impl ErrorContext {
@@ -65,6 +67,7 @@ impl ErrorContext {
         last_prompt: String,
         session_id: Option<String>,
         context_tokens: u32,
+        quiet: bool,
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -85,6 +88,7 @@ impl ErrorContext {
             timestamp,
             context_tokens,
             session_id,
+            quiet,
         }
     }
 
@@ -126,6 +130,11 @@ impl ErrorContext {
 
     /// Save error context to a file for later analysis
     fn save_to_file(&self) {
+        // Skip file logging if quiet mode is enabled
+        if self.quiet {
+            return;
+        }
+
         let logs_dir = std::path::Path::new("logs/errors");
         if !logs_dir.exists() {
             if let Err(e) = std::fs::create_dir_all(logs_dir) {
