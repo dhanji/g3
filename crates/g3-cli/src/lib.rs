@@ -172,8 +172,11 @@ pub async fn run() -> Result<()> {
         std::env::current_dir()?
     };
 
-    // Check if we're in a project directory and read README if available
-    // This should happen in both interactive and autonomous modes
+    // Check if we're in a project directory and read README and AGENTS.md if available
+    // Load AGENTS.md first (if present) to provide agent-specific instructions
+    let agents_content = read_agents_config(&workspace_dir);
+    
+    // Then load README for project context
     let readme_content = read_project_readme(&workspace_dir);
 
     // Create project model
@@ -217,10 +220,21 @@ pub async fn run() -> Result<()> {
 
     // Initialize agent
     let ui_writer = ConsoleUiWriter::new();
+    
+    // Combine AGENTS.md and README content if both exist
+    let combined_content = match (agents_content.clone(), readme_content.clone()) {
+        (Some(agents), Some(readme)) => {
+            Some(format!("{}\n\n{}", agents, readme))
+        }
+        (Some(agents), None) => Some(agents),
+        (None, Some(readme)) => Some(readme),
+        (None, None) => None,
+    };
+    
     let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
+        Agent::new_autonomous_with_readme(config.clone(), ui_writer, combined_content.clone()).await?
     } else {
-        Agent::new_with_readme(config.clone(), ui_writer, readme_content.clone()).await?
+        Agent::new_with_readme(config.clone(), ui_writer, combined_content.clone()).await?
     };
 
     // Execute task, autonomous mode, or start interactive mode
@@ -260,18 +274,59 @@ pub async fn run() -> Result<()> {
                 cli.show_prompt,
                 cli.show_code,
                 cli.theme,
-                readme_content,
+                combined_content,
             )
             .await?;
         } else {
             // Use standard terminal UI
             let output = SimpleOutput::new();
             output.print(&format!("📁 Workspace: {}", project.workspace().display()));
-            run_interactive(agent, cli.show_prompt, cli.show_code, readme_content).await?;
+            run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
         }
     }
 
     Ok(())
+}
+
+/// Check if we're in a project directory and read AGENTS.md if available
+fn read_agents_config(workspace_dir: &Path) -> Option<String> {
+    // Look for AGENTS.md in the current directory
+    let agents_path = workspace_dir.join("AGENTS.md");
+    
+    if agents_path.exists() {
+        match std::fs::read_to_string(&agents_path) {
+            Ok(content) => {
+                // Return the content with a note about which file was read
+                info!("Loaded AGENTS.md from {}", agents_path.display());
+                Some(format!(
+                    "🤖 Agent Configuration (from AGENTS.md):\n\n{}",
+                    content
+                ))
+            }
+            Err(e) => {
+                // Log the error but continue without the agents config
+                error!("Failed to read AGENTS.md: {}", e);
+                None
+            }
+        }
+    } else {
+        // Check for alternative names
+        let alt_path = workspace_dir.join("agents.md");
+        if alt_path.exists() {
+            match std::fs::read_to_string(&alt_path) {
+                Ok(content) => {
+                    info!("Loaded agents.md from {}", alt_path.display());
+                    Some(format!("🤖 Agent Configuration (from agents.md):\n\n{}", content))
+                }
+                Err(e) => {
+                    error!("Failed to read agents.md: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
 }
 
 /// Check if we're in a project directory and read README if available
@@ -374,7 +429,7 @@ async fn run_interactive_retro(
     show_prompt: bool,
     show_code: bool,
     theme_name: Option<String>,
-    readme_content: Option<String>,
+    combined_content: Option<String>,
 ) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
@@ -396,15 +451,24 @@ async fn run_interactive_retro(
 
     // Create agent with RetroTuiWriter
     let ui_writer = RetroTuiWriter::new(tui.clone());
-    let mut agent = Agent::new_with_readme(config, ui_writer, readme_content.clone()).await?;
+    let mut agent = Agent::new_with_readme(config, ui_writer, combined_content.clone()).await?;
 
     // Display initial system messages
     tui.output("SYSTEM: AGENT ONLINE\n\n");
 
-    // Display message if README was loaded
-    if readme_content.is_some() {
+    // Display message if AGENTS.md or README was loaded
+    if let Some(ref content) = combined_content {
+        // Check what was loaded
+        let has_agents = content.contains("Agent Configuration");
+        let has_readme = content.contains("Project README");
+        
+        if has_agents {
+            tui.output("SYSTEM: AGENT CONFIGURATION LOADED\n\n");
+        }
+        
+        if has_readme {
         // Extract the first heading or title from the README
-        let readme_snippet = if let Some(ref content) = readme_content {
+            let readme_snippet = 
             extract_readme_heading(content)
                 .unwrap_or_else(|| "PROJECT DOCUMENTATION LOADED".to_string())
         } else {
@@ -414,6 +478,7 @@ async fn run_interactive_retro(
             "SYSTEM: PROJECT README LOADED - {}\n\n",
             readme_snippet
         ));
+        }
     }
     tui.output("SYSTEM: READY FOR INPUT\n\n");
     tui.output("\n\n");
@@ -635,7 +700,7 @@ async fn run_interactive<W: UiWriter>(
     mut agent: Agent<W>,
     show_prompt: bool,
     show_code: bool,
-    readme_content: Option<String>,
+    combined_content: Option<String>,
 ) -> Result<()> {
     let output = SimpleOutput::new();
 
@@ -654,10 +719,19 @@ async fn run_interactive<W: UiWriter>(
         }
     }
 
-    // Display message if README was loaded
-    if readme_content.is_some() {
+    // Display message if AGENTS.md or README was loaded
+    if let Some(ref content) = combined_content {
+        // Check what was loaded
+        let has_agents = content.contains("Agent Configuration");
+        let has_readme = content.contains("Project README");
+        
+        if has_agents {
+            output.print("🤖 AGENTS.md configuration loaded");
+        }
+        
+        if has_readme {
         // Extract the first heading or title from the README
-        let readme_snippet = if let Some(ref content) = readme_content {
+            let readme_snippet = 
             extract_readme_heading(content)
                 .unwrap_or_else(|| "Project documentation loaded".to_string())
         } else {
@@ -665,6 +739,7 @@ async fn run_interactive<W: UiWriter>(
         };
 
         output.print(&format!("📚 detected: {}", readme_snippet));
+        }
     }
 
     output.print("");
