@@ -21,7 +21,7 @@ fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
     // Find max values for scaling
     let max_tokens = turn_metrics.iter().map(|t| t.tokens_used).max().unwrap_or(1);
     let max_time_ms = turn_metrics.iter()
-        .map(|t| t.wall_clock_time.as_millis() as u32)
+        .map(|t| t.wall_clock_time.as_millis().min(u32::MAX as u128) as u32)
         .max()
         .unwrap_or(1);
     
@@ -35,7 +35,7 @@ fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
     histogram.push_str(&format!("   {} = Wall Clock Time (max: {:.1}s)\n\n", TIME_CHAR, max_time_ms as f64 / 1000.0));
     
     for metrics in turn_metrics {
-        let turn_time_ms = metrics.wall_clock_time.as_millis() as u32;
+        let turn_time_ms = metrics.wall_clock_time.as_millis().min(u32::MAX as u128) as u32;
         
         // Calculate bar lengths (proportional to max values)
         let token_bar_len = if max_tokens > 0 {
@@ -1356,7 +1356,7 @@ async fn run_autonomous(
                 ));
                 // Record turn metrics before incrementing
                 let turn_duration = turn_start_time.elapsed();
-                let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+                let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
                 turn_metrics.push(TurnMetrics {
                     turn_number: turn,
                     tokens_used: turn_tokens,
@@ -1511,7 +1511,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
             // Record turn metrics before incrementing
             let turn_duration = turn_start_time.elapsed();
-            let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+            let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
             turn_metrics.push(TurnMetrics {
                 turn_number: turn,
                 tokens_used: turn_tokens,
@@ -1546,7 +1546,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
             coach_feedback = "The implementation needs review. Please ensure all requirements are met and the code compiles without errors.".to_string();
             // Record turn metrics before incrementing
             let turn_duration = turn_start_time.elapsed();
-            let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+            let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
             turn_metrics.push(TurnMetrics {
                 turn_number: turn,
                 tokens_used: turn_tokens,
@@ -1577,7 +1577,7 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         coach_feedback = coach_feedback_text;
         // Record turn metrics before incrementing
         let turn_duration = turn_start_time.elapsed();
-        let turn_tokens = agent.get_context_window().used_tokens - turn_start_tokens;
+        let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
         turn_metrics.push(TurnMetrics {
             turn_number: turn,
             tokens_used: turn_tokens,
