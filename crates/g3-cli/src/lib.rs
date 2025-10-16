@@ -1,7 +1,5 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
-/// Extract coach feedback by reading from the coach agent's specific log file
-/// Uses the coach agent's session ID to find the exact log file
 
 #[derive(Debug, Clone)]
 struct TurnMetrics {
@@ -99,18 +97,25 @@ fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
     histogram
 }
 
-fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_agent: &g3_core::Agent<ConsoleUiWriter>, output: &SimpleOutput) -> Result<String> {
+/// Extract coach feedback by reading from the coach agent's specific log file
+/// Uses the coach agent's session ID to find the exact log file
+fn extract_coach_feedback_from_logs(
+    _coach_result: &g3_core::TaskResult,
+    coach_agent: &g3_core::Agent<ConsoleUiWriter>,
+    output: &SimpleOutput,
+) -> Result<String> {
     // CORRECT APPROACH: Get the session ID from the current coach agent
     // and read its specific log file directly
-    
+
     // Get the coach agent's session ID
-    let session_id = coach_agent.get_session_id()
+    let session_id = coach_agent
+        .get_session_id()
         .ok_or_else(|| anyhow::anyhow!("Coach agent has no session ID"))?;
-    
+
     // Construct the log file path for this specific coach session
     let logs_dir = std::path::Path::new("logs");
     let log_file_path = logs_dir.join(format!("g3_session_{}.json", session_id));
-    
+
     // Read the coach agent's specific log file
     if log_file_path.exists() {
         if let Ok(log_content) = std::fs::read_to_string(&log_file_path) {
@@ -122,7 +127,10 @@ fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_a
                             if let Some(last_message) = messages.last() {
                                 if let Some(content) = last_message.get("content") {
                                     if let Some(content_str) = content.as_str() {
-                                        output.print(&format!("✅ Extracted coach feedback from session: {}", session_id));
+                                        output.print(&format!(
+                                            "✅ Extracted coach feedback from session: {}",
+                                            session_id
+                                        ));
                                         return Ok(content_str.to_string());
                                     }
                                 }
@@ -133,8 +141,11 @@ fn extract_coach_feedback_from_logs(_coach_result: &g3_core::TaskResult, coach_a
             }
         }
     }
-    
-    Err(anyhow::anyhow!("Could not extract feedback from coach session: {}", session_id))
+
+    Err(anyhow::anyhow!(
+        "Could not extract feedback from coach session: {}",
+        session_id
+    ))
 }
 
 use clap::Parser;
@@ -309,14 +320,15 @@ pub async fn run() -> Result<()> {
         cli.provider.clone(),
         cli.model.clone(),
     )?;
-    
+
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
         let valid_providers = ["anthropic", "databricks", "embedded", "openai"];
         if !valid_providers.contains(&provider.as_str()) {
             return Err(anyhow::anyhow!(
-                "Invalid provider '{}'. Valid options: {:?}", 
-                provider, valid_providers
+                "Invalid provider '{}'. Valid options: {:?}",
+                provider,
+                valid_providers
             ));
         }
     }
@@ -335,9 +347,21 @@ pub async fn run() -> Result<()> {
     };
     
     let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_readme_and_quiet(config.clone(), ui_writer, combined_content.clone(), cli.quiet).await?
+        Agent::new_autonomous_with_readme_and_quiet(
+            config.clone(),
+            ui_writer,
+            combined_content.clone(),
+            cli.quiet,
+        )
+        .await?
     } else {
-        Agent::new_with_readme_and_quiet(config.clone(), ui_writer, combined_content.clone(), cli.quiet).await?
+        Agent::new_with_readme_and_quiet(
+            config.clone(),
+            ui_writer,
+            combined_content.clone(),
+            cli.quiet,
+        )
+        .await?
     };
 
     // Execute task, autonomous mode, or start interactive mode
@@ -374,7 +398,7 @@ pub async fn run() -> Result<()> {
         if cli.retro {
             // Use retro terminal UI
             run_interactive_retro(
-                config,  // Already has overrides applied
+                config, // Already has overrides applied
                 cli.show_prompt,
                 cli.show_code,
                 cli.theme,
@@ -1119,7 +1143,10 @@ async fn run_autonomous(
         output.print("❌ Error: requirements.md not found in workspace directory");
         output.print("   Please either:");
         output.print("   1. Create a requirements.md file with your project requirements at:");
-        output.print(&format!("      {}/requirements.md", project.workspace().display()));
+        output.print(&format!(
+            "      {}/requirements.md",
+            project.workspace().display()
+        ));
         output.print("   2. Or use the --requirements flag to provide requirements text directly:");
         output.print("      g3 --autonomous --requirements \"Your requirements here\"");
         output.print("");
@@ -1254,11 +1281,17 @@ async fn run_autonomous(
             // If there's no coach feedback on subsequent turns, this is an error
             if coach_feedback.is_empty() {
                 if turn > 1 {
-                    return Err(anyhow::anyhow!("Player mode error: No coach feedback received on turn {}", turn));
+                    return Err(anyhow::anyhow!(
+                        "Player mode error: No coach feedback received on turn {}",
+                        turn
+                    ));
                 }
                 output.print("📋 Player starting initial implementation (no prior coach feedback)");
             } else {
-                output.print(&format!("📋 Player received coach feedback ({} chars):", coach_feedback.len()));
+                output.print(&format!(
+                    "📋 Player received coach feedback ({} chars):",
+                    coach_feedback.len()
+                ));
                 output.print(&format!("{}", coach_feedback));
             }
             output.print(""); // Empty line for readability
@@ -1384,7 +1417,8 @@ async fn run_autonomous(
         // Use the same config with overrides that was passed to the player agent
         let config = agent.get_config().clone();
         let ui_writer = ConsoleUiWriter::new();
-        let mut coach_agent = Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
+        let mut coach_agent =
+            Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;
@@ -1414,13 +1448,13 @@ CRITICAL INSTRUCTIONS:
 3. Focus ONLY on what needs to be fixed or improved
 4. Do NOT include your analysis process, file contents, or compilation output in the summary
 
-If the implementation correctly meets all requirements and compiles without errors:
+If the implementation generally meets all requirements and compiles without errors:
 - Call final_output with summary: 'IMPLEMENTATION_APPROVED'
 
 If improvements are needed:
 - Call final_output with a brief summary listing ONLY the specific issues to fix
 
-Remember: Be thorough in your review but concise in your feedback. APPROVE if the implementation works and generally fits the requirements.",
+Remember: Be clear in your review and concise in your feedback. APPROVE if the implementation works and generally fits the requirements. Don't be picky.",
             requirements
         );
 
@@ -1531,7 +1565,8 @@ Remember: Be thorough in your review but concise in your feedback. APPROVE if th
         let coach_result = coach_result_opt.unwrap();
 
         // Extract the complete coach feedback from final_output
-        let coach_feedback_text = extract_coach_feedback_from_logs(&coach_result, &coach_agent, &output)?;
+        let coach_feedback_text =
+            extract_coach_feedback_from_logs(&coach_result, &coach_agent, &output)?;
 
         // Log the size of the feedback for debugging
         info!(
