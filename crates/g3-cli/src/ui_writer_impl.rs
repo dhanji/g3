@@ -156,7 +156,48 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_timing(&self, duration_str: &str) {
-        println!("└─ ⚡️ {}", duration_str);
+        // Parse the duration string to determine color
+        // Format is like "1.5s", "500ms", "2m 30.0s"
+        let color_code = if duration_str.ends_with("ms") {
+            // Milliseconds - use default color (< 1s)
+            ""
+        } else if duration_str.contains('m') {
+            // Contains minutes
+            // Extract minutes value
+            if let Some(m_pos) = duration_str.find('m') {
+                if let Ok(minutes) = duration_str[..m_pos].trim().parse::<u32>() {
+                    if minutes >= 5 {
+                        "\x1b[31m" // Red for >= 5 minutes
+                    } else {
+                        "\x1b[38;5;208m" // Orange for >= 1 minute but < 5 minutes
+                    }
+                } else {
+                    "" // Default color if parsing fails
+                }
+            } else {
+                "" // Default color if 'm' not found (shouldn't happen)
+            }
+        } else if duration_str.ends_with('s') {
+            // Seconds only
+            if let Some(s_value) = duration_str.strip_suffix('s') {
+                if let Ok(seconds) = s_value.trim().parse::<f64>() {
+                    if seconds >= 1.0 {
+                        "\x1b[33m" // Yellow for >= 1 second
+                    } else {
+                        "" // Default color for < 1 second
+                    }
+                } else {
+                    "" // Default color if parsing fails
+                }
+            } else {
+                "" // Default color
+            }
+        } else {
+            // Milliseconds or other format - use default color
+            ""
+        };
+
+        println!("└─ ⚡️ {}{}\x1b[0m", color_code, duration_str);
         println!();
         // Clear the stored tool info
         *self.current_tool_name.lock().unwrap() = None;
