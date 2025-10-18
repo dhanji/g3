@@ -13,6 +13,9 @@ mod fixed_filter_json;
 mod fixed_filter_tests;
 
 #[cfg(test)]
+mod tilde_expansion_tests;
+
+#[cfg(test)]
 mod error_handling_test;
 use anyhow::Result;
 use g3_config::Config;
@@ -2211,6 +2214,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                 debug!("Processing read_file tool call");
                 if let Some(file_path) = tool_call.args.get("file_path") {
                     if let Some(path_str) = file_path.as_str() {
+                        // Expand tilde (~) to home directory
+                        let expanded_path = shellexpand::tilde(path_str);
+                        let path_str = expanded_path.as_ref();
+                        
                         // Check if this is an image file
                         let is_image = path_str.to_lowercase().ends_with(".png")
                             || path_str.to_lowercase().ends_with(".jpg")
@@ -2472,6 +2479,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                 );
 
                 if let (Some(path), Some(content)) = (path_str, content_str) {
+                    // Expand tilde (~) to home directory
+                    let expanded_path = shellexpand::tilde(path);
+                    let path = expanded_path.as_ref();
+                    
                     debug!("Writing to file: {}", path);
 
                     // Create parent directories if they don't exist
@@ -2519,7 +2530,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                 };
 
                 let file_path = match args_obj.get("file_path").and_then(|v| v.as_str()) {
-                    Some(path) => path,
+                    Some(path) => {
+                        // Expand tilde (~) to home directory
+                        let expanded_path = shellexpand::tilde(path);
+                        expanded_path.into_owned()
+                    }
                     None => return Ok("❌ Missing or invalid file_path argument".to_string()),
                 };
 
@@ -2544,7 +2559,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                 );
 
                 // Read the existing file
-                let file_content = match std::fs::read_to_string(file_path) {
+                let file_content = match std::fs::read_to_string(&file_path) {
                     Ok(content) => content,
                     Err(e) => return Ok(format!("❌ Failed to read file '{}': {}", file_path, e)),
                 };
@@ -2557,7 +2572,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                     };
 
                 // Write the result back to the file
-                match std::fs::write(file_path, &result) {
+                match std::fs::write(&file_path, &result) {
                     Ok(()) => Ok(format!("✅ Successfully applied unified diff")),
                     Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
                 }
