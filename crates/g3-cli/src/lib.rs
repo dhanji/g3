@@ -1593,6 +1593,15 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
 
         output.print_smart(&format!("Coach feedback:\n{}", coach_feedback_text));
 
+        // Record turn metrics before checking for approval or max turns
+        let turn_duration = turn_start_time.elapsed();
+        let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
+        turn_metrics.push(TurnMetrics {
+            turn_number: turn,
+            tokens_used: turn_tokens,
+            wall_clock_time: turn_duration,
+        });
+
         // Check if coach approved the implementation
         if coach_result.is_approved() || coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
@@ -1601,6 +1610,7 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
             break;
         }
 
+        // Increment turn counter after recording metrics but before checking max turns
         // Check if we've reached max turns
         if turn >= max_turns {
             output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
@@ -1610,14 +1620,7 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
 
         // Store coach feedback for next iteration
         coach_feedback = coach_feedback_text;
-        // Record turn metrics before incrementing
-        let turn_duration = turn_start_time.elapsed();
-        let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
-        turn_metrics.push(TurnMetrics {
-            turn_number: turn,
-            tokens_used: turn_tokens,
-            wall_clock_time: turn_duration,
-        });
+        
         turn += 1;
 
         output.print("🔄 Coach provided feedback for next iteration");
