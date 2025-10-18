@@ -13,3 +13,8 @@ use_oauth = true
 max_context_length = 8192
 enable_streaming = true
 timeout_seconds = 60
+
+[computer_control]
+enabled = false  # Set to true to enable computer control (requires OS permissions)
+require_confirmation = true
+max_actions_per_second = 5

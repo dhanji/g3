@@ -6,6 +6,7 @@ use std::path::Path;
 pub struct Config {
     pub providers: ProvidersConfig,
     pub agent: AgentConfig,
+    pub computer_control: ComputerControlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +63,23 @@ pub struct AgentConfig {
     pub timeout_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputerControlConfig {
+    pub enabled: bool,
+    pub require_confirmation: bool,
+    pub max_actions_per_second: u32,
+}
+
+impl Default for ComputerControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // Disabled by default for safety
+            require_confirmation: true,
+            max_actions_per_second: 5,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -84,6 +102,7 @@ impl Default for Config {
                 enable_streaming: true,
                 timeout_seconds: 60,
             },
+            computer_control: ComputerControlConfig::default(),
         }
     }
 }
@@ -194,6 +213,7 @@ impl Config {
                 enable_streaming: true,
                 timeout_seconds: 60,
             },
+            computer_control: ComputerControlConfig::default(),
         }
     }
     

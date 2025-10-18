@@ -40,6 +40,13 @@ Task execution framework:
 - Error handling and retry mechanisms
 - Progress tracking and reporting
 
+#### **g3-computer-control**
+Computer control capabilities:
+- Mouse and keyboard automation
+- UI element inspection and interaction
+- Screenshot capture
+- OCR text extraction
+
 #### **g3-cli**
 Command-line interface:
 - Interactive terminal interface
@@ -68,6 +75,12 @@ G3 includes robust error handling with automatic retry logic:
 - **File Operations**: Read, write, and edit files with line-range precision
 - **Shell Integration**: Execute system commands with output capture
 - **Code Generation**: Structured code generation with syntax awareness
+- **Computer Control** (Experimental): Automate desktop applications
+  - **OCR Support**: Extract and find text from images and screen regions using Tesseract
+  - Mouse and keyboard control
+  - UI element inspection
+  - Screenshot capture
+  - See [Computer Control Guide](docs/COMPUTER_CONTROL.md) for details
 - **Final Output**: Formatted result presentation
 
 ### Provider Flexibility
@@ -102,6 +115,7 @@ G3 is designed for:
 - API integration and testing
 - Documentation generation
 - Complex multi-step workflows
+- Desktop application automation and testing
 
 ## Getting Started
 
@@ -115,6 +129,29 @@ cargo run
 # Execute a task
 g3 "implement a function to calculate fibonacci numbers"
 ```
+
+## Computer Control (Experimental)
+
+G3 can interact with your computer's GUI for automation tasks:
+
+### Setup
+
+1. Enable in config:
+```toml
+[computer_control]
+enabled = true
+```
+
+2. Grant OS permissions:
+   - **macOS**: System Preferences → Security & Privacy → Accessibility
+   - **Linux**: Ensure X11 or Wayland access
+   - **Windows**: Run as administrator (first time only)
+
+3. Use computer control:
+```bash
+```
+
+See [Computer Control Guide](docs/COMPUTER_CONTROL.md) for detailed documentation.
 
 ## Session Logs
 

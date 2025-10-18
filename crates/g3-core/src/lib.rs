@@ -423,6 +423,7 @@ pub struct Agent<W: UiWriter> {
     ui_writer: W,
     is_autonomous: bool,
     quiet: bool,
+    computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -576,6 +577,22 @@ impl<W: UiWriter> Agent<W> {
             info!("Added project README to context window");
         }
 
+        // Initialize computer controller if enabled
+        let computer_controller = if config.computer_control.enabled {
+            match g3_computer_control::create_controller() {
+                Ok(controller) => {
+                    info!("Computer control enabled");
+                    Some(controller)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize computer control: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             providers,
             context_window,
@@ -585,6 +602,7 @@ impl<W: UiWriter> Agent<W> {
             ui_writer,
             is_autonomous,
             quiet,
+            computer_controller,
         })
     }
 
@@ -760,6 +778,8 @@ For shell commands: Use the shell tool with the exact command needed. Avoid comm
 If you create test or data files temporarily, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
+
+When taking screenshots of specific windows (like \"my Safari window\" or \"my terminal\"), ALWAYS use list_windows first to identify the correct window ID, then use take_screenshot with the window_id parameter.
 
 Do not explain what you're going to do - just do it by calling the tools.
 
@@ -1037,7 +1057,7 @@ The tool will execute immediately and you'll receive the result (success or erro
             },
             Tool {
                 name: "read_file".to_string(),
-                description: "Read the contents of a file. Optionally read a specific character range.".to_string(),
+                description: "Read the contents of a file. For image files (png, jpg, jpeg, gif, bmp, tiff, webp), automatically extracts text using OCR. For text files, optionally read a specific character range.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1113,6 +1133,137 @@ The tool will execute immediately and you'll receive the result (success or erro
                         }
                     },
                     "required": ["summary"]
+                }),
+            },
+            Tool {
+                name: "mouse_click".to_string(),
+                description: "Click the mouse at specific coordinates".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "x": {
+                            "type": "integer",
+                            "description": "X coordinate"
+                        },
+                        "y": {
+                            "type": "integer",
+                            "description": "Y coordinate"
+                        },
+                        "button": {
+                            "type": "string",
+                            "enum": ["left", "right", "middle"],
+                            "description": "Mouse button to click",
+                            "default": "left"
+                        }
+                    },
+                    "required": ["x", "y"]
+                }),
+            },
+            Tool {
+                name: "type_text".to_string(),
+                description: "Type text at the current cursor position".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Text to type"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            },
+            Tool {
+                name: "find_element".to_string(),
+                description: "Find a UI element by text, role, or other attributes".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Text to search for"
+                        },
+                        "role": {
+                            "type": "string",
+                            "description": "Element role (button, textfield, etc.)"
+                        },
+                        "window_id": {
+                            "type": "string",
+                            "description": "Optional window ID to search in"
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "take_screenshot".to_string(),
+                description: "Capture a screenshot of the screen, region, or window. When capturing a specific application window (e.g., 'Safari', 'Terminal'), use the window_id parameter with just the application name. The tool will automatically use the native screencapture command with the application's window ID for a clean capture.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Filename for the screenshot (e.g., 'safari.png'). If a relative path is provided, the screenshot will be saved to ~/tmp or $TMPDIR. Use an absolute path to save elsewhere."
+                        },
+                        "window_id": {
+                            "type": "string",
+                            "description": "Optional application name to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will capture the frontmost window of that application using its native window ID."
+                        },
+                        "region": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "integer"},
+                                "y": {"type": "integer"},
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"}
+                            }
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            Tool {
+                name: "extract_text".to_string(),
+                description: "Extract text from a screen region or image file using OCR".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to image file (optional if region is provided)"
+                        },
+                        "region": {
+                            "type": "object",
+                            "description": "Screen region to capture and extract text from",
+                            "properties": {
+                                "x": {"type": "integer"},
+                                "y": {"type": "integer"},
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"}
+                            }
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "find_text_on_screen".to_string(),
+                description: "Find text visually on screen and return its coordinates".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Text to search for on screen"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            },
+            Tool {
+                name: "list_windows".to_string(),
+                description: "List all currently open windows with their IDs, titles, and application names. Use this to identify which window to interact with before taking screenshots or performing other window-specific operations.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
                 }),
             },
         ]
@@ -2060,6 +2211,31 @@ The tool will execute immediately and you'll receive the result (success or erro
                 debug!("Processing read_file tool call");
                 if let Some(file_path) = tool_call.args.get("file_path") {
                     if let Some(path_str) = file_path.as_str() {
+                        // Check if this is an image file
+                        let is_image = path_str.to_lowercase().ends_with(".png")
+                            || path_str.to_lowercase().ends_with(".jpg")
+                            || path_str.to_lowercase().ends_with(".jpeg")
+                            || path_str.to_lowercase().ends_with(".gif")
+                            || path_str.to_lowercase().ends_with(".bmp")
+                            || path_str.to_lowercase().ends_with(".tiff")
+                            || path_str.to_lowercase().ends_with(".tif")
+                            || path_str.to_lowercase().ends_with(".webp");
+
+                        // If it's an image file, use OCR via extract_text
+                        if is_image {
+                            if let Some(controller) = &self.computer_controller {
+                                match controller.extract_text_from_image(path_str).await {
+                                    Ok(result) => {
+                                        return Ok(format!("📄 Image file (OCR extracted, confidence: {:.2}):\n{}", 
+                                            result.confidence, result.text));
+                                    }
+                                    Err(e) => return Ok(format!("❌ Failed to extract text from image '{}': {}", path_str, e)),
+                                }
+                            } else {
+                                return Ok("❌ Computer control not enabled. Cannot perform OCR on image files. Set computer_control.enabled = true in config.".to_string());
+                            }
+                        }
+
                         // Extract optional start and end positions
                         let start_char = tool_call
                             .args
@@ -2395,6 +2571,188 @@ The tool will execute immediately and you'll receive the result (success or erro
                     }
                 } else {
                     Ok("✅ Turn completed".to_string())
+                }
+            }
+            "mouse_click" => {
+                if let Some(controller) = &self.computer_controller {
+                    let x = tool_call.args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let y = tool_call.args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let button_str = tool_call.args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+                    
+                    let button = match button_str {
+                        "left" => g3_computer_control::types::MouseButton::Left,
+                        "right" => g3_computer_control::types::MouseButton::Right,
+                        "middle" => g3_computer_control::types::MouseButton::Middle,
+                        _ => g3_computer_control::types::MouseButton::Left,
+                    };
+                    
+                    match controller.move_mouse(x, y).await {
+                        Ok(_) => {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            match controller.click(button).await {
+                                Ok(_) => Ok(format!("✅ Clicked {} button at ({}, {})", button_str, x, y)),
+                                Err(e) => Ok(format!("❌ Failed to click: {}", e)),
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to move mouse: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "type_text" => {
+                if let Some(controller) = &self.computer_controller {
+                    let text = tool_call.args.get("text").and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
+                    
+                    match controller.type_text(text).await {
+                        Ok(_) => Ok(format!("✅ Typed text: {}", text)),
+                        Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "find_element" => {
+                if let Some(controller) = &self.computer_controller {
+                    let selector = g3_computer_control::types::ElementSelector {
+                        text: tool_call.args.get("text").and_then(|v| v.as_str()).map(String::from),
+                        role: tool_call.args.get("role").and_then(|v| v.as_str()).map(String::from),
+                        window_id: tool_call.args.get("window_id").and_then(|v| v.as_str()).map(String::from),
+                    };
+                    
+                    match controller.find_element(&selector).await {
+                        Ok(Some(element)) => {
+                            match serde_json::to_string_pretty(&element) {
+                                Ok(json) => Ok(format!("✅ Found element:\n{}", json)),
+                                Err(e) => Ok(format!("✅ Found element but failed to serialize: {}", e)),
+                            }
+                        }
+                        Ok(None) => Ok("❌ Element not found".to_string()),
+                        Err(e) => Ok(format!("❌ Failed to find element: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "take_screenshot" => {
+                if let Some(controller) = &self.computer_controller {
+                let path = tool_call.args.get("path").and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+                
+                    // Extract window_id (app name) if provided
+                    let window_id = tool_call.args.get("window_id").and_then(|v| v.as_str());
+                    
+                    // Extract region if provided
+                    let region = tool_call.args.get("region").and_then(|v| v.as_object()).map(|region_obj| {
+                        g3_computer_control::types::Rect {
+                            x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            width: region_obj.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            height: region_obj.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        }
+                    });
+                    
+                    match controller.take_screenshot(path, region, window_id).await {
+                        Ok(_) => {
+                            // Get the actual path where the screenshot was saved
+                            let actual_path = if path.starts_with('/') {
+                                path.to_string()
+                            } else {
+                                let temp_dir = std::env::var("TMPDIR")
+                                    .or_else(|_| std::env::var("HOME").map(|h| format!("{}/tmp", h)))
+                                    .unwrap_or_else(|_| "/tmp".to_string());
+                                format!("{}/{}", temp_dir.trim_end_matches('/'), path)
+                            };
+                            
+                            if let Some(app) = window_id {
+                                Ok(format!("✅ Screenshot of {} saved to: {}", app, actual_path))
+                            } else {
+                                Ok(format!("✅ Screenshot saved to: {}", actual_path))
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to take screenshot: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "extract_text" => {
+                if let Some(controller) = &self.computer_controller {
+                    // Check if we have a path or a region
+                    if let Some(path) = tool_call.args.get("path").and_then(|v| v.as_str()) {
+                        // Extract text from image file
+                        match controller.extract_text_from_image(path).await {
+                            Ok(result) => {
+                                Ok(format!("✅ Extracted text (confidence: {:.2}):\n{}", 
+                                    result.confidence, result.text))
+                            }
+                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
+                        }
+                    } else if let Some(region_obj) = tool_call.args.get("region").and_then(|v| v.as_object()) {
+                        // Extract text from screen region
+                        let region = g3_computer_control::types::Rect {
+                            x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            width: region_obj.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            height: region_obj.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        };
+                        
+                        match controller.extract_text_from_screen(region).await {
+                            Ok(result) => {
+                                Ok(format!("✅ Extracted text (confidence: {:.2}):\n{}", 
+                                    result.confidence, result.text))
+                            }
+                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
+                        }
+                    } else {
+                        Ok("❌ Missing path or region argument".to_string())
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "find_text_on_screen" => {
+                if let Some(controller) = &self.computer_controller {
+                    let text = tool_call.args.get("text").and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
+                    
+                    match controller.find_text_on_screen(text).await {
+                        Ok(Some(point)) => {
+                            Ok(format!("✅ Found text '{}' at coordinates ({}, {})", text, point.x, point.y))
+                        }
+                        Ok(None) => Ok(format!("❌ Text '{}' not found on screen", text)),
+                        Err(e) => Ok(format!("❌ Failed to search for text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "list_windows" => {
+                if let Some(controller) = &self.computer_controller {
+                    match controller.list_windows().await {
+                        Ok(windows) => {
+                            if windows.is_empty() {
+                                Ok("📋 No windows found".to_string())
+                            } else {
+                                let mut output = format!("📋 Found {} windows:\n\n", windows.len());
+                                for window in windows {
+                                    output.push_str(&format!(
+                                        "• **{}** ({}x{})\n  ID: `{}`\n  Title: {}\n\n",
+                                        window.app_name,
+                                        window.bounds.width,
+                                        window.bounds.height,
+                                        window.id,
+                                        if window.title.is_empty() { "(no title)" } else { &window.title }
+                                    ));
+                                }
+                                Ok(output)
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to list windows: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
                 }
             }
             _ => {
