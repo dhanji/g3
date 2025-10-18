@@ -476,7 +476,12 @@ impl<W: UiWriter> Agent<W> {
         Self::new_with_mode_and_readme(config, ui_writer, true, readme_content, quiet).await
     }
 
-    async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool, quiet: bool) -> Result<Self> {
+    async fn new_with_mode(
+        config: Config,
+        ui_writer: W,
+        is_autonomous: bool,
+        quiet: bool,
+    ) -> Result<Self> {
         Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None, quiet).await
     }
 
@@ -755,7 +760,7 @@ impl<W: UiWriter> Agent<W> {
         // Reset the JSON tool call filter state at the start of each new task
         // This prevents the filter from staying in suppression mode between user interactions
         fixed_filter_json::reset_fixed_json_tool_state();
-        
+
         // Generate session ID based on the initial prompt if this is a new session
         if self.session_id.is_none() {
             self.session_id = Some(self.generate_session_id(description));
@@ -1612,7 +1617,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("<</SYS>>", "");
 
                             // Filter out JSON tool calls from the display
-                            let filtered_content = fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
+                            let filtered_content =
+                                fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
 
                             // Display any new content before tool execution
@@ -1690,8 +1696,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                             // Add 8-minute timeout for tool execution
                             let tool_result = match tokio::time::timeout(
                                 Duration::from_secs(8 * 60), // 8 minutes
-                                self.execute_tool(&tool_call)
-                            ).await {
+                                self.execute_tool(&tool_call),
+                            )
+                            .await
+                            {
                                 Ok(result) => result?,
                                 Err(_) => {
                                     warn!("Tool call {} timed out after 8 minutes", tool_call.tool);
@@ -1846,7 +1854,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("<</SYS>>", "");
 
                             if !clean_content.is_empty() {
-                                let filtered_content = fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
+                                let filtered_content =
+                                    fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
 
                                 if !filtered_content.is_empty() {
                                     if !response_started {
@@ -1890,7 +1899,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         .replace("[/INST]", "")
                                         .replace("<</SYS>>", "");
 
-                                    let filtered_text = fixed_filter_json::fixed_filter_json_tool_calls(&clean_text);
+                                    let filtered_text =
+                                        fixed_filter_json::fixed_filter_json_tool_calls(
+                                            &clean_text,
+                                        );
 
                                     // Only use this if we truly have nothing else
                                     if !filtered_text.trim().is_empty() && full_response.is_empty()
@@ -2217,7 +2229,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                         // Expand tilde (~) to home directory
                         let expanded_path = shellexpand::tilde(path_str);
                         let path_str = expanded_path.as_ref();
-                        
+
                         // Check if this is an image file
                         let is_image = path_str.to_lowercase().ends_with(".png")
                             || path_str.to_lowercase().ends_with(".jpg")
@@ -2233,10 +2245,17 @@ The tool will execute immediately and you'll receive the result (success or erro
                             if let Some(controller) = &self.computer_controller {
                                 match controller.extract_text_from_image(path_str).await {
                                     Ok(result) => {
-                                        return Ok(format!("📄 Image file (OCR extracted, confidence: {:.2}):\n{}", 
-                                            result.confidence, result.text));
+                                        return Ok(format!(
+                                            "📄 Image file (OCR extracted, confidence: {:.2}):\n{}",
+                                            result.confidence, result.text
+                                        ));
                                     }
-                                    Err(e) => return Ok(format!("❌ Failed to extract text from image '{}': {}", path_str, e)),
+                                    Err(e) => {
+                                        return Ok(format!(
+                                            "❌ Failed to extract text from image '{}': {}",
+                                            path_str, e
+                                        ))
+                                    }
                                 }
                             } else {
                                 return Ok("❌ Computer control not enabled. Cannot perform OCR on image files. Set computer_control.enabled = true in config.".to_string());
@@ -2482,7 +2501,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                     // Expand tilde (~) to home directory
                     let expanded_path = shellexpand::tilde(path);
                     let path = expanded_path.as_ref();
-                    
+
                     debug!("Writing to file: {}", path);
 
                     // Create parent directories if they don't exist
@@ -2573,7 +2592,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                 // Write the result back to the file
                 match std::fs::write(&file_path, &result) {
-                    Ok(()) => Ok(format!("✅ Successfully applied unified diff")),
+                    Ok(()) => Ok(format!("✅ applied unified diff")),
                     Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
                 }
             }
@@ -2590,22 +2609,37 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
             "mouse_click" => {
                 if let Some(controller) = &self.computer_controller {
-                    let x = tool_call.args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                    let y = tool_call.args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                    let button_str = tool_call.args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
-                    
+                    let x = tool_call
+                        .args
+                        .get("x")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0) as i32;
+                    let y = tool_call
+                        .args
+                        .get("y")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0) as i32;
+                    let button_str = tool_call
+                        .args
+                        .get("button")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("left");
+
                     let button = match button_str {
                         "left" => g3_computer_control::types::MouseButton::Left,
                         "right" => g3_computer_control::types::MouseButton::Right,
                         "middle" => g3_computer_control::types::MouseButton::Middle,
                         _ => g3_computer_control::types::MouseButton::Left,
                     };
-                    
+
                     match controller.move_mouse(x, y).await {
                         Ok(_) => {
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             match controller.click(button).await {
-                                Ok(_) => Ok(format!("✅ Clicked {} button at ({}, {})", button_str, x, y)),
+                                Ok(_) => Ok(format!(
+                                    "✅ Clicked {} button at ({}, {})",
+                                    button_str, x, y
+                                )),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
@@ -2617,9 +2651,12 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
             "type_text" => {
                 if let Some(controller) = &self.computer_controller {
-                    let text = tool_call.args.get("text").and_then(|v| v.as_str())
+                    let text = tool_call
+                        .args
+                        .get("text")
+                        .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
-                    
+
                     match controller.type_text(text).await {
                         Ok(_) => Ok(format!("✅ Typed text: {}", text)),
                         Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
@@ -2631,18 +2668,30 @@ The tool will execute immediately and you'll receive the result (success or erro
             "find_element" => {
                 if let Some(controller) = &self.computer_controller {
                     let selector = g3_computer_control::types::ElementSelector {
-                        text: tool_call.args.get("text").and_then(|v| v.as_str()).map(String::from),
-                        role: tool_call.args.get("role").and_then(|v| v.as_str()).map(String::from),
-                        window_id: tool_call.args.get("window_id").and_then(|v| v.as_str()).map(String::from),
+                        text: tool_call
+                            .args
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        role: tool_call
+                            .args
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        window_id: tool_call
+                            .args
+                            .get("window_id")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     };
-                    
+
                     match controller.find_element(&selector).await {
-                        Ok(Some(element)) => {
-                            match serde_json::to_string_pretty(&element) {
-                                Ok(json) => Ok(format!("✅ Found element:\n{}", json)),
-                                Err(e) => Ok(format!("✅ Found element but failed to serialize: {}", e)),
+                        Ok(Some(element)) => match serde_json::to_string_pretty(&element) {
+                            Ok(json) => Ok(format!("✅ Found element:\n{}", json)),
+                            Err(e) => {
+                                Ok(format!("✅ Found element but failed to serialize: {}", e))
                             }
-                        }
+                        },
                         Ok(None) => Ok("❌ Element not found".to_string()),
                         Err(e) => Ok(format!("❌ Failed to find element: {}", e)),
                     }
@@ -2652,22 +2701,33 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
             "take_screenshot" => {
                 if let Some(controller) = &self.computer_controller {
-                let path = tool_call.args.get("path").and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
-                
+                    let path = tool_call
+                        .args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+
                     // Extract window_id (app name) if provided
                     let window_id = tool_call.args.get("window_id").and_then(|v| v.as_str());
-                    
+
                     // Extract region if provided
-                    let region = tool_call.args.get("region").and_then(|v| v.as_object()).map(|region_obj| {
-                        g3_computer_control::types::Rect {
+                    let region = tool_call
+                        .args
+                        .get("region")
+                        .and_then(|v| v.as_object())
+                        .map(|region_obj| g3_computer_control::types::Rect {
                             x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                             y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            width: region_obj.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            height: region_obj.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                        }
-                    });
-                    
+                            width: region_obj
+                                .get("width")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                            height: region_obj
+                                .get("height")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                        });
+
                     match controller.take_screenshot(path, region, window_id).await {
                         Ok(_) => {
                             // Get the actual path where the screenshot was saved
@@ -2675,13 +2735,18 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 path.to_string()
                             } else {
                                 let temp_dir = std::env::var("TMPDIR")
-                                    .or_else(|_| std::env::var("HOME").map(|h| format!("{}/tmp", h)))
+                                    .or_else(|_| {
+                                        std::env::var("HOME").map(|h| format!("{}/tmp", h))
+                                    })
                                     .unwrap_or_else(|_| "/tmp".to_string());
                                 format!("{}/{}", temp_dir.trim_end_matches('/'), path)
                             };
-                            
+
                             if let Some(app) = window_id {
-                                Ok(format!("✅ Screenshot of {} saved to: {}", app, actual_path))
+                                Ok(format!(
+                                    "✅ Screenshot of {} saved to: {}",
+                                    app, actual_path
+                                ))
                             } else {
                                 Ok(format!("✅ Screenshot saved to: {}", actual_path))
                             }
@@ -2698,26 +2763,34 @@ The tool will execute immediately and you'll receive the result (success or erro
                     if let Some(path) = tool_call.args.get("path").and_then(|v| v.as_str()) {
                         // Extract text from image file
                         match controller.extract_text_from_image(path).await {
-                            Ok(result) => {
-                                Ok(format!("✅ Extracted text (confidence: {:.2}):\n{}", 
-                                    result.confidence, result.text))
-                            }
+                            Ok(result) => Ok(format!(
+                                "✅ Extracted text (confidence: {:.2}):\n{}",
+                                result.confidence, result.text
+                            )),
                             Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                         }
-                    } else if let Some(region_obj) = tool_call.args.get("region").and_then(|v| v.as_object()) {
+                    } else if let Some(region_obj) =
+                        tool_call.args.get("region").and_then(|v| v.as_object())
+                    {
                         // Extract text from screen region
                         let region = g3_computer_control::types::Rect {
                             x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                             y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            width: region_obj.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            height: region_obj.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            width: region_obj
+                                .get("width")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                            height: region_obj
+                                .get("height")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
                         };
-                        
+
                         match controller.extract_text_from_screen(region).await {
-                            Ok(result) => {
-                                Ok(format!("✅ Extracted text (confidence: {:.2}):\n{}", 
-                                    result.confidence, result.text))
-                            }
+                            Ok(result) => Ok(format!(
+                                "✅ Extracted text (confidence: {:.2}):\n{}",
+                                result.confidence, result.text
+                            )),
                             Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                         }
                     } else {
@@ -2729,13 +2802,17 @@ The tool will execute immediately and you'll receive the result (success or erro
             }
             "find_text_on_screen" => {
                 if let Some(controller) = &self.computer_controller {
-                    let text = tool_call.args.get("text").and_then(|v| v.as_str())
+                    let text = tool_call
+                        .args
+                        .get("text")
+                        .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
-                    
+
                     match controller.find_text_on_screen(text).await {
-                        Ok(Some(point)) => {
-                            Ok(format!("✅ Found text '{}' at coordinates ({}, {})", text, point.x, point.y))
-                        }
+                        Ok(Some(point)) => Ok(format!(
+                            "✅ Found text '{}' at coordinates ({}, {})",
+                            text, point.x, point.y
+                        )),
                         Ok(None) => Ok(format!("❌ Text '{}' not found on screen", text)),
                         Err(e) => Ok(format!("❌ Failed to search for text: {}", e)),
                     }
@@ -2758,7 +2835,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         window.bounds.width,
                                         window.bounds.height,
                                         window.id,
-                                        if window.title.is_empty() { "(no title)" } else { &window.title }
+                                        if window.title.is_empty() {
+                                            "(no title)"
+                                        } else {
+                                            &window.title
+                                        }
                                     ));
                                 }
                                 Ok(output)
