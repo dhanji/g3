@@ -115,8 +115,8 @@ impl UiWriter for ConsoleUiWriter {
                     String::new()
                 };
 
-                // Print with bold green formatting using ANSI escape codes
-                println!("┌─\x1b[1;32m {} | {}{}\x1b[0m", tool_name, display_value, header_suffix);
+                // Print with bold green tool name, purple (non-bold) for pipe and args
+                println!("┌─\x1b[1;32m {}\x1b[0m\x1b[35m | {}{}\x1b[0m", tool_name, display_value, header_suffix);
             } else {
                 // Print with bold green formatting using ANSI escape codes
                 println!("┌─\x1b[1;32m {}\x1b[0m", tool_name);
