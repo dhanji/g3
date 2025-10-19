@@ -1,5 +1,10 @@
 [providers]
 default_provider = "databricks"
+# Optional: Specify different providers for coach and player in autonomous mode
+# If not specified, will use default_provider for both
+# coach = "databricks"    # Provider for coach (code reviewer)
+# player = "anthropic"    # Provider for player (code implementer)
+# Note: Make sure the specified providers are configured below
 
 [providers.databricks]
 host = "https://your-workspace.cloud.databricks.com"

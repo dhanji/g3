@@ -100,14 +100,17 @@ fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
 /// Extract coach feedback by reading from the coach agent's specific log file
 /// Uses the coach agent's session ID to find the exact log file
 fn extract_coach_feedback_from_logs(
-    coach_result: &g3_core::TaskResult,
+    _coach_result: &g3_core::TaskResult,
     coach_agent: &g3_core::Agent<ConsoleUiWriter>,
     output: &SimpleOutput,
-) -> String {
+) -> Result<String> {
+    // CORRECT APPROACH: Get the session ID from the current coach agent
+    // and read its specific log file directly
+
     // Get the coach agent's session ID
     let session_id = coach_agent
         .get_session_id()
-        .expect("Coach agent has no session ID");
+        .ok_or_else(|| anyhow::anyhow!("Coach agent has no session ID"))?;
 
     // Construct the log file path for this specific coach session
     let logs_dir = std::path::Path::new("logs");
@@ -120,75 +123,15 @@ fn extract_coach_feedback_from_logs(
                 if let Some(context_window) = log_json.get("context_window") {
                     if let Some(conversation_history) = context_window.get("conversation_history") {
                         if let Some(messages) = conversation_history.as_array() {
-                            // Look for the last assistant message (regardless of tool used)
-                            for message in messages.iter().rev() {
-                                if let Some(role) = message.get("role") {
-                                    if role.as_str() == Some("assistant") {
-                                        if let Some(content) = message.get("content") {
-                                            if let Some(content_str) = content.as_str() {
-                                                // First, check if this is plain text feedback (no tool call)
-                                                // This happens when the coach returns final feedback directly
-                                                if !content_str.contains("{\"tool\"") {
-                                                    let trimmed = content_str.trim();
-                                                    if !trimmed.is_empty() {
-                                                        output.print(&format!(
-                                                            "✅ Extracted coach feedback from session: {} ({} chars) [plain text]",
-                                                            session_id,
-                                                            trimmed.len()
-                                                        ));
-                                                        return trimmed.to_string();
-                                                    }
-                                                }
-                                                
-                                                // Look for ANY tool call in the message
-                                                // Pattern: {"tool": "...", "args": {...}}
-                                                if let Some(tool_start) = content_str.find("{\"tool\"") {
-                                                    let json_part = &content_str[tool_start..];
-                                                    
-                                                    // Find the end of the JSON object
-                                                    if let Some(json_end) = find_json_end(json_part) {
-                                                        let json_str = &json_part[..json_end];
-                                                        
-                                                        if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                                            if let Some(args) = tool_call.get("args") {
-                                                                // Try to extract feedback from different possible fields
-                                                                let feedback = if let Some(summary) = args.get("summary") {
-                                                                    // final_output tool uses "summary"
-                                                                    summary.as_str().map(|s| s.to_string())
-                                                                } else if let Some(content) = args.get("content") {
-                                                                    // todo_write and other tools might use "content"
-                                                                    content.as_str().map(|s| s.to_string())
-                                                                } else {
-                                                                    // Fallback: use the entire args as JSON string
-                                                                    Some(serde_json::to_string_pretty(args).unwrap_or_default())
-                                                                };
-                                                                
-                                                                if let Some(feedback_str) = feedback {
-                                                                    if !feedback_str.trim().is_empty() {
-                                                                        output.print(&format!(
-                                                                            "✅ Extracted coach feedback from session: {} ({} chars)",
-                                                                            session_id,
-                                                                            feedback_str.len()
-                                                                        ));
-                                                                        
-                                                                        // Validate feedback length
-                                                                        if feedback_str.len() < 80 && !feedback_str.contains("IMPLEMENTATION_APPROVED") {
-                                                                            panic!(
-                                                                                "Coach feedback is too short ({} chars): '{}'",
-                                                                                feedback_str.len(),
-                                                                                feedback_str
-                                                                            );
-                                                                        }
-                                                                        
-                                                                        return feedback_str;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                            // Simply get the last message content - this is the coach's final feedback
+                            if let Some(last_message) = messages.last() {
+                                if let Some(content) = last_message.get("content") {
+                                    if let Some(content_str) = content.as_str() {
+                                        output.print(&format!(
+                                            "✅ Extracted coach feedback from session: {}",
+                                            session_id
+                                        ));
+                                        return Ok(content_str.to_string());
                                     }
                                 }
                             }
@@ -199,47 +142,10 @@ fn extract_coach_feedback_from_logs(
         }
     }
 
-    // If we couldn't extract from logs, panic with detailed error
-    panic!(
-        "CRITICAL: Could not extract coach feedback from session: {}\n\
-         Log file path: {:?}\n\
-         Log file exists: {}\n\
-         This indicates the coach did not call any tool or the log is corrupted.\n\
-         Coach result response length: {} chars",
-        session_id,
-        log_file_path,
-        log_file_path.exists(),
-        coach_result.response.len()
-    );
-}
-
-/// Helper function to find the end of a JSON object using brace counting
-fn find_json_end(json_str: &str) -> Option<usize> {
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escape_next = false;
-    
-    for (i, ch) in json_str.char_indices() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-        
-        match ch {
-            '\\' if in_string => escape_next = true,
-            '"' => in_string = !in_string,
-            '{' if !in_string => depth += 1,
-            '}' if !in_string => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    None
+    Err(anyhow::anyhow!(
+        "Could not extract feedback from coach session: {}",
+        session_id
+    ))
 }
 
 use clap::Parser;
@@ -321,10 +227,6 @@ pub struct Cli {
     /// Disable log file creation (no logs/ directory or session logs)
     #[arg(long)]
     pub quiet: bool,
-
-    /// Enable WebDriver tools for browser automation (Safari)
-    #[arg(long)]
-    pub webdriver: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -413,16 +315,11 @@ pub async fn run() -> Result<()> {
     }
 
     // Load configuration with CLI overrides
-    let mut config = Config::load_with_overrides(
+    let config = Config::load_with_overrides(
         cli.config.as_deref(),
         cli.provider.clone(),
         cli.model.clone(),
     )?;
-
-    // Override webdriver setting from CLI flag
-    if cli.webdriver {
-        config.webdriver.enabled = true;
-    }
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
@@ -1358,10 +1255,6 @@ async fn run_autonomous(
     loop {
         let turn_start_time = Instant::now();
         let turn_start_tokens = agent.get_context_window().used_tokens;
-        
-        // Reset filter suppression state at the start of each turn
-        g3_core::fixed_filter_json::reset_fixed_json_tool_state();
-        
         // Skip player turn if it's the first turn and implementation files exist
         if !(turn == 1 && skip_first_player) {
             output.print(&format!(
@@ -1522,14 +1415,15 @@ async fn run_autonomous(
 
         // Create a new agent instance for coach mode to ensure fresh context
         // Use the same config with overrides that was passed to the player agent
-        let config = agent.get_config().clone();
-        
+        let base_config = agent.get_config().clone();
+        let coach_config = base_config.for_coach()?;
+
         // Reset filter suppression state before creating coach agent
         g3_core::fixed_filter_json::reset_fixed_json_tool_state();
-        
+
         let ui_writer = ConsoleUiWriter::new();
         let mut coach_agent =
-            Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
+            Agent::new_autonomous_with_readme_and_quiet(coach_config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;
@@ -1677,7 +1571,7 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
 
         // Extract the complete coach feedback from final_output
         let coach_feedback_text =
-            extract_coach_feedback_from_logs(&coach_result, &coach_agent, &output);
+            extract_coach_feedback_from_logs(&coach_result, &coach_agent, &output)?;
 
         // Log the size of the feedback for debugging
         info!(
@@ -1704,15 +1598,6 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
 
         output.print_smart(&format!("Coach feedback:\n{}", coach_feedback_text));
 
-        // Record turn metrics before checking for approval or max turns
-        let turn_duration = turn_start_time.elapsed();
-        let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
-        turn_metrics.push(TurnMetrics {
-            turn_number: turn,
-            tokens_used: turn_tokens,
-            wall_clock_time: turn_duration,
-        });
-
         // Check if coach approved the implementation
         if coach_result.is_approved() || coach_feedback_text.contains("IMPLEMENTATION_APPROVED") {
             output.print("\n=== SESSION COMPLETED - IMPLEMENTATION APPROVED ===");
@@ -1721,7 +1606,6 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
             break;
         }
 
-        // Increment turn counter after recording metrics but before checking max turns
         // Check if we've reached max turns
         if turn >= max_turns {
             output.print("\n=== SESSION COMPLETED - MAX TURNS REACHED ===");
@@ -1731,7 +1615,14 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
 
         // Store coach feedback for next iteration
         coach_feedback = coach_feedback_text;
-        
+        // Record turn metrics before incrementing
+        let turn_duration = turn_start_time.elapsed();
+        let turn_tokens = agent.get_context_window().used_tokens.saturating_sub(turn_start_tokens);
+        turn_metrics.push(TurnMetrics {
+            turn_number: turn,
+            tokens_used: turn_tokens,
+            wall_clock_time: turn_duration,
+        });
         turn += 1;
 
         output.print("🔄 Coach provided feedback for next iteration");

@@ -17,6 +17,8 @@ pub struct ProvidersConfig {
     pub databricks: Option<DatabricksConfig>,
     pub embedded: Option<EmbeddedConfig>,
     pub default_provider: String,
+    pub coach: Option<String>,  // Provider to use for coach in autonomous mode
+    pub player: Option<String>, // Provider to use for player in autonomous mode
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +114,8 @@ impl Default for Config {
                 }),
                 embedded: None,
                 default_provider: "databricks".to_string(),
+                coach: None,  // Will use default_provider if not specified
+                player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
                 max_context_length: 8192,
@@ -224,6 +228,8 @@ impl Config {
                     threads: Some(8),
                 }),
                 default_provider: "embedded".to_string(),
+                coach: None,  // Will use default_provider if not specified
+                player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
                 max_context_length: 8192,
@@ -300,4 +306,67 @@ impl Config {
         
         Ok(config)
     }
+    
+    /// Get the provider to use for coach mode in autonomous execution
+    pub fn get_coach_provider(&self) -> &str {
+        self.providers.coach
+            .as_deref()
+            .unwrap_or(&self.providers.default_provider)
+    }
+    
+    /// Get the provider to use for player mode in autonomous execution
+    pub fn get_player_provider(&self) -> &str {
+        self.providers.player
+            .as_deref()
+            .unwrap_or(&self.providers.default_provider)
+    }
+    
+    /// Create a copy of the config with a different default provider
+    pub fn with_provider_override(&self, provider: &str) -> Result<Self> {
+        // Validate that the provider is configured
+        match provider {
+            "anthropic" if self.providers.anthropic.is_none() => {
+                return Err(anyhow::anyhow!(
+                    "Provider '{}' is specified but not configured. Please add {} configuration to your config file.",
+                    provider, provider
+                ));
+            }
+            "databricks" if self.providers.databricks.is_none() => {
+                return Err(anyhow::anyhow!(
+                    "Provider '{}' is specified but not configured. Please add {} configuration to your config file.",
+                    provider, provider
+                ));
+            }
+            "embedded" if self.providers.embedded.is_none() => {
+                return Err(anyhow::anyhow!(
+                    "Provider '{}' is specified but not configured. Please add {} configuration to your config file.",
+                    provider, provider
+                ));
+            }
+            "openai" if self.providers.openai.is_none() => {
+                return Err(anyhow::anyhow!(
+                    "Provider '{}' is specified but not configured. Please add {} configuration to your config file.",
+                    provider, provider
+                ));
+            }
+            _ => {} // Provider is configured or unknown (will be caught later)
+        }
+        
+        let mut config = self.clone();
+        config.providers.default_provider = provider.to_string();
+        Ok(config)
+    }
+    
+    /// Create a copy of the config for coach mode in autonomous execution
+    pub fn for_coach(&self) -> Result<Self> {
+        self.with_provider_override(self.get_coach_provider())
+    }
+    
+    /// Create a copy of the config for player mode in autonomous execution
+    pub fn for_player(&self) -> Result<Self> {
+        self.with_provider_override(self.get_player_provider())
+    }
 }
+
+#[cfg(test)]
+mod tests;
