@@ -347,8 +347,9 @@ pub async fn run() -> Result<()> {
     };
     
     let mut agent = if cli.autonomous {
+        let player_config = config.for_player()?;
         Agent::new_autonomous_with_readme_and_quiet(
-            config.clone(),
+            player_config,
             ui_writer,
             combined_content.clone(),
             cli.quiet,
@@ -1138,6 +1139,16 @@ async fn run_autonomous(
         project.workspace().display()
     ));
 
+    // Log which providers are being used
+    let config = agent.get_config();
+    let player_provider = config.get_player_provider();
+    let coach_provider = config.get_coach_provider();
+    output.print(&format!("🎮 Player provider: {}", player_provider));
+    output.print(&format!("👨‍🏫 Coach provider: {}", coach_provider));
+    if player_provider != coach_provider {
+        output.print("ℹ️  Using different providers for player and coach");
+    }
+
     // Check if requirements exist
     if !project.has_requirements() {
         output.print("❌ Error: requirements.md not found in workspace directory");
@@ -1415,10 +1426,11 @@ async fn run_autonomous(
 
         // Create a new agent instance for coach mode to ensure fresh context
         // Use the same config with overrides that was passed to the player agent
-        let config = agent.get_config().clone();
+        let base_config = agent.get_config().clone();
+        let coach_config = base_config.for_coach()?;
         let ui_writer = ConsoleUiWriter::new();
         let mut coach_agent =
-            Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
+            Agent::new_autonomous_with_readme_and_quiet(coach_config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;

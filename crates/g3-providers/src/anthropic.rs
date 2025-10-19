@@ -156,8 +156,9 @@ impl AnthropicProvider {
             .post(ANTHROPIC_API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            // Anthropic beta 1m context window. Enable if needed. It costs extra, so check first.
+            // .header("anthropic-beta", "context-1m-2025-08-07")
             .header("content-type", "application/json");
-
         if streaming {
             builder = builder.header("accept", "text/event-stream");
         }
