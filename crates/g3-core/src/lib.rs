@@ -427,6 +427,7 @@ pub struct Agent<W: UiWriter> {
     is_autonomous: bool,
     quiet: bool,
     computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
+    todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -608,6 +609,7 @@ impl<W: UiWriter> Agent<W> {
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
+            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
             is_autonomous,
             quiet,
             computer_controller,
@@ -773,6 +775,27 @@ impl<W: UiWriter> Agent<W> {
                 // For native tool calling providers, use a more explicit system prompt
                 "You are G3, an AI programming agent of the same skill level as a seasoned engineer at a major technology company. You analyze given tasks and write code to achieve goals.
 
+# Task Management
+
+Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+
+Workflow:
+- Start: read → write checklist
+- During: read → update progress
+- End: verify all complete
+
+Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+
+Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+
+Template:
+- [ ] Implement feature X
+  - [ ] Update API
+  - [ ] Write tests
+  - [ ] Run tests
+  - [ ] Run lint
+- [ ] Blocked: waiting on credentials
+
 You have access to tools. When you need to accomplish a task, you MUST use the appropriate tool. Do not just describe what you would do - actually use the tools.
 
 IMPORTANT: You must call tools to achieve goals. When you receive a request:
@@ -783,7 +806,7 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 5. Call the final_output tool with a detailed summary when done.
 
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
-If you create test or data files temporarily, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
+If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
 
@@ -799,6 +822,24 @@ Do not explain what you're going to do - just do it by calling the tools.
             } else {
                 // For non-native providers (embedded models), use JSON format instructions
                 "You are G3, a general-purpose AI agent. Your goal is to analyze and solve problems by writing code.
+
+# Task Management
+
+Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+
+Workflow:
+- Start: read → write checklist
+- During: read → update progress
+- End: verify all complete
+
+Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+
+Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+
+Template:
+- [ ] Implement feature X
+  - [ ] Update API
+  - [ ] Write tests
 
 # Tool Call Format
 
@@ -829,6 +870,14 @@ The tool will execute immediately and you'll receive the result (success or erro
 
 - **final_output**: Signal task completion with a detailed summary of work done in markdown format
   - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}
+
+- **todo_read**: Read the entire TODO list content
+  - Format: {\"tool\": \"todo_read\", \"args\": {}}
+  - Example: {\"tool\": \"todo_read\", \"args\": {}}
+
+- **todo_write**: Write or overwrite the entire TODO list (WARNING: overwrites completely, always read first)
+  - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
+  - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
 
 # Instructions
 
@@ -1272,6 +1321,29 @@ The tool will execute immediately and you'll receive the result (success or erro
                 input_schema: json!({
                     "type": "object",
                     "properties": {}
+                }),
+            },
+            Tool {
+                name: "todo_read".to_string(),
+                description: "Read the entire TODO list content. Use this to view current tasks, notes, and any other information stored in the TODO list.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "todo_write".to_string(),
+                description: "Write or overwrite the entire TODO list content. This tool replaces the complete TODO list with the provided string. Use this to update tasks, add new items, or reorganize the TODO list. WARNING: This operation completely replaces the TODO list content. Make sure to include all content you want to keep, not just the changes.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "The TODO list content to save. Use markdown checkbox format: - [ ] for incomplete tasks, - [x] for completed tasks. Support nested tasks with indentation."
+                        }
+                    },
+                    "required": ["content"]
                 }),
             },
         ]
@@ -2849,6 +2921,39 @@ The tool will execute immediately and you'll receive the result (success or erro
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "todo_read" => {
+                debug!("Processing todo_read tool call");
+                let content = self.todo_content.read().await;
+                if content.is_empty() {
+                    Ok("📝 TODO list is empty".to_string())
+                } else {
+                    Ok(format!("📝 TODO list:\n{}", content.as_str()))
+                }
+            }
+            "todo_write" => {
+                debug!("Processing todo_write tool call");
+                if let Some(content) = tool_call.args.get("content") {
+                    if let Some(content_str) = content.as_str() {
+                        let char_count = content_str.chars().count();
+                        let max_chars = std::env::var("G3_TODO_MAX_CHARS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(50_000);
+
+                        if max_chars > 0 && char_count > max_chars {
+                            return Ok(format!("❌ TODO list too large: {} chars (max: {})", char_count, max_chars));
+                        }
+
+                        let mut todo = self.todo_content.write().await;
+                        *todo = content_str.to_string();
+                        Ok(format!("✅ TODO list updated ({} chars)", char_count))
+                    } else {
+                        Ok("❌ Invalid content argument".to_string())
+                    }
+                } else {
+                    Ok("❌ Missing content argument".to_string())
                 }
             }
             _ => {
