@@ -8,7 +8,8 @@ pub use task_result::TaskResult;
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
 
-mod fixed_filter_json;
+// Make fixed_filter_json public so it can be accessed from g3-cli
+pub mod fixed_filter_json;
 #[cfg(test)]
 mod fixed_filter_tests;
 
@@ -1688,6 +1689,9 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("[/INST]", "")
                                 .replace("<</SYS>>", "");
 
+                            // Store the raw content BEFORE filtering for the context window log
+                            let raw_content_for_log = clean_content.clone();
+
                             // Filter out JSON tool calls from the display
                             let filtered_content =
                                 fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
@@ -1858,20 +1862,20 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 self.ui_writer.print_agent_prompt();
                             }
 
-                            // Add the tool call and result to the context window
-                            // Only include the text content if it's not already in full_response
-                            let tool_message = if !full_response.contains(final_display_content) {
+                            // Add the tool call and result to the context window using RAW unfiltered content
+                            // This ensures the log file contains the true raw content including JSON tool calls
+                            let tool_message = if !full_response.contains(final_display_content) && !raw_content_for_log.trim().is_empty() {
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
                                         "{}\n\n{{\"tool\": \"{}\", \"args\": {}}}",
-                                        final_display_content.trim(),
+                                        raw_content_for_log.trim(),
                                         tool_call.tool,
                                         tool_call.args
                                     ),
                                 }
                             } else {
-                                // If we've already added the text, just include the tool call
+                                // If we've already added the text or there's no text, just include the tool call
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
@@ -2186,6 +2190,26 @@ The tool will execute immediately and you'll receive the result (success or erro
                 }
 
                 let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
+
+                // Add the RAW unfiltered response to context window before returning
+                // This ensures the log contains the true raw content including any JSON
+                if !full_response.trim().is_empty() {
+                    // Get the raw text from the parser (before filtering)
+                    let raw_text = parser.get_text_content();
+                    let raw_clean = raw_text
+                        .replace("<|im_end|>", "")
+                        .replace("</s>", "")
+                        .replace("[/INST]", "")
+                        .replace("<</SYS>>", "");
+                    
+                    if !raw_clean.trim().is_empty() {
+                        let assistant_message = Message {
+                            role: MessageRole::Assistant,
+                            content: raw_clean,
+                        };
+                        self.context_window.add_message(assistant_message);
+                    }
+                }
 
                 // Add timing if needed
                 let final_response = if show_timing {
