@@ -776,27 +776,6 @@ impl<W: UiWriter> Agent<W> {
                 // For native tool calling providers, use a more explicit system prompt
                 "You are G3, an AI programming agent of the same skill level as a seasoned engineer at a major technology company. You analyze given tasks and write code to achieve goals.
 
-# Task Management
-
-Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
-
-Workflow:
-- Start: read → write checklist
-- During: read → update progress
-- End: verify all complete
-
-Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
-
-Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
-
-Template:
-- [ ] Implement feature X
-  - [ ] Update API
-  - [ ] Write tests
-  - [ ] Run tests
-  - [ ] Run lint
-- [ ] Blocked: waiting on credentials
-
 You have access to tools. When you need to accomplish a task, you MUST use the appropriate tool. Do not just describe what you would do - actually use the tools.
 
 IMPORTANT: You must call tools to achieve goals. When you receive a request:
@@ -815,18 +794,9 @@ When taking screenshots of specific windows (like \"my Safari window\" or \"my t
 
 Do not explain what you're going to do - just do it by calling the tools.
 
-# Response Guidelines
-
-- Use Markdown formatting for all responses except tool calls.
-- Whenever taking actions, use the pronoun 'I'
-".to_string()
-            } else {
-                // For non-native providers (embedded models), use JSON format instructions
-                "You are G3, a general-purpose AI agent. Your goal is to analyze and solve problems by writing code.
-
 # Task Management
 
-Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+Use todo_read and todo_write for tasks with 2+ steps, multiple files/components, or uncertain scope.
 
 Workflow:
 - Start: read → write checklist
@@ -841,6 +811,21 @@ Template:
 - [ ] Implement feature X
   - [ ] Update API
   - [ ] Write tests
+  - [ ] Run tests
+  - [ ] Run lint
+- [ ] Blocked: waiting on credentials
+
+
+# Response Guidelines
+
+- Use Markdown formatting for all responses except tool calls.
+- Whenever taking actions, use the pronoun 'I'
+".to_string()
+            } else {
+                // For non-native providers (embedded models), use JSON format instructions
+                "You are G3, a general-purpose AI agent. Your goal is to analyze and solve problems by writing code.
+
+You have access to tools. When you need to accomplish a task, you MUST use the appropriate tool. Do not just describe what you would do - actually use the tools.
 
 # Tool Call Format
 
@@ -886,6 +871,24 @@ The tool will execute immediately and you'll receive the result (success or erro
 2. Execute ONE tool at a time
 3. STOP when the original request was satisfied
 4. Call the final_output tool when done
+
+# Task Management
+
+Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+
+Workflow:
+- Start: read → write checklist
+- During: read → update progress
+- End: verify all complete
+
+Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+
+Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+
+Template:
+- [ ] Implement feature X
+  - [ ] Update API
+  - [ ] Write tests
 
 # Response Guidelines
 
@@ -1813,14 +1816,21 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
                                 let output_len = output_lines.len();
+                                
+                                // For todo tools, show all lines without truncation
+                                let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
+                                let max_lines_to_show = if is_todo_tool { output_len } else { MAX_LINES };
 
-                                for line in output_lines {
+                                for (idx, line) in output_lines.iter().enumerate() {
+                                    if !is_todo_tool && idx >= max_lines_to_show {
+                                        break;
+                                    }
                                     // Clip line to max width
                                     let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
                                     self.ui_writer.update_tool_output_line(&clipped_line);
                                 }
 
-                                if output_len > MAX_LINES {
+                                if !is_todo_tool && output_len > MAX_LINES {
                                     self.ui_writer.print_tool_output_summary(output_len);
                                 }
                             }

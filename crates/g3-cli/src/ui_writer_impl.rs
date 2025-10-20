@@ -10,6 +10,7 @@ pub struct ConsoleUiWriter {
     current_tool_args: Mutex<Vec<(String, String)>>,
     current_output_line: Mutex<Option<String>>,
     output_line_printed: Mutex<bool>,
+    in_todo_tool: Mutex<bool>,
 }
 
 impl ConsoleUiWriter {
@@ -19,6 +20,60 @@ impl ConsoleUiWriter {
             current_tool_args: Mutex::new(Vec::new()),
             current_output_line: Mutex::new(None),
             output_line_printed: Mutex::new(false),
+            in_todo_tool: Mutex::new(false),
+        }
+    }
+
+    fn print_todo_line(&self, line: &str) {
+        // Transform and print todo list lines elegantly
+        let trimmed = line.trim();
+        
+        // Skip the "📝 TODO list:" prefix line
+        if trimmed.starts_with("📝 TODO list:") || trimmed == "📝 TODO list is empty" {
+            return;
+        }
+        
+        // Handle empty lines
+        if trimmed.is_empty() {
+            println!();
+            return;
+        }
+        
+        // Detect indentation level
+        let indent_count = line.chars().take_while(|c| c.is_whitespace()).count();
+        let indent = "  ".repeat(indent_count / 2); // Convert spaces to visual indent
+        
+        // Format based on line type
+        if trimmed.starts_with("- [ ]") {
+            // Incomplete task
+            let task = trimmed.strip_prefix("- [ ]").unwrap_or(trimmed).trim();
+            println!("{}☐ {}", indent, task);
+        } else if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
+            // Completed task
+            let task = trimmed.strip_prefix("- [x]")
+                .or_else(|| trimmed.strip_prefix("- [X]"))
+                .unwrap_or(trimmed)
+                .trim();
+            println!("{}\x1b[2m☑ {}\x1b[0m", indent, task);
+        } else if trimmed.starts_with("- ") {
+            // Regular bullet point
+            let item = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
+            println!("{}• {}", indent, item);
+        } else if trimmed.starts_with("# ") {
+            // Heading
+            let heading = trimmed.strip_prefix("# ").unwrap_or(trimmed).trim();
+            println!("\n\x1b[1m{}\x1b[0m", heading);
+        } else if trimmed.starts_with("## ") {
+            // Subheading
+            let subheading = trimmed.strip_prefix("## ").unwrap_or(trimmed).trim();
+            println!("\n\x1b[1m{}\x1b[0m", subheading);
+        } else if trimmed.starts_with("**") && trimmed.ends_with("**") {
+            // Bold text (section marker)
+            let text = trimmed.trim_start_matches("**").trim_end_matches("**");
+            println!("{}\x1b[1m{}\x1b[0m", indent, text);
+        } else {
+            // Regular text or note
+            println!("{}{}", indent, trimmed);
         }
     }
 }
@@ -53,6 +108,15 @@ impl UiWriter for ConsoleUiWriter {
         // Store the tool name and clear args for collection
         *self.current_tool_name.lock().unwrap() = Some(tool_name.to_string());
         self.current_tool_args.lock().unwrap().clear();
+        
+        // Check if this is a todo tool call
+        let is_todo = tool_name == "todo_read" || tool_name == "todo_write";
+        *self.in_todo_tool.lock().unwrap() = is_todo;
+        
+        // For todo tools, we'll skip the normal header and print a custom one later
+        if is_todo {
+            return;
+        }
     }
 
     fn print_tool_arg(&self, key: &str, value: &str) {
@@ -75,6 +139,12 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_output_header(&self) {
+        // Skip normal header for todo tools
+        if *self.in_todo_tool.lock().unwrap() {
+            println!(); // Just add a newline
+            return;
+        }
+        
         println!();
         // Now print the tool header with the most important arg in bold green
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
@@ -144,10 +214,21 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_output_line(&self, line: &str) {
+        // Special handling for todo tools
+        if *self.in_todo_tool.lock().unwrap() {
+            self.print_todo_line(line);
+            return;
+        }
+        
         println!("│ \x1b[2m{}\x1b[0m", line);
     }
 
     fn print_tool_output_summary(&self, count: usize) {
+        // Skip for todo tools
+        if *self.in_todo_tool.lock().unwrap() {
+            return;
+        }
+        
         println!(
             "│ \x1b[2m({} line{})\x1b[0m",
             count,
@@ -156,6 +237,13 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn print_tool_timing(&self, duration_str: &str) {
+        // For todo tools, just print a simple completion message
+        if *self.in_todo_tool.lock().unwrap() {
+            println!();
+            *self.in_todo_tool.lock().unwrap() = false;
+            return;
+        }
+        
         // Parse the duration string to determine color
         // Format is like "1.5s", "500ms", "2m 30.0s"
         let color_code = if duration_str.ends_with("ms") {
