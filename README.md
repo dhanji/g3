@@ -11,8 +11,8 @@ G3 follows a modular architecture organized as a Rust workspace with multiple cr
 #### **g3-core**
 The heart of the agent system, containing:
 - **Agent Engine**: Main orchestration logic for handling conversations, tool execution, and task management
-- **Context Window Management**: Intelligent tracking of token usage with auto-summarization capabilities when approaching context limits (~80% capacity)
-- **Tool System**: Built-in tools for file operations (read, write, edit), shell command execution, and structured output generation
+- **Context Window Management**: Intelligent tracking of token usage with context thinning (50-80%) and auto-summarization at 80% capacity
+- **Tool System**: Built-in tools for file operations, shell commands, computer control, TODO management, and structured output
 - **Streaming Response Parser**: Real-time parsing of LLM responses with tool call detection and execution
 - **Task Execution**: Support for single and iterative task execution with automatic retry logic
 
@@ -44,8 +44,8 @@ Task execution framework:
 Computer control capabilities:
 - Mouse and keyboard automation
 - UI element inspection and interaction
-- Screenshot capture
-- OCR text extraction
+- Screenshot capture and window management
+- OCR text extraction via Tesseract
 
 #### **g3-cli**
 Command-line interface:
@@ -68,19 +68,21 @@ G3 includes robust error handling with automatic retry logic:
 ### Intelligent Context Management
 - Automatic context window monitoring with percentage-based tracking
 - Smart auto-summarization when approaching token limits
+- **Context thinning** at 50%, 60%, 70%, 80% thresholds - automatically replaces large tool results with file references
 - Conversation history preservation through summaries
-- Dynamic token allocation for different providers
+- Dynamic token allocation for different providers (4k to 200k+ tokens)
 
 ### Tool Ecosystem
 - **File Operations**: Read, write, and edit files with line-range precision
 - **Shell Integration**: Execute system commands with output capture
 - **Code Generation**: Structured code generation with syntax awareness
+- **TODO Management**: Read and write TODO lists with markdown checkbox format
 - **Computer Control** (Experimental): Automate desktop applications
-  - **OCR Support**: Extract and find text from images and screen regions using Tesseract
   - Mouse and keyboard control
   - UI element inspection
-  - Screenshot capture
-  - See [Computer Control Guide](docs/COMPUTER_CONTROL.md) for details
+  - Screenshot capture and window management
+  - OCR text extraction from images and screen regions
+  - Window listing and identification
 - **Final Output**: Formatted result presentation
 
 ### Provider Flexibility
@@ -111,7 +113,7 @@ G3 is designed for:
 - Automated code generation and refactoring
 - File manipulation and project scaffolding
 - System administration tasks
-- Data processing and transformation
+- Data processing and transformation  
 - API integration and testing
 - Documentation generation
 - Complex multi-step workflows
@@ -134,24 +136,12 @@ g3 "implement a function to calculate fibonacci numbers"
 
 G3 can interact with your computer's GUI for automation tasks:
 
-### Setup
+**Available Tools**: `mouse_click`, `type_text`, `find_element`, `take_screenshot`, `extract_text`, `find_text_on_screen`, `list_windows`
 
-1. Enable in config:
-```toml
-[computer_control]
-enabled = true
-```
-
-2. Grant OS permissions:
-   - **macOS**: System Preferences → Security & Privacy → Accessibility
-   - **Linux**: Ensure X11 or Wayland access
-   - **Windows**: Run as administrator (first time only)
-
-3. Use computer control:
-```bash
-```
-
-See [Computer Control Guide](docs/COMPUTER_CONTROL.md) for detailed documentation.
+**Setup**: Enable in config with `computer_control.enabled = true` and grant OS accessibility permissions:
+- **macOS**: System Preferences → Security & Privacy → Accessibility  
+- **Linux**: Ensure X11 or Wayland access
+- **Windows**: Run as administrator (first time only)
 
 ## Session Logs
 
