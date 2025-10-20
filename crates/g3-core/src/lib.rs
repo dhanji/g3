@@ -278,6 +278,7 @@ pub struct ContextWindow {
     pub total_tokens: u32,
     pub cumulative_tokens: u32, // Track cumulative tokens across all interactions
     pub conversation_history: Vec<Message>,
+    pub last_thinning_percentage: u32, // Track the last percentage at which we thinned
 }
 
 impl ContextWindow {
@@ -287,6 +288,7 @@ impl ContextWindow {
             total_tokens,
             cumulative_tokens: 0,
             conversation_history: Vec::new(),
+            last_thinning_percentage: 0,
         }
     }
 
@@ -415,6 +417,104 @@ Format this as a detailed but concise summary that can be used to resume the con
                 content: user_msg,
             });
         }
+    }
+
+    /// Check if we should trigger context thinning
+    /// Triggers at 50%, 60%, 70%, and 80% thresholds
+    pub fn should_thin(&self) -> bool {
+        let current_percentage = self.percentage_used() as u32;
+        
+        // Check if we've crossed a new 10% threshold starting at 50%
+        if current_percentage >= 50 {
+            let current_threshold = (current_percentage / 10) * 10; // Round down to nearest 10%
+            if current_threshold > self.last_thinning_percentage && current_threshold <= 80 {
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    /// Perform context thinning: scan first third of conversation and replace large tool results
+    /// Returns a summary message about what was thinned
+    pub fn thin_context(&mut self) -> String {
+        let current_percentage = self.percentage_used() as u32;
+        let current_threshold = (current_percentage / 10) * 10;
+        
+        // Update the last thinning percentage
+        self.last_thinning_percentage = current_threshold;
+        
+        // Calculate the first third of the conversation
+        let total_messages = self.conversation_history.len();
+        let first_third_end = (total_messages / 3).max(1);
+        
+        let mut leaned_count = 0;
+        let mut chars_saved = 0;
+        
+        // Create ~/tmp directory if it doesn't exist
+        let tmp_dir = shellexpand::tilde("~/tmp").to_string();
+        if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+            warn!("Failed to create ~/tmp directory: {}", e);
+            return format!("⚠️  Context thinning failed: could not create ~/tmp directory");
+        }
+        
+        // Scan the first third of messages
+        for i in 0..first_third_end {
+            if let Some(message) = self.conversation_history.get_mut(i) {
+                // Only process User messages that look like tool results
+                if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
+                    let content_len = message.content.len();
+                    
+                    // Only thin if the content is greater than 1000 chars
+                    if content_len > 1000 {
+                        // Generate a unique filename based on timestamp and index
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let filename = format!("leaned_tool_result_{}_{}.txt", timestamp, i);
+                        let file_path = format!("{}/{}", tmp_dir, filename);
+                        
+                        // Write the content to file
+                        if let Err(e) = std::fs::write(&file_path, &message.content) {
+                            warn!("Failed to write thinned content to {}: {}", file_path, e);
+                            continue;
+                        }
+                        
+                        // Replace the message content with a note
+                        let original_len = message.content.len();
+                        message.content = format!("Tool result saved to {}", file_path);
+                        
+                        leaned_count += 1;
+                        chars_saved += original_len - message.content.len();
+                        
+                        debug!("Thinned tool result {} ({} chars) to {}", i, original_len, file_path);
+                    }
+                }
+            }
+        }
+        
+        // Recalculate token usage after thinning
+        self.recalculate_tokens();
+        
+        if leaned_count > 0 {
+            format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
+                    current_threshold, leaned_count, chars_saved)
+        } else {
+            format!("ℹ Context thinning triggered at {}% but no large tool results found in first third", 
+                    current_threshold)
+        }
+    }
+    
+    /// Recalculate token usage based on current conversation history
+    fn recalculate_tokens(&mut self) {
+        let mut total = 0;
+        for message in &self.conversation_history {
+            total += Self::estimate_tokens(&message.content);
+        }
+        self.used_tokens = total;
+        
+        debug!("Recalculated tokens after thinning: {} tokens", total);
     }
 }
 
@@ -1431,7 +1531,7 @@ Template:
 
             // Notify user about summarization
             self.ui_writer.print_context_status(&format!(
-                "\n📊 Context window reaching capacity ({}%). Creating summary...",
+                "\n🗜️ Context window reaching capacity ({}%). Creating summary...",
                 self.context_window.percentage_used() as u32
             ));
 
@@ -1497,7 +1597,7 @@ Template:
                 }
             };
 
-            info!(
+            debug!(
                 "Requesting summary with max_tokens: {:?} (current usage: {} tokens)",
                 summary_max_tokens, self.context_window.used_tokens
             );
@@ -1514,7 +1614,7 @@ Template:
             match provider.complete(summary_request).await {
                 Ok(summary_response) => {
                     self.ui_writer.print_context_status(
-                        "✅ Summary created successfully. Resetting context window...\n",
+                        "✅ Context compacted successfully. Continuing...\n",
                     );
 
                     // Extract the latest user message from the request
@@ -1531,11 +1631,7 @@ Template:
 
                     // Update the request with new context
                     request.messages = self.context_window.conversation_history.clone();
-
-                    self.ui_writer.print_context_status(
-                        "🔄 Context reset complete. Continuing with your request...\n",
-                    );
-                }
+               }
                 Err(e) => {
                     error!("Failed to create summary: {}", e);
                     self.ui_writer.print_context_status("⚠️ Unable to create summary. Consider starting a new session if you continue to see errors.\n");
@@ -1677,6 +1773,14 @@ Template:
                         // Handle completed tool calls
                         for tool_call in completed_tools {
                             debug!("Processing completed tool call: {:?}", tool_call);
+                            
+                            // Check if we should thin the context BEFORE executing the tool
+                            if self.context_window.should_thin() {
+                                let thin_summary = self.context_window.thin_context();
+                                // Print the thinning summary to the user
+                                self.ui_writer.println("");
+                                self.ui_writer.print_context_status(&format!("{}\n", thin_summary));
+                            }
 
                             // Track what we've already displayed before getting new text
                             // This prevents re-displaying old content after tool execution
