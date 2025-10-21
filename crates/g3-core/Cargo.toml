@@ -8,6 +8,7 @@ description = "Core engine for G3 AI coding agent"
 g3-providers = { path = "../g3-providers" }
 g3-config = { path = "../g3-config" }
 g3-execution = { path = "../g3-execution" }
+g3-computer-control = { path = "../g3-computer-control" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
@@ -23,3 +24,4 @@ futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 regex = "1.0"
+shellexpand = "3.1"

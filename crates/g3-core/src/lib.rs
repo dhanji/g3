@@ -8,15 +8,20 @@ pub use task_result::TaskResult;
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
 
-mod fixed_filter_json;
+// Make fixed_filter_json public so it can be accessed from g3-cli
+pub mod fixed_filter_json;
 #[cfg(test)]
 mod fixed_filter_tests;
+
+#[cfg(test)]
+mod tilde_expansion_tests;
 
 #[cfg(test)]
 mod error_handling_test;
 use anyhow::Result;
 use g3_config::Config;
 use g3_execution::CodeExecutor;
+use g3_computer_control::WebDriverController;
 use g3_providers::{CompletionRequest, Message, MessageRole, ProviderRegistry, Tool};
 #[allow(unused_imports)]
 use regex::Regex;
@@ -274,6 +279,7 @@ pub struct ContextWindow {
     pub total_tokens: u32,
     pub cumulative_tokens: u32, // Track cumulative tokens across all interactions
     pub conversation_history: Vec<Message>,
+    pub last_thinning_percentage: u32, // Track the last percentage at which we thinned
 }
 
 impl ContextWindow {
@@ -283,6 +289,7 @@ impl ContextWindow {
             total_tokens,
             cumulative_tokens: 0,
             conversation_history: Vec::new(),
+            last_thinning_percentage: 0,
         }
     }
 
@@ -412,6 +419,104 @@ Format this as a detailed but concise summary that can be used to resume the con
             });
         }
     }
+
+    /// Check if we should trigger context thinning
+    /// Triggers at 50%, 60%, 70%, and 80% thresholds
+    pub fn should_thin(&self) -> bool {
+        let current_percentage = self.percentage_used() as u32;
+        
+        // Check if we've crossed a new 10% threshold starting at 50%
+        if current_percentage >= 50 {
+            let current_threshold = (current_percentage / 10) * 10; // Round down to nearest 10%
+            if current_threshold > self.last_thinning_percentage && current_threshold <= 80 {
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    /// Perform context thinning: scan first third of conversation and replace large tool results
+    /// Returns a summary message about what was thinned
+    pub fn thin_context(&mut self) -> String {
+        let current_percentage = self.percentage_used() as u32;
+        let current_threshold = (current_percentage / 10) * 10;
+        
+        // Update the last thinning percentage
+        self.last_thinning_percentage = current_threshold;
+        
+        // Calculate the first third of the conversation
+        let total_messages = self.conversation_history.len();
+        let first_third_end = (total_messages / 3).max(1);
+        
+        let mut leaned_count = 0;
+        let mut chars_saved = 0;
+        
+        // Create ~/tmp directory if it doesn't exist
+        let tmp_dir = shellexpand::tilde("~/tmp").to_string();
+        if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+            warn!("Failed to create ~/tmp directory: {}", e);
+            return format!("⚠️  Context thinning failed: could not create ~/tmp directory");
+        }
+        
+        // Scan the first third of messages
+        for i in 0..first_third_end {
+            if let Some(message) = self.conversation_history.get_mut(i) {
+                // Only process User messages that look like tool results
+                if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
+                    let content_len = message.content.len();
+                    
+                    // Only thin if the content is greater than 1000 chars
+                    if content_len > 1000 {
+                        // Generate a unique filename based on timestamp and index
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let filename = format!("leaned_tool_result_{}_{}.txt", timestamp, i);
+                        let file_path = format!("{}/{}", tmp_dir, filename);
+                        
+                        // Write the content to file
+                        if let Err(e) = std::fs::write(&file_path, &message.content) {
+                            warn!("Failed to write thinned content to {}: {}", file_path, e);
+                            continue;
+                        }
+                        
+                        // Replace the message content with a note
+                        let original_len = message.content.len();
+                        message.content = format!("Tool result saved to {}", file_path);
+                        
+                        leaned_count += 1;
+                        chars_saved += original_len - message.content.len();
+                        
+                        debug!("Thinned tool result {} ({} chars) to {}", i, original_len, file_path);
+                    }
+                }
+            }
+        }
+        
+        // Recalculate token usage after thinning
+        self.recalculate_tokens();
+        
+        if leaned_count > 0 {
+            format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
+                    current_threshold, leaned_count, chars_saved)
+        } else {
+            format!("ℹ Context thinning triggered at {}% but no large tool results found in first third", 
+                    current_threshold)
+        }
+    }
+    
+    /// Recalculate token usage based on current conversation history
+    fn recalculate_tokens(&mut self) {
+        let mut total = 0;
+        for message in &self.conversation_history {
+            total += Self::estimate_tokens(&message.content);
+        }
+        self.used_tokens = total;
+        
+        debug!("Recalculated tokens after thinning: {} tokens", total);
+    }
 }
 
 pub struct Agent<W: UiWriter> {
@@ -423,6 +528,10 @@ pub struct Agent<W: UiWriter> {
     ui_writer: W,
     is_autonomous: bool,
     quiet: bool,
+    computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
+    todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
+    webdriver_session: std::sync::Arc<tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>>>,
+    safaridriver_process: std::sync::Arc<tokio::sync::RwLock<Option<tokio::process::Child>>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -472,7 +581,12 @@ impl<W: UiWriter> Agent<W> {
         Self::new_with_mode_and_readme(config, ui_writer, true, readme_content, quiet).await
     }
 
-    async fn new_with_mode(config: Config, ui_writer: W, is_autonomous: bool, quiet: bool) -> Result<Self> {
+    async fn new_with_mode(
+        config: Config,
+        ui_writer: W,
+        is_autonomous: bool,
+        quiet: bool,
+    ) -> Result<Self> {
         Self::new_with_mode_and_readme(config, ui_writer, is_autonomous, None, quiet).await
     }
 
@@ -612,6 +726,22 @@ impl<W: UiWriter> Agent<W> {
             info!("Added project README to context window");
         }
 
+        // Initialize computer controller if enabled
+        let computer_controller = if config.computer_control.enabled {
+            match g3_computer_control::create_controller() {
+                Ok(controller) => {
+                    info!("Computer control enabled");
+                    Some(controller)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize computer control: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             providers,
             context_window,
@@ -619,8 +749,12 @@ impl<W: UiWriter> Agent<W> {
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
+            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
             is_autonomous,
             quiet,
+            computer_controller,
+            webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            safaridriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
@@ -773,7 +907,7 @@ impl<W: UiWriter> Agent<W> {
         // Reset the JSON tool call filter state at the start of each new task
         // This prevents the filter from staying in suppression mode between user interactions
         fixed_filter_json::reset_fixed_json_tool_state();
-        
+
         // Generate session ID based on the initial prompt if this is a new session
         if self.session_id.is_none() {
             self.session_id = Some(self.generate_session_id(description));
@@ -796,11 +930,35 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 5. Call the final_output tool with a detailed summary when done.
 
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
-If you create test or data files temporarily, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
+If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
 
+When taking screenshots of specific windows (like \"my Safari window\" or \"my terminal\"), ALWAYS use list_windows first to identify the correct window ID, then use take_screenshot with the window_id parameter.
+
 Do not explain what you're going to do - just do it by calling the tools.
+
+# Task Management
+
+Use todo_read and todo_write for tasks with 2+ steps, multiple files/components, or uncertain scope.
+
+Workflow:
+- Start: read → write checklist
+- During: read → update progress
+- End: verify all complete
+
+Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+
+Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+
+Template:
+- [ ] Implement feature X
+  - [ ] Update API
+  - [ ] Write tests
+  - [ ] Run tests
+  - [ ] Run lint
+- [ ] Blocked: waiting on credentials
+
 
 # Response Guidelines
 
@@ -810,6 +968,8 @@ Do not explain what you're going to do - just do it by calling the tools.
             } else {
                 // For non-native providers (embedded models), use JSON format instructions
                 "You are G3, a general-purpose AI agent. Your goal is to analyze and solve problems by writing code.
+
+You have access to tools. When you need to accomplish a task, you MUST use the appropriate tool. Do not just describe what you would do - actually use the tools.
 
 # Tool Call Format
 
@@ -841,12 +1001,38 @@ The tool will execute immediately and you'll receive the result (success or erro
 - **final_output**: Signal task completion with a detailed summary of work done in markdown format
   - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}
 
+- **todo_read**: Read the entire TODO list content
+  - Format: {\"tool\": \"todo_read\", \"args\": {}}
+  - Example: {\"tool\": \"todo_read\", \"args\": {}}
+
+- **todo_write**: Write or overwrite the entire TODO list (WARNING: overwrites completely, always read first)
+  - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
+  - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
+
 # Instructions
 
 1. Analyze the request and break down into smaller tasks if appropriate
 2. Execute ONE tool at a time
 3. STOP when the original request was satisfied
 4. Call the final_output tool when done
+
+# Task Management
+
+Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+
+Workflow:
+- Start: read → write checklist
+- During: read → update progress
+- End: verify all complete
+
+Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+
+Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+
+Template:
+- [ ] Implement feature X
+  - [ ] Update API
+  - [ ] Write tests
 
 # Response Guidelines
 
@@ -881,7 +1067,7 @@ The tool will execute immediately and you'll receive the result (success or erro
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions())
+            Some(Self::create_tool_definitions(self.config.webdriver.enabled))
         } else {
             None
         };
@@ -1057,8 +1243,8 @@ The tool will execute immediately and you'll receive the result (success or erro
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions() -> Vec<Tool> {
-        vec![
+    fn create_tool_definitions(enable_webdriver: bool) -> Vec<Tool> {
+        let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
                 description: "Execute shell commands".to_string(),
@@ -1075,7 +1261,7 @@ The tool will execute immediately and you'll receive the result (success or erro
             },
             Tool {
                 name: "read_file".to_string(),
-                description: "Read the contents of a file. Optionally read a specific character range.".to_string(),
+                description: "Read the contents of a file. For image files (png, jpg, jpeg, gif, bmp, tiff, webp), automatically extracts text using OCR. For text files, optionally read a specific character range.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1153,7 +1339,266 @@ The tool will execute immediately and you'll receive the result (success or erro
                     "required": ["summary"]
                 }),
             },
-        ]
+            Tool {
+                name: "take_screenshot".to_string(),
+                description: "Capture a screenshot of the screen, region, or window. When capturing a specific application window (e.g., 'Safari', 'Terminal'), use the window_id parameter with just the application name. The tool will automatically use the native screencapture command with the application's window ID for a clean capture.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Filename for the screenshot (e.g., 'safari.png'). If a relative path is provided, the screenshot will be saved to ~/tmp or $TMPDIR. Use an absolute path to save elsewhere."
+                        },
+                        "window_id": {
+                            "type": "string",
+                            "description": "Optional application name to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will capture the frontmost window of that application using its native window ID."
+                        },
+                        "region": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "integer"},
+                                "y": {"type": "integer"},
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"}
+                            }
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            Tool {
+                name: "extract_text".to_string(),
+                description: "Extract text from a screen region or image file using OCR".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to image file (optional if region is provided)"
+                        },
+                        "region": {
+                            "type": "object",
+                            "description": "Screen region to capture and extract text from",
+                            "properties": {
+                                "x": {"type": "integer"},
+                                "y": {"type": "integer"},
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"}
+                            }
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "todo_read".to_string(),
+                description: "Read the entire TODO list content. Use this to view current tasks, notes, and any other information stored in the TODO list.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "todo_write".to_string(),
+                description: "Write or overwrite the entire TODO list content. This tool replaces the complete TODO list with the provided string. Use this to update tasks, add new items, or reorganize the TODO list. WARNING: This operation completely replaces the TODO list content. Make sure to include all content you want to keep, not just the changes.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "The TODO list content to save. Use markdown checkbox format: - [ ] for incomplete tasks, - [x] for completed tasks. Support nested tasks with indentation."
+                        }
+                    },
+                    "required": ["content"]
+                }),
+            },
+        ];
+
+        // Add WebDriver tools if enabled
+        if enable_webdriver {
+            tools.extend(vec![
+                Tool {
+                    name: "webdriver_start".to_string(),
+                    description: "Start a Safari WebDriver session for browser automation. Must be called before any other webdriver tools. Requires Safari's 'Allow Remote Automation' to be enabled in Develop menu.".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_navigate".to_string(),
+                    description: "Navigate to a URL in the browser".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to navigate to (must include protocol, e.g., https://)"
+                            }
+                        },
+                        "required": ["url"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_url".to_string(),
+                    description: "Get the current URL of the browser".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_title".to_string(),
+                    description: "Get the title of the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_find_element".to_string(),
+                    description: "Find an element on the page by CSS selector and return its text content".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector to find the element (e.g., 'h1', '.class-name', '#id')"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_find_elements".to_string(),
+                    description: "Find all elements matching a CSS selector and return their text content".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector to find elements"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_click".to_string(),
+                    description: "Click an element on the page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector for the element to click"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_send_keys".to_string(),
+                    description: "Type text into an input element".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector for the input element"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to type into the element"
+                            },
+                            "clear_first": {
+                                "type": "boolean",
+                                "description": "Whether to clear the element before typing (default: true)"
+                            }
+                        },
+                        "required": ["selector", "text"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_execute_script".to_string(),
+                    description: "Execute JavaScript code in the browser and return the result".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "script": {
+                                "type": "string",
+                                "description": "JavaScript code to execute (use 'return' to return a value)"
+                            }
+                        },
+                        "required": ["script"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_page_source".to_string(),
+                    description: "Get the HTML source of the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_screenshot".to_string(),
+                    description: "Take a screenshot of the browser window".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path where to save the screenshot (e.g., '/tmp/screenshot.png')"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_back".to_string(),
+                    description: "Navigate back in browser history".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_forward".to_string(),
+                    description: "Navigate forward in browser history".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_refresh".to_string(),
+                    description: "Refresh the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_quit".to_string(),
+                    description: "Close the browser and end the WebDriver session".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+            ]);
+        }
+
+        tools
     }
 
     /// Helper method to stream with retry logic
@@ -1234,7 +1679,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
             // Notify user about summarization
             self.ui_writer.print_context_status(&format!(
-                "\n📊 Context window reaching capacity ({}%). Creating summary...",
+                "\n🗜️ Context window reaching capacity ({}%). Creating summary...",
                 self.context_window.percentage_used() as u32
             ));
 
@@ -1300,7 +1745,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                 }
             };
 
-            info!(
+            debug!(
                 "Requesting summary with max_tokens: {:?} (current usage: {} tokens)",
                 summary_max_tokens, self.context_window.used_tokens
             );
@@ -1317,7 +1762,7 @@ The tool will execute immediately and you'll receive the result (success or erro
             match provider.complete(summary_request).await {
                 Ok(summary_response) => {
                     self.ui_writer.print_context_status(
-                        "✅ Summary created successfully. Resetting context window...\n",
+                        "✅ Context compacted successfully. Continuing...\n",
                     );
 
                     // Extract the latest user message from the request
@@ -1334,11 +1779,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                     // Update the request with new context
                     request.messages = self.context_window.conversation_history.clone();
-
-                    self.ui_writer.print_context_status(
-                        "🔄 Context reset complete. Continuing with your request...\n",
-                    );
-                }
+               }
                 Err(e) => {
                     error!("Failed to create summary: {}", e);
                     self.ui_writer.print_context_status("⚠️ Unable to create summary. Consider starting a new session if you continue to see errors.\n");
@@ -1480,6 +1921,14 @@ The tool will execute immediately and you'll receive the result (success or erro
                         // Handle completed tool calls
                         for tool_call in completed_tools {
                             debug!("Processing completed tool call: {:?}", tool_call);
+                            
+                            // Check if we should thin the context BEFORE executing the tool
+                            if self.context_window.should_thin() {
+                                let thin_summary = self.context_window.thin_context();
+                                // Print the thinning summary to the user
+                                self.ui_writer.println("");
+                                self.ui_writer.print_context_status(&format!("{}\n", thin_summary));
+                            }
 
                             // Track what we've already displayed before getting new text
                             // This prevents re-displaying old content after tool execution
@@ -1495,8 +1944,12 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("[/INST]", "")
                                 .replace("<</SYS>>", "");
 
+                            // Store the raw content BEFORE filtering for the context window log
+                            let raw_content_for_log = clean_content.clone();
+
                             // Filter out JSON tool calls from the display
-                            let filtered_content = fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
+                            let filtered_content =
+                                fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
 
                             // Display any new content before tool execution
@@ -1574,8 +2027,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                             // Add 8-minute timeout for tool execution
                             let tool_result = match tokio::time::timeout(
                                 Duration::from_secs(8 * 60), // 8 minutes
-                                self.execute_tool(&tool_call)
-                            ).await {
+                                self.execute_tool(&tool_call),
+                            )
+                            .await
+                            {
                                 Ok(result) => result?,
                                 Err(_) => {
                                     warn!("Tool call {} timed out after 8 minutes", tool_call.tool);
@@ -1613,14 +2068,21 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
                                 let output_len = output_lines.len();
+                                
+                                // For todo tools, show all lines without truncation
+                                let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
+                                let max_lines_to_show = if is_todo_tool { output_len } else { MAX_LINES };
 
-                                for line in output_lines {
+                                for (idx, line) in output_lines.iter().enumerate() {
+                                    if !is_todo_tool && idx >= max_lines_to_show {
+                                        break;
+                                    }
                                     // Clip line to max width
                                     let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
                                     self.ui_writer.update_tool_output_line(&clipped_line);
                                 }
 
-                                if output_len > MAX_LINES {
+                                if !is_todo_tool && output_len > MAX_LINES {
                                     self.ui_writer.print_tool_output_summary(output_len);
                                 }
                             }
@@ -1662,20 +2124,20 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 self.ui_writer.print_agent_prompt();
                             }
 
-                            // Add the tool call and result to the context window
-                            // Only include the text content if it's not already in full_response
-                            let tool_message = if !full_response.contains(final_display_content) {
+                            // Add the tool call and result to the context window using RAW unfiltered content
+                            // This ensures the log file contains the true raw content including JSON tool calls
+                            let tool_message = if !full_response.contains(final_display_content) && !raw_content_for_log.trim().is_empty() {
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
                                         "{}\n\n{{\"tool\": \"{}\", \"args\": {}}}",
-                                        final_display_content.trim(),
+                                        raw_content_for_log.trim(),
                                         tool_call.tool,
                                         tool_call.args
                                     ),
                                 }
                             } else {
-                                // If we've already added the text, just include the tool call
+                                // If we've already added the text or there's no text, just include the tool call
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
@@ -1697,7 +2159,7 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions());
+                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled));
                             }
 
                             // Only add to full_response if we haven't already added it
@@ -1730,7 +2192,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                                 .replace("<</SYS>>", "");
 
                             if !clean_content.is_empty() {
-                                let filtered_content = fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
+                                let filtered_content =
+                                    fixed_filter_json::fixed_filter_json_tool_calls(&clean_content);
 
                                 if !filtered_content.is_empty() {
                                     if !response_started {
@@ -1774,7 +2237,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                                         .replace("[/INST]", "")
                                         .replace("<</SYS>>", "");
 
-                                    let filtered_text = fixed_filter_json::fixed_filter_json_tool_calls(&clean_text);
+                                    let filtered_text =
+                                        fixed_filter_json::fixed_filter_json_tool_calls(
+                                            &clean_text,
+                                        );
 
                                     // Only use this if we truly have nothing else
                                     if !filtered_text.trim().is_empty() && full_response.is_empty()
@@ -1987,6 +2453,26 @@ The tool will execute immediately and you'll receive the result (success or erro
 
                 let _ttft = first_token_time.unwrap_or_else(|| stream_start.elapsed());
 
+                // Add the RAW unfiltered response to context window before returning
+                // This ensures the log contains the true raw content including any JSON
+                if !full_response.trim().is_empty() {
+                    // Get the raw text from the parser (before filtering)
+                    let raw_text = parser.get_text_content();
+                    let raw_clean = raw_text
+                        .replace("<|im_end|>", "")
+                        .replace("</s>", "")
+                        .replace("[/INST]", "")
+                        .replace("<</SYS>>", "");
+                    
+                    if !raw_clean.trim().is_empty() {
+                        let assistant_message = Message {
+                            role: MessageRole::Assistant,
+                            content: raw_clean,
+                        };
+                        self.context_window.add_message(assistant_message);
+                    }
+                }
+
                 // Add timing if needed
                 let final_response = if show_timing {
                     format!(
@@ -2098,6 +2584,42 @@ The tool will execute immediately and you'll receive the result (success or erro
                 debug!("Processing read_file tool call");
                 if let Some(file_path) = tool_call.args.get("file_path") {
                     if let Some(path_str) = file_path.as_str() {
+                        // Expand tilde (~) to home directory
+                        let expanded_path = shellexpand::tilde(path_str);
+                        let path_str = expanded_path.as_ref();
+
+                        // Check if this is an image file
+                        let is_image = path_str.to_lowercase().ends_with(".png")
+                            || path_str.to_lowercase().ends_with(".jpg")
+                            || path_str.to_lowercase().ends_with(".jpeg")
+                            || path_str.to_lowercase().ends_with(".gif")
+                            || path_str.to_lowercase().ends_with(".bmp")
+                            || path_str.to_lowercase().ends_with(".tiff")
+                            || path_str.to_lowercase().ends_with(".tif")
+                            || path_str.to_lowercase().ends_with(".webp");
+
+                        // If it's an image file, use OCR via extract_text
+                        if is_image {
+                            if let Some(controller) = &self.computer_controller {
+                                match controller.extract_text_from_image(path_str).await {
+                                    Ok(text) => {
+                                        return Ok(format!(
+                                            "📄 Image file (OCR extracted):\n{}",
+                                            text
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        return Ok(format!(
+                                            "❌ Failed to extract text from image '{}': {}",
+                                            path_str, e
+                                        ))
+                                    }
+                                }
+                            } else {
+                                return Ok("❌ Computer control not enabled. Cannot perform OCR on image files. Set computer_control.enabled = true in config.".to_string());
+                            }
+                        }
+
                         // Extract optional start and end positions
                         let start_char = tool_call
                             .args
@@ -2334,6 +2856,10 @@ The tool will execute immediately and you'll receive the result (success or erro
                 );
 
                 if let (Some(path), Some(content)) = (path_str, content_str) {
+                    // Expand tilde (~) to home directory
+                    let expanded_path = shellexpand::tilde(path);
+                    let path = expanded_path.as_ref();
+
                     debug!("Writing to file: {}", path);
 
                     // Create parent directories if they don't exist
@@ -2381,7 +2907,11 @@ The tool will execute immediately and you'll receive the result (success or erro
                 };
 
                 let file_path = match args_obj.get("file_path").and_then(|v| v.as_str()) {
-                    Some(path) => path,
+                    Some(path) => {
+                        // Expand tilde (~) to home directory
+                        let expanded_path = shellexpand::tilde(path);
+                        expanded_path.into_owned()
+                    }
                     None => return Ok("❌ Missing or invalid file_path argument".to_string()),
                 };
 
@@ -2406,7 +2936,7 @@ The tool will execute immediately and you'll receive the result (success or erro
                 );
 
                 // Read the existing file
-                let file_content = match std::fs::read_to_string(file_path) {
+                let file_content = match std::fs::read_to_string(&file_path) {
                     Ok(content) => content,
                     Err(e) => return Ok(format!("❌ Failed to read file '{}': {}", file_path, e)),
                 };
@@ -2419,8 +2949,8 @@ The tool will execute immediately and you'll receive the result (success or erro
                     };
 
                 // Write the result back to the file
-                match std::fs::write(file_path, &result) {
-                    Ok(()) => Ok(format!("✅ Successfully applied unified diff")),
+                match std::fs::write(&file_path, &result) {
+                    Ok(()) => Ok(format!("✅ applied unified diff")),
                     Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
                 }
             }
@@ -2433,6 +2963,560 @@ The tool will execute immediately and you'll receive the result (success or erro
                     }
                 } else {
                     Ok("✅ Turn completed".to_string())
+                }
+            }
+            "take_screenshot" => {
+                if let Some(controller) = &self.computer_controller {
+                    let path = tool_call
+                        .args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+
+                    // Extract window_id (app name) if provided
+                    let window_id = tool_call.args.get("window_id").and_then(|v| v.as_str());
+
+                    // Extract region if provided
+                    let region = tool_call
+                        .args
+                        .get("region")
+                        .and_then(|v| v.as_object())
+                        .map(|region_obj| g3_computer_control::types::Rect {
+                            x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            width: region_obj
+                                .get("width")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                            height: region_obj
+                                .get("height")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                        });
+
+                    match controller.take_screenshot(path, region, window_id).await {
+                        Ok(_) => {
+                            // Get the actual path where the screenshot was saved
+                            let actual_path = if path.starts_with('/') {
+                                path.to_string()
+                            } else {
+                                let temp_dir = std::env::var("TMPDIR")
+                                    .or_else(|_| {
+                                        std::env::var("HOME").map(|h| format!("{}/tmp", h))
+                                    })
+                                    .unwrap_or_else(|_| "/tmp".to_string());
+                                format!("{}/{}", temp_dir.trim_end_matches('/'), path)
+                            };
+
+                            if let Some(app) = window_id {
+                                Ok(format!(
+                                    "✅ Screenshot of {} saved to: {}",
+                                    app, actual_path
+                                ))
+                            } else {
+                                Ok(format!("✅ Screenshot saved to: {}", actual_path))
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to take screenshot: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "extract_text" => {
+                if let Some(controller) = &self.computer_controller {
+                    // Check if we have a path or a region
+                    if let Some(path) = tool_call.args.get("path").and_then(|v| v.as_str()) {
+                        // Extract text from image file
+                        match controller.extract_text_from_image(path).await {
+                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
+                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
+                        }
+                    } else if let Some(region_obj) =
+                        tool_call.args.get("region").and_then(|v| v.as_object())
+                    {
+                        // Extract text from screen region
+                        let region = g3_computer_control::types::Rect {
+                            x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            width: region_obj
+                                .get("width")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                            height: region_obj
+                                .get("height")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32,
+                        };
+
+                        match controller.extract_text_from_screen(region).await {
+                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
+                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
+                        }
+                    } else {
+                        Ok("❌ Missing path or region argument".to_string())
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "todo_read" => {
+                debug!("Processing todo_read tool call");
+                let content = self.todo_content.read().await;
+                if content.is_empty() {
+                    Ok("📝 TODO list is empty".to_string())
+                } else {
+                    Ok(format!("📝 TODO list:\n{}", content.as_str()))
+                }
+            }
+            "todo_write" => {
+                debug!("Processing todo_write tool call");
+                if let Some(content) = tool_call.args.get("content") {
+                    if let Some(content_str) = content.as_str() {
+                        let char_count = content_str.chars().count();
+                        let max_chars = std::env::var("G3_TODO_MAX_CHARS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(50_000);
+
+                        if max_chars > 0 && char_count > max_chars {
+                            return Ok(format!("❌ TODO list too large: {} chars (max: {})", char_count, max_chars));
+                        }
+
+                        let mut todo = self.todo_content.write().await;
+                        *todo = content_str.to_string();
+                        Ok(format!("✅ TODO list updated ({} chars)", char_count))
+                    } else {
+                        Ok("❌ Invalid content argument".to_string())
+                    }
+                } else {
+                    Ok("❌ Missing content argument".to_string())
+                }
+            }
+            "webdriver_start" => {
+                debug!("Processing webdriver_start tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                // Check if session already exists
+                let session_guard = self.webdriver_session.read().await;
+                if session_guard.is_some() {
+                    drop(session_guard);
+                    return Ok("✅ WebDriver session already active".to_string());
+                }
+                drop(session_guard);
+                
+                // Note: Safari Remote Automation must be enabled before using WebDriver.
+                // Run this once: safaridriver --enable
+                // Or enable manually: Safari → Develop → Allow Remote Automation
+                
+                // Start safaridriver process
+                let port = self.config.webdriver.safari_port;
+                info!("Starting safaridriver on port {}", port);
+                
+                let safaridriver_result = tokio::process::Command::new("safaridriver")
+                    .arg("--port")
+                    .arg(port.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                
+                let mut safaridriver_process = match safaridriver_result {
+                    Ok(process) => process,
+                    Err(e) => {
+                        return Ok(format!("❌ Failed to start safaridriver: {}\n\nMake sure safaridriver is installed.", e));
+                    }
+                };
+                
+                // Wait for safaridriver to start up
+                info!("Waiting for safaridriver to start...");
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                
+                // Connect to SafariDriver
+                match g3_computer_control::SafariDriver::with_port(port).await {
+                    Ok(driver) => {
+                        let session = std::sync::Arc::new(tokio::sync::Mutex::new(driver));
+                        *self.webdriver_session.write().await = Some(session);
+                        
+                        // Store the process handle
+                        *self.safaridriver_process.write().await = Some(safaridriver_process);
+                        
+                        info!("WebDriver session started successfully");
+                        Ok("✅ WebDriver session started successfully! Safari should open automatically.".to_string())
+                    }
+                    Err(e) => {
+                        // Kill the safaridriver process if connection failed
+                        let _ = safaridriver_process.kill().await;
+                        
+                        Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Safari Remote Automation is not enabled (run: safaridriver --enable)\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTo enable Remote Automation:\n  1. Run: safaridriver --enable (requires password, one-time setup)\n  2. Or manually: Safari → Develop → Allow Remote Automation", e, port))
+                    }
+                }
+            }
+            "webdriver_navigate" => {
+                debug!("Processing webdriver_navigate tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                drop(session_guard);
+                let url = match tool_call.args.get("url").and_then(|v| v.as_str()) {
+                    Some(u) => u,
+                    None => return Ok("❌ Missing url argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.navigate(url).await {
+                    Ok(_) => Ok(format!("✅ Navigated to {}", url)),
+                    Err(e) => Ok(format!("❌ Failed to navigate: {}", e)),
+                }
+            }
+            "webdriver_get_url" => {
+                debug!("Processing webdriver_get_url tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.current_url().await {
+                    Ok(url) => Ok(format!("Current URL: {}", url)),
+                    Err(e) => Ok(format!("❌ Failed to get URL: {}", e)),
+                }
+            }
+            "webdriver_get_title" => {
+                debug!("Processing webdriver_get_title tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.title().await {
+                    Ok(title) => Ok(format!("Page title: {}", title)),
+                    Err(e) => Ok(format!("❌ Failed to get title: {}", e)),
+                }
+            }
+            "webdriver_find_element" => {
+                debug!("Processing webdriver_find_element tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(elem) => {
+                        match elem.text().await {
+                            Ok(text) => Ok(format!("Element text: {}", text)),
+                            Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_find_elements" => {
+                debug!("Processing webdriver_find_elements tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_elements(selector).await {
+                    Ok(elements) => {
+                        let mut results = Vec::new();
+                        for (i, elem) in elements.iter().enumerate() {
+                            match elem.text().await {
+                                Ok(text) => results.push(format!("[{}]: {}", i, text)),
+                                Err(_) => results.push(format!("[{}]: <error getting text>", i)),
+                            }
+                        }
+                        Ok(format!("Found {} elements:\n{}", results.len(), results.join("\n")))
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find elements '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_click" => {
+                debug!("Processing webdriver_click tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(mut elem) => {
+                        match elem.click().await {
+                            Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
+                            Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_send_keys" => {
+                debug!("Processing webdriver_send_keys tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return Ok("❌ Missing text argument".to_string()),
+                };
+                
+                let clear_first = tool_call.args.get("clear_first")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(mut elem) => {
+                        if clear_first {
+                            if let Err(e) = elem.clear().await {
+                                return Ok(format!("❌ Failed to clear element: {}", e));
+                            }
+                        }
+                        match elem.send_keys(text).await {
+                            Ok(_) => Ok(format!("✅ Sent keys to element '{}'", selector)),
+                            Err(e) => Ok(format!("❌ Failed to send keys: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_execute_script" => {
+                debug!("Processing webdriver_execute_script tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let script = match tool_call.args.get("script").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing script argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.execute_script(script, vec![]).await {
+                    Ok(result) => Ok(format!("Script result: {:?}", result)),
+                    Err(e) => Ok(format!("❌ Failed to execute script: {}", e)),
+                }
+            }
+            "webdriver_get_page_source" => {
+                debug!("Processing webdriver_get_page_source tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.page_source().await {
+                    Ok(source) => {
+                        // Truncate if too long
+                        if source.len() > 10000 {
+                            Ok(format!("Page source ({} chars, truncated to 10000):\n{}...", source.len(), &source[..10000]))
+                        } else {
+                            Ok(format!("Page source ({} chars):\n{}", source.len(), source))
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to get page source: {}", e)),
+                }
+            }
+            "webdriver_screenshot" => {
+                debug!("Processing webdriver_screenshot tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let path = match tool_call.args.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p,
+                    None => return Ok("❌ Missing path argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.screenshot(path).await {
+                    Ok(_) => Ok(format!("✅ Screenshot saved to {}", path)),
+                    Err(e) => Ok(format!("❌ Failed to take screenshot: {}", e)),
+                }
+            }
+            "webdriver_back" => {
+                debug!("Processing webdriver_back tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.back().await {
+                    Ok(_) => Ok("✅ Navigated back".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to navigate back: {}", e)),
+                }
+            }
+            "webdriver_forward" => {
+                debug!("Processing webdriver_forward tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.forward().await {
+                    Ok(_) => Ok("✅ Navigated forward".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to navigate forward: {}", e)),
+                }
+            }
+            "webdriver_refresh" => {
+                debug!("Processing webdriver_refresh tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.refresh().await {
+                    Ok(_) => Ok("✅ Page refreshed".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to refresh page: {}", e)),
+                }
+            }
+            "webdriver_quit" => {
+                debug!("Processing webdriver_quit tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                // Take the session
+                let session = match self.webdriver_session.write().await.take() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session.".to_string()),
+                };
+                
+                // Quit the WebDriver session
+                match std::sync::Arc::try_unwrap(session) {
+                    Ok(mutex) => {
+                        let driver = mutex.into_inner();
+                        match driver.quit().await {
+                            Ok(_) => {
+                                info!("WebDriver session closed successfully");
+                                
+                                // Kill the safaridriver process
+                                if let Some(mut process) = self.safaridriver_process.write().await.take() {
+                                    if let Err(e) = process.kill().await {
+                                        warn!("Failed to kill safaridriver process: {}", e);
+                                    } else {
+                                        info!("Safaridriver process terminated");
+                                    }
+                                }
+                                
+                                Ok("✅ WebDriver session closed and safaridriver stopped".to_string())
+                            }
+                            Err(e) => Ok(format!("❌ Failed to quit WebDriver: {}", e)),
+                        }
+                    }
+                    Err(_) => Ok("❌ Cannot quit: WebDriver session is still in use".to_string()),
                 }
             }
             _ => {
@@ -2884,5 +3968,25 @@ mod integration_tests {
         let result = apply_unified_diff_to_string(original, diff, Some(start), Some(end)).unwrap();
         let expected = "A\nNEW\nB\nold\nC\n";
         assert_eq!(result, expected);
+    }
+}
+
+// Implement Drop to clean up safaridriver process
+impl<W: UiWriter> Drop for Agent<W> {
+    fn drop(&mut self) {
+        // Try to kill safaridriver process if it's still running
+        // We need to use try_lock since we can't await in Drop
+        if let Ok(mut process_guard) = self.safaridriver_process.try_write() {
+            if let Some(process) = process_guard.take() {
+                // Use blocking kill since we can't await in Drop
+                // This is a best-effort cleanup
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(process.id().unwrap_or(0).to_string())
+                    .output();
+                
+                debug!("Attempted to clean up safaridriver process on Agent drop");
+            }
+        }
     }
 }

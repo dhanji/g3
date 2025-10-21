@@ -29,7 +29,8 @@ g3/
 │   ├── g3-core/                  # Core agent engine, tools, and streaming logic
 │   ├── g3-providers/             # LLM provider abstractions and implementations
 │   ├── g3-config/                # Configuration management
-│   └── g3-execution/             # Code execution engine
+│   ├── g3-execution/             # Code execution engine
+│   └── g3-computer-control/      # Computer control and automation
 ├── logs/                         # Session logs (auto-created)
 ├── README.md                     # Project documentation
 └── DESIGN.md                     # This design document
@@ -48,6 +49,7 @@ g3/
 │ • Retro TUI     │    │ • Tool system   │    │ • Embedded      │
 │ • Autonomous    │    │ • Streaming     │    │   (llama.cpp)   │
 │   mode          │    │ • Task exec     │    │ • OAuth flow    │
+│                 │    │ • TODO mgmt     │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          └───────────────────────┼───────────────────────┘
@@ -59,7 +61,18 @@ g3/
                     │ • Shell cmds    │    │ • Env overrides │
                     │ • Streaming     │    │ • Provider      │
                     │ • Error hdlg    │    │   settings      │
-                    └─────────────────┘    └─────────────────┘
+                    └─────────────────┘    │ • Computer      │
+                             │              │   control cfg   │
+                             │              └─────────────────┘
+                             │                       │
+                    ┌─────────────────┐             │
+                    │ g3-computer-    │◄────────────┘
+                    │   control       │
+                    │ • Mouse/kbd     │
+                    │ • Screenshots   │
+                    │ • OCR/Tesseract │
+                    │ • Windows/UI    │
+                    └─────────────────┘
 ```
 
 ## Core Components
@@ -79,6 +92,7 @@ g3/
 - **Streaming Parser**: Real-time parsing of LLM responses with tool call detection and execution
 - **Session Management**: Automatic session logging with detailed conversation history and token usage
 - **Error Recovery**: Sophisticated error classification and retry logic for recoverable errors
+- **TODO Management**: In-memory TODO list with read/write tools for task tracking
 
 **Available Tools:**
 - `shell`: Execute shell commands with streaming output
@@ -86,7 +100,15 @@ g3/
 - `write_file`: Create or overwrite files with content
 - `str_replace`: Apply unified diffs to files with precise editing
 - `final_output`: Signal task completion with detailed summaries
-- **Project Management**: Workspace handling, requirements.md processing for autonomous mode
+- `todo_read`: Read the entire TODO list content
+- `todo_write`: Write or overwrite the entire TODO list
+- `mouse_click`: Click the mouse at specific coordinates
+- `type_text`: Type text at the current cursor position
+- `find_element`: Find UI elements by text, role, or attributes
+- `take_screenshot`: Capture screenshots of screen, region, or window
+- `extract_text`: Extract text from images or screen regions using OCR
+- `find_text_on_screen`: Find text visually on screen and return coordinates
+- `list_windows`: List all open windows with IDs and titles
 
 ### 2. g3-providers: LLM Provider Abstraction
 
@@ -172,6 +194,26 @@ g3/
 - **Validation**: Configuration validation with helpful error messages
 - **Flexible Paths**: Support for shell expansion (`~`, environment variables)
 
+### 6. g3-computer-control: Computer Control & Automation
+
+**Primary Responsibilities:**
+- Cross-platform computer control and automation
+- Mouse and keyboard input simulation
+- Window management and screenshot capture
+- OCR text extraction from images and screen regions
+
+**Platform Support:**
+- **macOS**: Core Graphics, Cocoa, screencapture integration
+- **Linux**: X11/Xtest for input, X11 for window management
+- **Windows**: Win32 APIs for input and window control
+
+**Key Features:**
+- **OCR Integration**: Tesseract-based text extraction from images
+- **Window Management**: List, identify, and capture specific application windows
+- **UI Automation**: Find elements, simulate clicks, type text
+- **Screenshot Capture**: Full screen, regions, or specific windows
+- **Accessibility**: Requires OS-level permissions for automation
+
 ## Advanced Features
 
 ### Context Window Management
@@ -180,6 +222,7 @@ G3 implements sophisticated context window management:
 
 - **Automatic Monitoring**: Tracks token usage with percentage-based thresholds
 - **Smart Summarization**: Auto-triggers at 80% capacity to prevent context overflow
+- **Context Thinning**: Progressive thinning at 50%, 60%, 70%, 80% thresholds - replaces large tool results with file references
 - **Conversation Preservation**: Maintains conversation continuity through intelligent summaries
 - **Provider-Specific Limits**: Adapts to different model context windows (4k to 200k+ tokens)
 - **Cumulative Tracking**: Monitors total token usage across entire sessions
@@ -354,20 +397,23 @@ This design document reflects the current state of G3 as a mature, production-re
 ### Fully Implemented
 - ✅ **Core Agent Engine**: Complete with streaming, tool execution, and context management
 - ✅ **Provider System**: Anthropic, Databricks, and Embedded providers with OAuth support
-- ✅ **Tool System**: All 5 core tools (shell, read_file, write_file, str_replace, final_output)
+- ✅ **Tool System**: 13 tools including file ops, shell, TODO management, and computer control
 - ✅ **CLI Interface**: Interactive mode, single-shot mode, retro TUI
 - ✅ **Autonomous Mode**: Coach-player feedback loop with requirements.md processing
 - ✅ **Configuration**: TOML-based config with environment overrides
 - ✅ **Error Handling**: Comprehensive retry logic and error classification
 - ✅ **Session Logging**: Automatic session tracking and JSON logs
-- ✅ **Context Management**: Auto-summarization at 80% capacity
+- ✅ **Context Management**: Context thinning (50-80%) and auto-summarization at 80% capacity
+- ✅ **Computer Control**: Cross-platform automation with OCR support
+- ✅ **TODO Management**: In-memory TODO list with read/write tools
 
 ### Architecture Highlights
-- **Workspace**: 5 crates with clear separation of concerns
+- **Workspace**: 6 crates with clear separation of concerns
 - **Dependencies**: Modern Rust ecosystem (Tokio, Clap, Serde, etc.)
 - **Streaming**: Real-time response processing with tool call detection
 - **Cross-Platform**: Works on macOS, Linux, and Windows
-- **GPU Support**: Metal acceleration for local models on macOS
+- **GPU Support**: Metal acceleration for local models on macOS, CUDA on Linux
+- **OCR Support**: Tesseract integration for text extraction from images
 
 ### Key Files
 - `src/main.rs`: main entry point delegating to g3-cli
@@ -376,3 +422,5 @@ This design document reflects the current state of G3 as a mature, production-re
 - `crates/g3-providers/src/lib.rs`: provider trait and registry
 - `crates/g3-config/src/lib.rs`: configuration management
 - `crates/g3-execution/src/lib.rs`: code execution engine
+- `crates/g3-computer-control/src/lib.rs`: computer control and automation
+- `crates/g3-computer-control/src/platform/`: platform-specific implementations
