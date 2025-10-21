@@ -13,8 +13,12 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
+shellexpand = "3.1"
 # Async trait support
 async-trait = "0.1"
+
+# WebDriver support
+fantoccini = "0.21"
 
 # OCR dependencies
 tesseract = "0.14"

@@ -21,6 +21,7 @@ mod error_handling_test;
 use anyhow::Result;
 use g3_config::Config;
 use g3_execution::CodeExecutor;
+use g3_computer_control::WebDriverController;
 use g3_providers::{CompletionRequest, Message, MessageRole, ProviderRegistry, Tool};
 #[allow(unused_imports)]
 use regex::Regex;
@@ -529,6 +530,8 @@ pub struct Agent<W: UiWriter> {
     quiet: bool,
     computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
     todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
+    webdriver_session: std::sync::Arc<tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>>>,
+    safaridriver_process: std::sync::Arc<tokio::sync::RwLock<Option<tokio::process::Child>>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -714,6 +717,8 @@ impl<W: UiWriter> Agent<W> {
             is_autonomous,
             quiet,
             computer_controller,
+            webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            safaridriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
@@ -1023,7 +1028,7 @@ Template:
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions())
+            Some(Self::create_tool_definitions(self.config.webdriver.enabled))
         } else {
             None
         };
@@ -1200,8 +1205,8 @@ Template:
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions() -> Vec<Tool> {
-        vec![
+    fn create_tool_definitions(enable_webdriver: bool) -> Vec<Tool> {
+        let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
                 description: "Execute shell commands".to_string(),
@@ -1297,65 +1302,6 @@ Template:
                 }),
             },
             Tool {
-                name: "mouse_click".to_string(),
-                description: "Click the mouse at specific coordinates".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "x": {
-                            "type": "integer",
-                            "description": "X coordinate"
-                        },
-                        "y": {
-                            "type": "integer",
-                            "description": "Y coordinate"
-                        },
-                        "button": {
-                            "type": "string",
-                            "enum": ["left", "right", "middle"],
-                            "description": "Mouse button to click",
-                            "default": "left"
-                        }
-                    },
-                    "required": ["x", "y"]
-                }),
-            },
-            Tool {
-                name: "type_text".to_string(),
-                description: "Type text at the current cursor position".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to type"
-                        }
-                    },
-                    "required": ["text"]
-                }),
-            },
-            Tool {
-                name: "find_element".to_string(),
-                description: "Find a UI element by text, role, or other attributes".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to search for"
-                        },
-                        "role": {
-                            "type": "string",
-                            "description": "Element role (button, textfield, etc.)"
-                        },
-                        "window_id": {
-                            "type": "string",
-                            "description": "Optional window ID to search in"
-                        }
-                    }
-                }),
-            },
-            Tool {
                 name: "take_screenshot".to_string(),
                 description: "Capture a screenshot of the screen, region, or window. When capturing a specific application window (e.g., 'Safari', 'Terminal'), use the window_id parameter with just the application name. The tool will automatically use the native screencapture command with the application's window ID for a clean capture.".to_string(),
                 input_schema: json!({
@@ -1406,28 +1352,6 @@ Template:
                 }),
             },
             Tool {
-                name: "find_text_on_screen".to_string(),
-                description: "Find text visually on screen and return its coordinates".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to search for on screen"
-                        }
-                    },
-                    "required": ["text"]
-                }),
-            },
-            Tool {
-                name: "list_windows".to_string(),
-                description: "List all currently open windows with their IDs, titles, and application names. Use this to identify which window to interact with before taking screenshots or performing other window-specific operations.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-            Tool {
                 name: "todo_read".to_string(),
                 description: "Read the entire TODO list content. Use this to view current tasks, notes, and any other information stored in the TODO list.".to_string(),
                 input_schema: json!({
@@ -1450,7 +1374,193 @@ Template:
                     "required": ["content"]
                 }),
             },
-        ]
+        ];
+
+        // Add WebDriver tools if enabled
+        if enable_webdriver {
+            tools.extend(vec![
+                Tool {
+                    name: "webdriver_start".to_string(),
+                    description: "Start a Safari WebDriver session for browser automation. Must be called before any other webdriver tools. Requires Safari's 'Allow Remote Automation' to be enabled in Develop menu.".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_navigate".to_string(),
+                    description: "Navigate to a URL in the browser".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to navigate to (must include protocol, e.g., https://)"
+                            }
+                        },
+                        "required": ["url"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_url".to_string(),
+                    description: "Get the current URL of the browser".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_title".to_string(),
+                    description: "Get the title of the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_find_element".to_string(),
+                    description: "Find an element on the page by CSS selector and return its text content".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector to find the element (e.g., 'h1', '.class-name', '#id')"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_find_elements".to_string(),
+                    description: "Find all elements matching a CSS selector and return their text content".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector to find elements"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_click".to_string(),
+                    description: "Click an element on the page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector for the element to click"
+                            }
+                        },
+                        "required": ["selector"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_send_keys".to_string(),
+                    description: "Type text into an input element".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector for the input element"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to type into the element"
+                            },
+                            "clear_first": {
+                                "type": "boolean",
+                                "description": "Whether to clear the element before typing (default: true)"
+                            }
+                        },
+                        "required": ["selector", "text"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_execute_script".to_string(),
+                    description: "Execute JavaScript code in the browser and return the result".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "script": {
+                                "type": "string",
+                                "description": "JavaScript code to execute (use 'return' to return a value)"
+                            }
+                        },
+                        "required": ["script"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_get_page_source".to_string(),
+                    description: "Get the HTML source of the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_screenshot".to_string(),
+                    description: "Take a screenshot of the browser window".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path where to save the screenshot (e.g., '/tmp/screenshot.png')"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                },
+                Tool {
+                    name: "webdriver_back".to_string(),
+                    description: "Navigate back in browser history".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_forward".to_string(),
+                    description: "Navigate forward in browser history".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_refresh".to_string(),
+                    description: "Refresh the current page".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "webdriver_quit".to_string(),
+                    description: "Close the browser and end the WebDriver session".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+            ]);
+        }
+
+        tools
     }
 
     /// Helper method to stream with retry logic
@@ -2011,7 +2121,7 @@ Template:
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions());
+                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled));
                             }
 
                             // Only add to full_response if we haven't already added it
@@ -2454,10 +2564,10 @@ Template:
                         if is_image {
                             if let Some(controller) = &self.computer_controller {
                                 match controller.extract_text_from_image(path_str).await {
-                                    Ok(result) => {
+                                    Ok(text) => {
                                         return Ok(format!(
-                                            "📄 Image file (OCR extracted, confidence: {:.2}):\n{}",
-                                            result.confidence, result.text
+                                            "📄 Image file (OCR extracted):\n{}",
+                                            text
                                         ));
                                     }
                                     Err(e) => {
@@ -2817,98 +2927,6 @@ Template:
                     Ok("✅ Turn completed".to_string())
                 }
             }
-            "mouse_click" => {
-                if let Some(controller) = &self.computer_controller {
-                    let x = tool_call
-                        .args
-                        .get("x")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
-                    let y = tool_call
-                        .args
-                        .get("y")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
-                    let button_str = tool_call
-                        .args
-                        .get("button")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("left");
-
-                    let button = match button_str {
-                        "left" => g3_computer_control::types::MouseButton::Left,
-                        "right" => g3_computer_control::types::MouseButton::Right,
-                        "middle" => g3_computer_control::types::MouseButton::Middle,
-                        _ => g3_computer_control::types::MouseButton::Left,
-                    };
-
-                    match controller.move_mouse(x, y).await {
-                        Ok(_) => {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            match controller.click(button).await {
-                                Ok(_) => Ok(format!(
-                                    "✅ Clicked {} button at ({}, {})",
-                                    button_str, x, y
-                                )),
-                                Err(e) => Ok(format!("❌ Failed to click: {}", e)),
-                            }
-                        }
-                        Err(e) => Ok(format!("❌ Failed to move mouse: {}", e)),
-                    }
-                } else {
-                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
-                }
-            }
-            "type_text" => {
-                if let Some(controller) = &self.computer_controller {
-                    let text = tool_call
-                        .args
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
-
-                    match controller.type_text(text).await {
-                        Ok(_) => Ok(format!("✅ Typed text: {}", text)),
-                        Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
-                    }
-                } else {
-                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
-                }
-            }
-            "find_element" => {
-                if let Some(controller) = &self.computer_controller {
-                    let selector = g3_computer_control::types::ElementSelector {
-                        text: tool_call
-                            .args
-                            .get("text")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                        role: tool_call
-                            .args
-                            .get("role")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                        window_id: tool_call
-                            .args
-                            .get("window_id")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                    };
-
-                    match controller.find_element(&selector).await {
-                        Ok(Some(element)) => match serde_json::to_string_pretty(&element) {
-                            Ok(json) => Ok(format!("✅ Found element:\n{}", json)),
-                            Err(e) => {
-                                Ok(format!("✅ Found element but failed to serialize: {}", e))
-                            }
-                        },
-                        Ok(None) => Ok("❌ Element not found".to_string()),
-                        Err(e) => Ok(format!("❌ Failed to find element: {}", e)),
-                    }
-                } else {
-                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
-                }
-            }
             "take_screenshot" => {
                 if let Some(controller) = &self.computer_controller {
                     let path = tool_call
@@ -2973,10 +2991,7 @@ Template:
                     if let Some(path) = tool_call.args.get("path").and_then(|v| v.as_str()) {
                         // Extract text from image file
                         match controller.extract_text_from_image(path).await {
-                            Ok(result) => Ok(format!(
-                                "✅ Extracted text (confidence: {:.2}):\n{}",
-                                result.confidence, result.text
-                            )),
+                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
                             Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                         }
                     } else if let Some(region_obj) =
@@ -2997,65 +3012,11 @@ Template:
                         };
 
                         match controller.extract_text_from_screen(region).await {
-                            Ok(result) => Ok(format!(
-                                "✅ Extracted text (confidence: {:.2}):\n{}",
-                                result.confidence, result.text
-                            )),
+                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
                             Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                         }
                     } else {
                         Ok("❌ Missing path or region argument".to_string())
-                    }
-                } else {
-                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
-                }
-            }
-            "find_text_on_screen" => {
-                if let Some(controller) = &self.computer_controller {
-                    let text = tool_call
-                        .args
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("Missing text argument"))?;
-
-                    match controller.find_text_on_screen(text).await {
-                        Ok(Some(point)) => Ok(format!(
-                            "✅ Found text '{}' at coordinates ({}, {})",
-                            text, point.x, point.y
-                        )),
-                        Ok(None) => Ok(format!("❌ Text '{}' not found on screen", text)),
-                        Err(e) => Ok(format!("❌ Failed to search for text: {}", e)),
-                    }
-                } else {
-                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
-                }
-            }
-            "list_windows" => {
-                if let Some(controller) = &self.computer_controller {
-                    match controller.list_windows().await {
-                        Ok(windows) => {
-                            if windows.is_empty() {
-                                Ok("📋 No windows found".to_string())
-                            } else {
-                                let mut output = format!("📋 Found {} windows:\n\n", windows.len());
-                                for window in windows {
-                                    output.push_str(&format!(
-                                        "• **{}** ({}x{})\n  ID: `{}`\n  Title: {}\n\n",
-                                        window.app_name,
-                                        window.bounds.width,
-                                        window.bounds.height,
-                                        window.id,
-                                        if window.title.is_empty() {
-                                            "(no title)"
-                                        } else {
-                                            &window.title
-                                        }
-                                    ));
-                                }
-                                Ok(output)
-                            }
-                        }
-                        Err(e) => Ok(format!("❌ Failed to list windows: {}", e)),
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
@@ -3092,6 +3053,446 @@ Template:
                     }
                 } else {
                     Ok("❌ Missing content argument".to_string())
+                }
+            }
+            "webdriver_start" => {
+                debug!("Processing webdriver_start tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                // Check if session already exists
+                let session_guard = self.webdriver_session.read().await;
+                if session_guard.is_some() {
+                    drop(session_guard);
+                    return Ok("✅ WebDriver session already active".to_string());
+                }
+                drop(session_guard);
+                
+                // Check if Safari Remote Automation is enabled
+                let check_enabled = tokio::process::Command::new("safaridriver")
+                    .arg("--enable")
+                    .output()
+                    .await;
+                
+                match check_enabled {
+                    Ok(output) if !output.status.success() => {
+                        return Ok("❌ Safari Remote Automation is not enabled.\n\nTo enable it (one-time setup):\n  1. Run: safaridriver --enable\n  2. Enter your password when prompted\n  3. Try again\n\nAlternatively, enable it manually:\n  Safari → Develop → Allow Remote Automation".to_string());
+                    }
+                    Err(e) => {
+                        return Ok(format!("❌ Failed to check Safari automation status: {}\n\nMake sure safaridriver is installed (it comes with macOS).", e));
+                    }
+                    _ => {
+                        debug!("Safari Remote Automation is enabled");
+                    }
+                }
+                
+                // Start safaridriver process
+                let port = self.config.webdriver.safari_port;
+                info!("Starting safaridriver on port {}", port);
+                
+                let safaridriver_result = tokio::process::Command::new("safaridriver")
+                    .arg("--port")
+                    .arg(port.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                
+                let mut safaridriver_process = match safaridriver_result {
+                    Ok(process) => process,
+                    Err(e) => {
+                        return Ok(format!("❌ Failed to start safaridriver: {}\n\nMake sure safaridriver is installed.", e));
+                    }
+                };
+                
+                // Wait for safaridriver to start up
+                info!("Waiting for safaridriver to start...");
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                
+                // Connect to SafariDriver
+                match g3_computer_control::SafariDriver::with_port(port).await {
+                    Ok(driver) => {
+                        let session = std::sync::Arc::new(tokio::sync::Mutex::new(driver));
+                        *self.webdriver_session.write().await = Some(session);
+                        
+                        // Store the process handle
+                        *self.safaridriver_process.write().await = Some(safaridriver_process);
+                        
+                        info!("WebDriver session started successfully");
+                        Ok("✅ WebDriver session started successfully! Safari should open automatically.".to_string())
+                    }
+                    Err(e) => {
+                        // Kill the safaridriver process if connection failed
+                        let _ = safaridriver_process.kill().await;
+                        
+                        Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTry a different port or check if another safaridriver is running.", e, port))
+                    }
+                }
+            }
+            "webdriver_navigate" => {
+                debug!("Processing webdriver_navigate tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                drop(session_guard);
+                let url = match tool_call.args.get("url").and_then(|v| v.as_str()) {
+                    Some(u) => u,
+                    None => return Ok("❌ Missing url argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.navigate(url).await {
+                    Ok(_) => Ok(format!("✅ Navigated to {}", url)),
+                    Err(e) => Ok(format!("❌ Failed to navigate: {}", e)),
+                }
+            }
+            "webdriver_get_url" => {
+                debug!("Processing webdriver_get_url tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.current_url().await {
+                    Ok(url) => Ok(format!("Current URL: {}", url)),
+                    Err(e) => Ok(format!("❌ Failed to get URL: {}", e)),
+                }
+            }
+            "webdriver_get_title" => {
+                debug!("Processing webdriver_get_title tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.title().await {
+                    Ok(title) => Ok(format!("Page title: {}", title)),
+                    Err(e) => Ok(format!("❌ Failed to get title: {}", e)),
+                }
+            }
+            "webdriver_find_element" => {
+                debug!("Processing webdriver_find_element tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(elem) => {
+                        match elem.text().await {
+                            Ok(text) => Ok(format!("Element text: {}", text)),
+                            Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_find_elements" => {
+                debug!("Processing webdriver_find_elements tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_elements(selector).await {
+                    Ok(elements) => {
+                        let mut results = Vec::new();
+                        for (i, elem) in elements.iter().enumerate() {
+                            match elem.text().await {
+                                Ok(text) => results.push(format!("[{}]: {}", i, text)),
+                                Err(_) => results.push(format!("[{}]: <error getting text>", i)),
+                            }
+                        }
+                        Ok(format!("Found {} elements:\n{}", results.len(), results.join("\n")))
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find elements '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_click" => {
+                debug!("Processing webdriver_click tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(mut elem) => {
+                        match elem.click().await {
+                            Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
+                            Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_send_keys" => {
+                debug!("Processing webdriver_send_keys tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing selector argument".to_string()),
+                };
+                
+                let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return Ok("❌ Missing text argument".to_string()),
+                };
+                
+                let clear_first = tool_call.args.get("clear_first")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                
+                let mut driver = session.lock().await;
+                match driver.find_element(selector).await {
+                    Ok(mut elem) => {
+                        if clear_first {
+                            if let Err(e) = elem.clear().await {
+                                return Ok(format!("❌ Failed to clear element: {}", e));
+                            }
+                        }
+                        match elem.send_keys(text).await {
+                            Ok(_) => Ok(format!("✅ Sent keys to element '{}'", selector)),
+                            Err(e) => Ok(format!("❌ Failed to send keys: {}", e)),
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            "webdriver_execute_script" => {
+                debug!("Processing webdriver_execute_script tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let script = match tool_call.args.get("script").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return Ok("❌ Missing script argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.execute_script(script, vec![]).await {
+                    Ok(result) => Ok(format!("Script result: {:?}", result)),
+                    Err(e) => Ok(format!("❌ Failed to execute script: {}", e)),
+                }
+            }
+            "webdriver_get_page_source" => {
+                debug!("Processing webdriver_get_page_source tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let driver = session.lock().await;
+                match driver.page_source().await {
+                    Ok(source) => {
+                        // Truncate if too long
+                        if source.len() > 10000 {
+                            Ok(format!("Page source ({} chars, truncated to 10000):\n{}...", source.len(), &source[..10000]))
+                        } else {
+                            Ok(format!("Page source ({} chars):\n{}", source.len(), source))
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to get page source: {}", e)),
+                }
+            }
+            "webdriver_screenshot" => {
+                debug!("Processing webdriver_screenshot tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let path = match tool_call.args.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p,
+                    None => return Ok("❌ Missing path argument".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.screenshot(path).await {
+                    Ok(_) => Ok(format!("✅ Screenshot saved to {}", path)),
+                    Err(e) => Ok(format!("❌ Failed to take screenshot: {}", e)),
+                }
+            }
+            "webdriver_back" => {
+                debug!("Processing webdriver_back tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.back().await {
+                    Ok(_) => Ok("✅ Navigated back".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to navigate back: {}", e)),
+                }
+            }
+            "webdriver_forward" => {
+                debug!("Processing webdriver_forward tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.forward().await {
+                    Ok(_) => Ok("✅ Navigated forward".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to navigate forward: {}", e)),
+                }
+            }
+            "webdriver_refresh" => {
+                debug!("Processing webdriver_refresh tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                let session_guard = self.webdriver_session.read().await;
+                let session = match session_guard.as_ref() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                };
+                
+                let mut driver = session.lock().await;
+                match driver.refresh().await {
+                    Ok(_) => Ok("✅ Page refreshed".to_string()),
+                    Err(e) => Ok(format!("❌ Failed to refresh page: {}", e)),
+                }
+            }
+            "webdriver_quit" => {
+                debug!("Processing webdriver_quit tool call");
+                
+                if !self.config.webdriver.enabled {
+                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                }
+                
+                // Take the session
+                let session = match self.webdriver_session.write().await.take() {
+                    Some(s) => s.clone(),
+                    None => return Ok("❌ No active WebDriver session.".to_string()),
+                };
+                
+                // Quit the WebDriver session
+                match std::sync::Arc::try_unwrap(session) {
+                    Ok(mutex) => {
+                        let driver = mutex.into_inner();
+                        match driver.quit().await {
+                            Ok(_) => {
+                                info!("WebDriver session closed successfully");
+                                
+                                // Kill the safaridriver process
+                                if let Some(mut process) = self.safaridriver_process.write().await.take() {
+                                    if let Err(e) = process.kill().await {
+                                        warn!("Failed to kill safaridriver process: {}", e);
+                                    } else {
+                                        info!("Safaridriver process terminated");
+                                    }
+                                }
+                                
+                                Ok("✅ WebDriver session closed and safaridriver stopped".to_string())
+                            }
+                            Err(e) => Ok(format!("❌ Failed to quit WebDriver: {}", e)),
+                        }
+                    }
+                    Err(_) => Ok("❌ Cannot quit: WebDriver session is still in use".to_string()),
                 }
             }
             _ => {
@@ -3543,5 +3944,25 @@ mod integration_tests {
         let result = apply_unified_diff_to_string(original, diff, Some(start), Some(end)).unwrap();
         let expected = "A\nNEW\nB\nold\nC\n";
         assert_eq!(result, expected);
+    }
+}
+
+// Implement Drop to clean up safaridriver process
+impl<W: UiWriter> Drop for Agent<W> {
+    fn drop(&mut self) {
+        // Try to kill safaridriver process if it's still running
+        // We need to use try_lock since we can't await in Drop
+        if let Ok(mut process_guard) = self.safaridriver_process.try_write() {
+            if let Some(process) = process_guard.take() {
+                // Use blocking kill since we can't await in Drop
+                // This is a best-effort cleanup
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(process.id().unwrap_or(0).to_string())
+                    .output();
+                
+                debug!("Attempted to clean up safaridriver process on Agent drop");
+            }
+        }
     }
 }

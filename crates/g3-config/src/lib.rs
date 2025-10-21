@@ -7,6 +7,7 @@ pub struct Config {
     pub providers: ProvidersConfig,
     pub agent: AgentConfig,
     pub computer_control: ComputerControlConfig,
+    pub webdriver: WebDriverConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +71,21 @@ pub struct ComputerControlConfig {
     pub max_actions_per_second: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebDriverConfig {
+    pub enabled: bool,
+    pub safari_port: u16,
+}
+
+impl Default for WebDriverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            safari_port: 4444,
+        }
+    }
+}
+
 impl Default for ComputerControlConfig {
     fn default() -> Self {
         Self {
@@ -103,6 +119,7 @@ impl Default for Config {
                 timeout_seconds: 60,
             },
             computer_control: ComputerControlConfig::default(),
+            webdriver: WebDriverConfig::default(),
         }
     }
 }
@@ -214,6 +231,7 @@ impl Config {
                 timeout_seconds: 60,
             },
             computer_control: ComputerControlConfig::default(),
+            webdriver: WebDriverConfig::default(),
         }
     }
     

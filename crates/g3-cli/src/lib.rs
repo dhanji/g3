@@ -321,6 +321,10 @@ pub struct Cli {
     /// Disable log file creation (no logs/ directory or session logs)
     #[arg(long)]
     pub quiet: bool,
+
+    /// Enable WebDriver tools for browser automation (Safari)
+    #[arg(long)]
+    pub webdriver: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -409,11 +413,16 @@ pub async fn run() -> Result<()> {
     }
 
     // Load configuration with CLI overrides
-    let config = Config::load_with_overrides(
+    let mut config = Config::load_with_overrides(
         cli.config.as_deref(),
         cli.provider.clone(),
         cli.model.clone(),
     )?;
+
+    // Override webdriver setting from CLI flag
+    if cli.webdriver {
+        config.webdriver.enabled = true;
+    }
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
