@@ -319,10 +319,26 @@ impl ContextWindow {
 
     /// Update token usage from provider response
     pub fn update_usage_from_response(&mut self, usage: &g3_providers::Usage) {
-        // Add the tokens from this response to our running total
-        // The usage.total_tokens represents tokens used in this single API call
-        self.used_tokens += usage.total_tokens;
-        self.cumulative_tokens += usage.total_tokens;
+        // The provider's usage represents the tokens used in the last API call
+        // We need to be smarter about how we update our running total
+        
+        let old_used = self.used_tokens;
+        
+        // If the provider's total is greater than our current count, use it as the authoritative value
+        // This handles cases where our estimation was off
+        if usage.total_tokens > self.used_tokens {
+            self.used_tokens = usage.total_tokens;
+            self.cumulative_tokens += usage.total_tokens - old_used;
+        } else {
+            // Otherwise, add the tokens from this response
+            self.used_tokens += usage.completion_tokens; // Add only the new completion tokens
+            self.cumulative_tokens += usage.completion_tokens;
+        }
+        
+        info!(
+            "Updated token usage - was: {}, now: {} (provider reported: prompt={}, completion={}, total={})",
+            old_used, self.used_tokens, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
 
         debug!(
             "Added {} tokens from provider response (used: {}/{}, cumulative: {})",
@@ -429,8 +445,18 @@ Format this as a detailed but concise summary that can be used to resume the con
         if current_percentage >= 50 {
             let current_threshold = (current_percentage / 10) * 10; // Round down to nearest 10%
             if current_threshold > self.last_thinning_percentage && current_threshold <= 80 {
+                info!(
+                    "Context thinning triggered - usage: {}% ({}/{} tokens), threshold: {}%, last thinned at: {}%",
+                    current_percentage,
+                    self.used_tokens,
+                    self.total_tokens,
+                    current_threshold,
+                    self.last_thinning_percentage
+                );
                 return true;
             }
+        } else {
+            debug!("Context usage at {}% ({}/{} tokens) - no thinning needed", current_percentage, self.used_tokens, self.total_tokens);
         }
         
         false
