@@ -3070,23 +3070,9 @@ Template:
                 }
                 drop(session_guard);
                 
-                // Check if Safari Remote Automation is enabled
-                let check_enabled = tokio::process::Command::new("safaridriver")
-                    .arg("--enable")
-                    .output()
-                    .await;
-                
-                match check_enabled {
-                    Ok(output) if !output.status.success() => {
-                        return Ok("❌ Safari Remote Automation is not enabled.\n\nTo enable it (one-time setup):\n  1. Run: safaridriver --enable\n  2. Enter your password when prompted\n  3. Try again\n\nAlternatively, enable it manually:\n  Safari → Develop → Allow Remote Automation".to_string());
-                    }
-                    Err(e) => {
-                        return Ok(format!("❌ Failed to check Safari automation status: {}\n\nMake sure safaridriver is installed (it comes with macOS).", e));
-                    }
-                    _ => {
-                        debug!("Safari Remote Automation is enabled");
-                    }
-                }
+                // Note: Safari Remote Automation must be enabled before using WebDriver.
+                // Run this once: safaridriver --enable
+                // Or enable manually: Safari → Develop → Allow Remote Automation
                 
                 // Start safaridriver process
                 let port = self.config.webdriver.safari_port;
@@ -3126,7 +3112,7 @@ Template:
                         // Kill the safaridriver process if connection failed
                         let _ = safaridriver_process.kill().await;
                         
-                        Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTry a different port or check if another safaridriver is running.", e, port))
+                        Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Safari Remote Automation is not enabled (run: safaridriver --enable)\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTo enable Remote Automation:\n  1. Run: safaridriver --enable (requires password, one-time setup)\n  2. Or manually: Safari → Develop → Allow Remote Automation", e, port))
                     }
                 }
             }

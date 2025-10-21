@@ -132,6 +132,30 @@ cargo run
 g3 "implement a function to calculate fibonacci numbers"
 ```
 
+## WebDriver Browser Automation
+
+G3 includes WebDriver support for browser automation tasks using Safari.
+
+**One-Time Setup** (macOS only):
+
+Safari Remote Automation must be enabled before using WebDriver tools. Run this once:
+
+```bash
+# Option 1: Use the provided script
+./scripts/enable-safari-automation.sh
+
+# Option 2: Enable manually
+safaridriver --enable  # Requires password
+
+# Option 3: Enable via Safari UI
+# Safari → Preferences → Advanced → Show Develop menu
+# Then: Develop → Allow Remote Automation
+```
+
+**For detailed setup instructions and troubleshooting**, see [WebDriver Setup Guide](docs/webdriver-setup.md).
+
+**Usage**: Run G3 with the `--webdriver` flag to enable browser automation tools.
+
 ## Computer Control (Experimental)
 
 G3 can interact with your computer's GUI for automation tasks:
