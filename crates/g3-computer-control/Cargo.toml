@@ -26,9 +26,10 @@ tesseract = "0.14"
 # macOS dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.23"
-core-foundation = "0.9"
+core-foundation = "0.10"
 cocoa = "0.25"
 objc = "0.2"
+accessibility = "0.2"
 image = "0.24"
 
 # Linux dependencies

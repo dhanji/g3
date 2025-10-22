@@ -551,6 +551,7 @@ pub struct Agent<W: UiWriter> {
     todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
     webdriver_session: std::sync::Arc<tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>>>,
     safaridriver_process: std::sync::Arc<tokio::sync::RwLock<Option<tokio::process::Child>>>,
+    macax_controller: std::sync::Arc<tokio::sync::RwLock<Option<g3_computer_control::MacAxController>>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -761,6 +762,9 @@ impl<W: UiWriter> Agent<W> {
             None
         };
 
+        // Capture macax_enabled before moving config
+        let macax_enabled = config.macax.enabled;
+
         Ok(Self {
             providers,
             context_window,
@@ -777,6 +781,12 @@ impl<W: UiWriter> Agent<W> {
             computer_controller,
             webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             safaridriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            macax_controller: {
+                std::sync::Arc::new(tokio::sync::RwLock::new(
+                    if macax_enabled { Some(g3_computer_control::MacAxController::new()?) }
+                    else { None }
+                ))
+            },
         })
     }
 
@@ -1088,7 +1098,7 @@ Template:
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions(self.config.webdriver.enabled))
+            Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled))
         } else {
             None
         };
@@ -1549,7 +1559,7 @@ Template:
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions(enable_webdriver: bool) -> Vec<Tool> {
+    fn create_tool_definitions(enable_webdriver: bool, enable_macax: bool) -> Vec<Tool> {
         let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
@@ -1902,6 +1912,231 @@ Template:
                     }),
                 },
             ]);
+        }
+
+        // Add macOS Accessibility tools if enabled
+        if enable_macax {
+            tools.extend(vec![
+                Tool {
+                    name: "macax_list_apps".to_string(),
+                    description: "List all running applications that can be controlled via macOS Accessibility API".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "macax_get_frontmost_app".to_string(),
+                    description: "Get the name of the currently active (frontmost) application".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+                Tool {
+                    name: "macax_activate_app".to_string(),
+                    description: "Bring an application to the front (activate it)".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application to activate (e.g., 'Safari', 'TextEdit')"
+                            }
+                        },
+                        "required": ["app_name"]
+                    }),
+                },
+                Tool {
+                    name: "macax_get_ui_tree".to_string(),
+                    description: "Get the UI element hierarchy of an application as a tree structure".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "description": "Maximum depth to traverse (default: 3)"
+                            }
+                        },
+                        "required": ["app_name"]
+                    }),
+                },
+                Tool {
+                    name: "macax_find_elements".to_string(),
+                    description: "Find UI elements in an application by role, title, or identifier. Use this to locate buttons, text fields, etc.".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "role": {
+                                "type": "string",
+                                "description": "UI element role (e.g., 'button', 'text field', 'window')"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Element title or label to match"
+                            },
+                            "identifier": {
+                                "type": "string",
+                                "description": "Element identifier (accessibility identifier)"
+                            }
+                        },
+                        "required": ["app_name"]
+                    }),
+                },
+                Tool {
+                    name: "macax_click".to_string(),
+                    description: "Click a UI element in an application".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "role": {
+                                "type": "string",
+                                "description": "UI element role (e.g., 'button')"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Element title or label"
+                            },
+                            "identifier": {
+                                "type": "string",
+                                "description": "Element identifier"
+                            }
+                        },
+                        "required": ["app_name", "role"]
+                    }),
+                },
+                Tool {
+                    name: "macax_set_value".to_string(),
+                    description: "Set the value of a UI element (e.g., type into a text field)".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "role": {
+                                "type": "string",
+                                "description": "UI element role (e.g., 'text field')"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Value to set"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Element title or label"
+                            },
+                            "identifier": {
+                                "type": "string",
+                                "description": "Element identifier"
+                            }
+                        },
+                        "required": ["app_name", "role", "value"]
+                    }),
+                },
+                Tool {
+                    name: "macax_get_value".to_string(),
+                    description: "Get the value of a UI element (e.g., read text from a text field)".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "role": {
+                                "type": "string",
+                                "description": "UI element role (e.g., 'text field')"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Element title or label"
+                            },
+                            "identifier": {
+                                "type": "string",
+                                "description": "Element identifier"
+                            }
+                        },
+                        "required": ["app_name", "role"]
+                    }),
+                },
+                Tool {
+                    name: "macax_press_key".to_string(),
+                    description: "Press a keyboard key or shortcut in an application (e.g., Cmd+S to save)".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "app_name": {
+                                "type": "string",
+                                "description": "Name of the application"
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Key to press (e.g., 's', 'return', 'tab')"
+                            },
+                            "modifiers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Modifier keys (e.g., ['command', 'shift'])"
+                            }
+                        },
+                        "required": ["app_name", "key"]
+                    }),
+                },
+            ]);
+            
+            // Add type_text tool for typing arbitrary text
+            tools.push(Tool {
+                name: "macax_type_text".to_string(),
+                description: "Type arbitrary text into the currently focused element in an application (supports unicode, emojis, etc.)".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Name of the application"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Text to type (can include unicode, emojis, special characters)"
+                        }
+                    },
+                    "required": ["app_name", "text"]
+                }),
+            });
+            
+            // Add focus_element tool
+            tools.push(Tool {
+                name: "macax_focus_element".to_string(),
+                description: "Focus on a UI element (text field, text area, etc.) before typing".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "description": "Name of the application"},
+                        "role": {"type": "string", "description": "UI element role (e.g., 'text field', 'text area')"},
+                        "title": {"type": "string", "description": "Element title or label (optional)"},
+                        "identifier": {"type": "string", "description": "Element accessibility identifier (optional)"}
+                    },
+                    "required": ["app_name", "role"]
+                }),
+            });
         }
 
         tools
@@ -2469,7 +2704,7 @@ Template:
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled));
+                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled));
                             }
 
                             // Only add to full_response if we haven't already added it
@@ -3827,6 +4062,331 @@ Template:
                         }
                     }
                     Err(_) => Ok("❌ Cannot quit: WebDriver session is still in use".to_string()),
+                }
+            }
+            "macax_list_apps" => {
+                debug!("Processing macax_list_apps tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.list_applications() {
+                    Ok(apps) => {
+                        let app_list: Vec<String> = apps.iter().map(|a| a.name.clone()).collect();
+                        Ok(format!("Running applications:\n{}", app_list.join("\n")))
+                    }
+                    Err(e) => Ok(format!("❌ Failed to list applications: {}", e)),
+                }
+            }
+            "macax_get_frontmost_app" => {
+                debug!("Processing macax_get_frontmost_app tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.get_frontmost_app() {
+                    Ok(app) => Ok(format!("Frontmost application: {}", app.name)),
+                    Err(e) => Ok(format!("❌ Failed to get frontmost app: {}", e)),
+                }
+            }
+            "macax_activate_app" => {
+                debug!("Processing macax_activate_app tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.activate_app(app_name) {
+                    Ok(_) => Ok(format!("✅ Activated application: {}", app_name)),
+                    Err(e) => Ok(format!("❌ Failed to activate app: {}", e)),
+                }
+            }
+            "macax_get_ui_tree" => {
+                debug!("Processing macax_get_ui_tree tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let max_depth = tool_call.args.get("max_depth")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(3);
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.get_ui_tree(app_name, max_depth) {
+                    Ok(tree) => Ok(tree),
+                    Err(e) => Ok(format!("❌ Failed to get UI tree: {}", e)),
+                }
+            }
+            "macax_find_elements" => {
+                debug!("Processing macax_find_elements tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let role = tool_call.args.get("role").and_then(|v| v.as_str());
+                let title = tool_call.args.get("title").and_then(|v| v.as_str());
+                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.find_elements(app_name, role, title, identifier) {
+                    Ok(elements) => {
+                        if elements.is_empty() {
+                            Ok("No elements found matching criteria".to_string())
+                        } else {
+                            let element_strs: Vec<String> = elements.iter()
+                                .map(|e| e.to_string())
+                                .collect();
+                            Ok(format!("Found {} element(s):\n{}", elements.len(), element_strs.join("\n")))
+                        }
+                    }
+                    Err(e) => Ok(format!("❌ Failed to find elements: {}", e)),
+                }
+            }
+            "macax_click" => {
+                debug!("Processing macax_click tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
+                    Some(r) => r,
+                    None => return Ok("❌ Missing role argument".to_string()),
+                };
+                
+                let title = tool_call.args.get("title").and_then(|v| v.as_str());
+                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.click_element(app_name, role, title, identifier) {
+                    Ok(_) => Ok(format!("✅ Clicked {} element", role)),
+                    Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
+                }
+            }
+            "macax_set_value" => {
+                debug!("Processing macax_set_value tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
+                    Some(r) => r,
+                    None => return Ok("❌ Missing role argument".to_string()),
+                };
+                
+                let value = match tool_call.args.get("value").and_then(|v| v.as_str()) {
+                    Some(v) => v,
+                    None => return Ok("❌ Missing value argument".to_string()),
+                };
+                
+                let title = tool_call.args.get("title").and_then(|v| v.as_str());
+                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.set_value(app_name, role, value, title, identifier) {
+                    Ok(_) => Ok(format!("✅ Set value of {} element to: {}", role, value)),
+                    Err(e) => Ok(format!("❌ Failed to set value: {}", e)),
+                }
+            }
+            "macax_get_value" => {
+                debug!("Processing macax_get_value tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
+                    Some(r) => r,
+                    None => return Ok("❌ Missing role argument".to_string()),
+                };
+                
+                let title = tool_call.args.get("title").and_then(|v| v.as_str());
+                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.get_value(app_name, role, title, identifier) {
+                    Ok(value) => Ok(format!("Value: {}", value)),
+                    Err(e) => Ok(format!("❌ Failed to get value: {}", e)),
+                }
+            }
+            "macax_press_key" => {
+                debug!("Processing macax_press_key tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let key = match tool_call.args.get("key").and_then(|v| v.as_str()) {
+                    Some(k) => k,
+                    None => return Ok("❌ Missing key argument".to_string()),
+                };
+                
+                let modifiers_vec: Vec<&str> = tool_call.args.get("modifiers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect())
+                    .unwrap_or_default();
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.press_key(app_name, key, modifiers_vec.clone()) {
+                    Ok(_) => {
+                        let modifier_str = if modifiers_vec.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" with modifiers: {}", modifiers_vec.join("+"))
+                        };
+                        Ok(format!("✅ Pressed key: {}{}", key, modifier_str))
+                    }
+                    Err(e) => Ok(format!("❌ Failed to press key: {}", e)),
+                }
+            }
+            "macax_type_text" => {
+                debug!("Processing macax_type_text tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return Ok("❌ Missing text argument".to_string()),
+                };
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.type_text(app_name, text) {
+                    Ok(_) => Ok(format!("✅ Typed text into {}", app_name)),
+                    Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
+                }
+            }
+            "macax_focus_element" => {
+                debug!("Processing macax_focus_element tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                }
+                
+                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => return Ok("❌ Missing app_name argument".to_string()),
+                };
+                
+                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
+                    Some(r) => r,
+                    None => return Ok("❌ Missing role argument".to_string()),
+                };
+                
+                let title = tool_call.args.get("title").and_then(|v| v.as_str());
+                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
+                
+                let controller_guard = self.macax_controller.read().await;
+                let controller = match controller_guard.as_ref() {
+                    Some(c) => c,
+                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                };
+                
+                match controller.focus_element(app_name, role, title, identifier) {
+                    Ok(_) => Ok(format!("✅ Focused {} element in {}", role, app_name)),
+                    Err(e) => Ok(format!("❌ Failed to focus element: {}", e)),
                 }
             }
             _ => {

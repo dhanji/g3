@@ -1,9 +1,13 @@
 pub mod types;
 pub mod platform;
 pub mod webdriver;
+pub mod macax;
 
 // Re-export webdriver types for convenience
 pub use webdriver::{WebDriverController, WebElement, safari::SafariDriver};
+
+// Re-export macax types for convenience
+pub use macax::{MacAxController, AXElement, AXApplication};
 
 use anyhow::Result;
 use async_trait::async_trait;

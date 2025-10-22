@@ -239,6 +239,10 @@ pub struct Cli {
     /// Disable log file creation (no logs/ directory or session logs)
     #[arg(long)]
     pub quiet: bool,
+
+    /// Enable macOS Accessibility API tools for native app automation
+    #[arg(long)]
+    pub macax: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -433,11 +437,19 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
     }
 
     // Load configuration with CLI overrides
-    let config = Config::load_with_overrides(
+    let mut config = Config::load_with_overrides(
         cli.config.as_deref(),
         cli.provider.clone(),
         cli.model.clone(),
     )?;
+
+    // Apply macax flag override
+    if cli.macax {
+        config.macax.enabled = true;
+        if !cli.retro {
+            info!("macOS Accessibility API tools enabled");
+        }
+    }
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {

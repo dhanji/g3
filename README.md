@@ -89,6 +89,7 @@ These commands give you fine-grained control over context management, allowing y
 - **TODO Management**: Read and write TODO lists with markdown checkbox format
 - **Computer Control** (Experimental): Automate desktop applications
   - Mouse and keyboard control
+  - macOS Accessibility API for native app automation (via `--macax` flag)
   - UI element inspection
   - Screenshot capture and window management
   - OCR text extraction from images and screen regions
@@ -165,6 +166,19 @@ safaridriver --enable  # Requires password
 **For detailed setup instructions and troubleshooting**, see [WebDriver Setup Guide](docs/webdriver-setup.md).
 
 **Usage**: Run G3 with the `--webdriver` flag to enable browser automation tools.
+
+## macOS Accessibility API Tools
+
+G3 includes support for controlling macOS applications via the Accessibility API, allowing you to automate native macOS apps.
+
+**Available Tools**: `macax_list_apps`, `macax_get_frontmost_app`, `macax_activate_app`, `macax_get_ui_tree`, `macax_find_elements`, `macax_click`, `macax_set_value`, `macax_get_value`, `macax_press_key`
+
+**Setup**: Enable with the `--macax` flag or in config with `macax.enabled = true`. Grant accessibility permissions:
+- **macOS**: System Preferences → Security & Privacy → Privacy → Accessibility → Add your terminal app
+
+**For detailed documentation**, see [macOS Accessibility Tools Guide](docs/macax-tools.md).
+
+**Note**: This is particularly useful for testing and automating apps you're building with G3, as you can add accessibility identifiers to your UI elements.
 
 ## Computer Control (Experimental)
 
