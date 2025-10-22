@@ -1,0 +1,24 @@
+[providers]
+default_provider = "databricks"
+# Specify different providers for coach and player in autonomous mode
+coach = "databricks"    # Provider for coach (code reviewer) - can be more powerful/expensive
+player = "anthropic"    # Provider for player (code implementer) - can be faster/cheaper
+
+[providers.databricks]
+host = "https://your-workspace.cloud.databricks.com"
+# token = "your-databricks-token"  # Optional - will use OAuth if not provided
+model = "databricks-claude-sonnet-4"
+max_tokens = 4096
+temperature = 0.1
+use_oauth = true
+
+[providers.anthropic]
+api_key = "your-anthropic-api-key"
+model = "claude-3-haiku-20240307"  # Using a faster model for player
+max_tokens = 4096
+temperature = 0.3  # Slightly higher temperature for more creative implementations
+
+[agent]
+max_context_length = 8192
+enable_streaming = true
+timeout_seconds = 60
