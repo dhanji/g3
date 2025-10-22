@@ -319,24 +319,17 @@ impl ContextWindow {
 
     /// Update token usage from provider response
     pub fn update_usage_from_response(&mut self, usage: &g3_providers::Usage) {
-        // The provider's usage represents the tokens used in the last API call
-        // We need to be smarter about how we update our running total
+        // Always use the provider's count as the authoritative value
+        // The provider knows best how many tokens were actually used
         
         let old_used = self.used_tokens;
         
-        // If the provider's total is greater than our current count, use it as the authoritative value
-        // This handles cases where our estimation was off
-        if usage.total_tokens > self.used_tokens {
-            self.used_tokens = usage.total_tokens;
-            self.cumulative_tokens += usage.total_tokens - old_used;
-        } else {
-            // Otherwise, add the tokens from this response
-            self.used_tokens += usage.completion_tokens; // Add only the new completion tokens
-            self.cumulative_tokens += usage.completion_tokens;
-        }
+        // Use the provider's total as the current used tokens
+        self.used_tokens = usage.total_tokens;
+        self.cumulative_tokens += usage.total_tokens - old_used;
         
         info!(
-            "Updated token usage - was: {}, now: {} (provider reported: prompt={}, completion={}, total={})",
+            "Updated token usage from provider - was: {}, now: {} (prompt={}, completion={}, total={})",
             old_used, self.used_tokens, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
         );
 
