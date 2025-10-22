@@ -5,10 +5,14 @@
 ### Added
 
 **Interactive Requirements Mode**
-- **Interactive Requirements Entry**: New `--interactive-requirements` flag for autonomous mode
-  - Prompts user to enter requirements via stdin (multi-line support)
-  - Automatically saves requirements to `requirements.md` in workspace
-  - Shows preview of entered requirements
+- **AI-Enhanced Interactive Requirements**: New `--interactive-requirements` flag for autonomous mode
+  - User enters brief description of what they want to build
+  - AI automatically enhances input into structured requirements.md document
+  - Generates professional markdown with:
+    - Project title and overview
+    - Organized requirements (functional, technical, quality)
+    - Acceptance criteria
+  - User can review, accept, edit manually, or cancel before proceeding
   - Seamlessly transitions to autonomous mode
 
 **Autonomous Mode Configuration**

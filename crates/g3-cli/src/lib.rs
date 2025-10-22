@@ -397,14 +397,14 @@ pub async fn run() -> Result<()> {
 
     // Create project model
     let project = if cli.autonomous {
-        // Handle interactive requirements mode
+        // Handle interactive requirements mode with AI enhancement
         if cli.interactive_requirements {
             println!("\n📝 Interactive Requirements Mode");
             println!("================================\n");
-            println!("Please enter your project requirements.");
-            println!("You can enter multiple lines. Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.\n");
+            println!("Describe what you want to build (can be brief):");
+            println!("Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.\n");
             
-            use std::io::{self, Read};
+            use std::io::{self, Read, Write};
             let mut requirements_input = String::new();
             io::stdin().read_to_string(&mut requirements_input)?;
             
@@ -412,25 +412,96 @@ pub async fn run() -> Result<()> {
                 anyhow::bail!("No requirements provided. Exiting.");
             }
             
-            // Save to requirements.md in workspace
+            println!("\n🤖 Enhancing your requirements with AI...\n");
+            
+            // Create a temporary agent to enhance the requirements
+            let temp_config = Config::load_with_overrides(
+                cli.config.as_deref(),
+                cli.provider.clone(),
+                cli.model.clone(),
+            )?;
+            
+            // Create a simple output writer for the enhancement task
+            let ui_writer = ConsoleUiWriter::new();
+            let mut temp_agent = Agent::new_with_readme_and_quiet(
+                temp_config,
+                ui_writer,
+                None,
+                true, // quiet mode for enhancement
+            ).await?;
+            
+            // Create enhancement prompt
+            let enhancement_prompt = format!(
+                r#"Convert the following user input into a well-structured requirements.md document.
+
+User Input:
+{}
+
+Create a professional requirements document with:
+1. A clear project title (# heading)
+2. An overview section explaining what will be built
+3. Organized requirements (functional, technical, quality)
+4. Acceptance criteria
+5. Any technical constraints or preferences mentioned
+
+Format as proper markdown. Be specific and actionable. If the user's input is vague, make reasonable assumptions but keep it focused on what they described.
+
+Output ONLY the markdown content, no explanations or meta-commentary."#,
+                requirements_input.trim()
+            );
+            
+            // Execute enhancement task
+            let result = temp_agent
+                .execute_task_with_timing(&enhancement_prompt, None, false, false, false, false)
+                .await?;
+            
+            let enhanced_requirements = result.response.trim().to_string();
+            
+            // Show the enhanced requirements
+            println!("\n📋 Enhanced Requirements Document:");
+            println!("{}\n", "=".repeat(60));
+            println!("{}", enhanced_requirements);
+            println!("{}\n", "=".repeat(60));
+            
+            // Ask for confirmation
+            println!("\n❓ Is this requirements document acceptable?");
+            println!("   [y] Yes, proceed with autonomous mode");
+            println!("   [e] Edit and save manually");
+            println!("   [n] No, cancel\n");
+            
+            print!("Your choice (y/e/n): ");
+            io::stdout().flush()?;
+            
+            let mut choice = String::new();
+            io::stdin().read_line(&mut choice)?;
+            let choice = choice.trim().to_lowercase();
+            
             let requirements_path = workspace_dir.join("requirements.md");
-            std::fs::write(&requirements_path, &requirements_input)?;
             
-            println!("\n✅ Requirements saved to: {}", requirements_path.display());
-            println!("📏 Length: {} characters\n", requirements_input.len());
-            
-            // Show a preview
-            let preview_lines: Vec<&str> = requirements_input.lines().take(5).collect();
-            println!("Preview (first 5 lines):");
-            println!("---");
-            for line in preview_lines {
-                println!("{}", line);
+            match choice.as_str() {
+                "y" | "yes" => {
+                    // Save enhanced requirements
+                    std::fs::write(&requirements_path, &enhanced_requirements)?;
+                    println!("\n✅ Requirements saved to: {}", requirements_path.display());
+                    println!("🚀 Starting autonomous mode...\n");
+                }
+                "e" | "edit" => {
+                    // Save enhanced requirements for manual editing
+                    std::fs::write(&requirements_path, &enhanced_requirements)?;
+                    println!("\n✅ Requirements saved to: {}", requirements_path.display());
+                    println!("📝 Please edit the file and run: g3 --autonomous");
+                    println!("   Exiting for now.\n");
+                    return Ok(());
+                }
+                "n" | "no" => {
+                    println!("\n❌ Cancelled. No files were saved.\n");
+                    return Ok(());
+                }
+                _ => {
+                    println!("\n❌ Invalid choice. Cancelled.\n");
+                    return Ok(());
+                }
             }
-            if requirements_input.lines().count() > 5 {
-                println!("... ({} more lines)", requirements_input.lines().count() - 5);
-            }
-            println!("---\n");
-            println!("🚀 Starting autonomous mode...\n");
         }
         
         if let Some(requirements_text) = cli.requirements {

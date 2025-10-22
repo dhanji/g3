@@ -61,13 +61,36 @@ G3 features an autonomous mode where two agents collaborate:
 - **Player Agent**: Executes tasks and implements solutions
 - **Coach Agent**: Reviews work and provides feedback
 
-### Option 1: Interactive Requirements (Recommended)
+### Option 1: Interactive Requirements with AI Enhancement (Recommended)
 
 ```bash
 g3 --autonomous --interactive-requirements
 ```
 
-Enter your requirements (multi-line), then press **Ctrl+D** (Unix/Mac) or **Ctrl+Z** (Windows) to start.
+**How it works:**
+1. Describe what you want to build (can be brief)
+2. Press **Ctrl+D** (Unix/Mac) or **Ctrl+Z** (Windows)
+3. AI enhances your input into a structured requirements document
+4. Review the enhanced requirements
+5. Choose to proceed, edit manually, or cancel
+6. If accepted, autonomous mode starts automatically
+
+**Example:**
+```
+You type: "build a todo app with cli in python"
+
+AI generates:
+# Todo List CLI Application
+
+## Overview
+A command-line todo list application built in Python...
+
+## Functional Requirements
+1. Add tasks with descriptions
+2. Mark tasks as complete
+3. Delete tasks
+...
+```
 
 ### Option 2: Direct Requirements
 
