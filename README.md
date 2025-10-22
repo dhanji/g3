@@ -2,122 +2,14 @@
 
 G3 is a coding AI agent designed to help you complete tasks by writing code and executing commands. Built in Rust, it provides a flexible architecture for interacting with various Large Language Model (LLM) providers while offering powerful code generation and task automation capabilities.
 
-## Architecture Overview
-
-G3 follows a modular architecture organized as a Rust workspace with multiple crates, each responsible for specific functionality:
-
-### Core Components
-
-#### **g3-core**
-The heart of the agent system, containing:
-- **Agent Engine**: Main orchestration logic for handling conversations, tool execution, and task management
-- **Context Window Management**: Intelligent tracking of token usage with context thinning (50-80%) and auto-summarization at 80% capacity
-- **Tool System**: Built-in tools for file operations, shell commands, computer control, TODO management, and structured output
-- **Streaming Response Parser**: Real-time parsing of LLM responses with tool call detection and execution
-- **Task Execution**: Support for single and iterative task execution with automatic retry logic
-
-#### **g3-providers**
-Abstraction layer for LLM providers:
-- **Provider Interface**: Common trait-based API for different LLM backends
-- **Multiple Provider Support**: 
-  - Anthropic (Claude models)
-  - Databricks (DBRX and other models)
-  - Local/embedded models via llama.cpp with Metal acceleration on macOS
-- **OAuth Authentication**: Built-in OAuth flow support for secure provider authentication
-- **Provider Registry**: Dynamic provider management and selection
-
-#### **g3-config**
-Configuration management system:
-- Environment-based configuration
-- Provider credentials and settings
-- Model selection and parameters
-- Runtime configuration options
-
-#### **g3-execution**
-Task execution framework:
-- Task planning and decomposition
-- Execution strategies (sequential, parallel)
-- Error handling and retry mechanisms
-- Progress tracking and reporting
-
-#### **g3-computer-control**
-Computer control capabilities:
-- Mouse and keyboard automation
-- UI element inspection and interaction
-- Screenshot capture and window management
-- OCR text extraction via Tesseract
-
-#### **g3-cli**
-Command-line interface:
-- Interactive terminal interface
-- Task submission and monitoring
-- Configuration management commands
-- Session management
-
-### Error Handling & Resilience
-
-G3 includes robust error handling with automatic retry logic:
-- **Recoverable Error Detection**: Automatically identifies recoverable errors (rate limits, network issues, server errors, timeouts)
-- **Exponential Backoff with Jitter**: Implements intelligent retry delays to avoid overwhelming services
-- **Detailed Error Logging**: Captures comprehensive error context including stack traces, request/response data, and session information
-- **Error Persistence**: Saves detailed error logs to `logs/errors/` for post-mortem analysis
-- **Graceful Degradation**: Non-recoverable errors are logged with full context before terminating
-
 ## Key Features
 
-### Intelligent Context Management
-- Automatic context window monitoring with percentage-based tracking
-- Smart auto-summarization when approaching token limits
-- **Context thinning** at 50%, 60%, 70%, 80% thresholds - automatically replaces large tool results with file references
-- Conversation history preservation through summaries
-- Dynamic token allocation for different providers (4k to 200k+ tokens)
-
-### Tool Ecosystem
-- **File Operations**: Read, write, and edit files with line-range precision
-- **Shell Integration**: Execute system commands with output capture
-- **Code Generation**: Structured code generation with syntax awareness
-- **TODO Management**: Read and write TODO lists with markdown checkbox format
-- **Computer Control** (Experimental): Automate desktop applications
-  - Mouse and keyboard control
-  - UI element inspection
-  - Screenshot capture and window management
-  - OCR text extraction from images and screen regions
-  - Window listing and identification
-- **Final Output**: Formatted result presentation
-
-### Provider Flexibility
-- Support for multiple LLM providers through a unified interface
-- Hot-swappable providers without code changes
-- Provider-specific optimizations and feature support
-- Local model support for offline operation
-
-### Task Automation
-- Single-shot task execution for quick operations
-- Iterative task mode for complex, multi-step workflows
-- Automatic error recovery and retry logic
-- Progress tracking and intermediate result handling
-
-## Language & Technology Stack
-
-- **Language**: Rust (2021 edition)
-- **Async Runtime**: Tokio for concurrent operations
-- **HTTP Client**: Reqwest for API communications
-- **Serialization**: Serde for JSON handling
-- **CLI Framework**: Clap for command-line parsing
-- **Logging**: Tracing for structured logging
-- **Local Models**: llama.cpp with Metal acceleration support
-
-## Use Cases
-
-G3 is designed for:
-- Automated code generation and refactoring
-- File manipulation and project scaffolding
-- System administration tasks
-- Data processing and transformation  
-- API integration and testing
-- Documentation generation
-- Complex multi-step workflows
-- Desktop application automation and testing
+- **Multiple LLM Providers**: Anthropic (Claude), Databricks, OpenAI, and local models via llama.cpp
+- **Autonomous Mode**: Coach-player feedback loop for complex tasks
+- **Intelligent Context Management**: Auto-summarization and context thinning at 50-80% thresholds
+- **Rich Tool Ecosystem**: File operations, shell commands, computer control, browser automation
+- **Streaming Responses**: Real-time output with tool call detection
+- **Error Recovery**: Automatic retry logic with exponential backoff
 
 ## Getting Started
 
@@ -125,56 +17,211 @@ G3 is designed for:
 # Build the project
 cargo build --release
 
-# Run G3
-cargo run
-
-# Execute a task
+# Execute a single task
 g3 "implement a function to calculate fibonacci numbers"
+
+# Start autonomous mode with interactive requirements
+g3 --autonomous --interactive-requirements
 ```
+
+## Configuration
+
+Create `~/.config/g3/config.toml`:
+
+```toml
+[providers]
+default_provider = "databricks"
+
+[providers.anthropic]
+api_key = "sk-ant-..."
+model = "claude-3-5-sonnet-20241022"
+max_tokens = 4096
+
+[providers.databricks]
+host = "https://your-workspace.cloud.databricks.com"
+model = "databricks-meta-llama-3-1-70b-instruct"
+max_tokens = 4096
+use_oauth = true
+
+[agent]
+max_context_length = 8192
+enable_streaming = true
+
+# Optional: Use different models for coach and player in autonomous mode
+[autonomous]
+coach_provider = "anthropic"
+coach_model = "claude-3-5-sonnet-20241022"  # Thorough review
+player_provider = "databricks"
+player_model = "databricks-meta-llama-3-1-70b-instruct"  # Fast execution
+```
+
+## Autonomous Mode (Coach-Player Loop)
+
+G3 features an autonomous mode where two agents collaborate:
+- **Player Agent**: Executes tasks and implements solutions
+- **Coach Agent**: Reviews work and provides feedback
+
+### Option 1: Interactive Requirements (Recommended)
+
+```bash
+g3 --autonomous --interactive-requirements
+```
+
+Enter your requirements (multi-line), then press **Ctrl+D** (Unix/Mac) or **Ctrl+Z** (Windows) to start.
+
+### Option 2: Direct Requirements
+
+```bash
+g3 --autonomous --requirements "Build a REST API with CRUD operations for user management"
+```
+
+### Option 3: Requirements File
+
+Create `requirements.md` in your workspace:
+
+```markdown
+# Project Requirements
+
+1. Create a REST API with user endpoints
+2. Use SQLite for storage
+3. Include input validation
+4. Write unit tests
+```
+
+Then run:
+
+```bash
+g3 --autonomous
+```
+
+### Why Different Models for Coach and Player?
+
+Configure different models in the `[autonomous]` section to:
+- **Optimize Cost**: Use cheaper model for execution, expensive for review
+- **Optimize Speed**: Use fast model for iteration, thorough for validation
+- **Specialize**: Leverage provider strengths (e.g., Claude for analysis, Llama for code)
+
+If not configured, both agents use the `default_provider` and its model.
+
+## Command-Line Options
+
+```bash
+# Autonomous mode
+g3 --autonomous --interactive-requirements
+g3 --autonomous --requirements "Your requirements"
+g3 --autonomous --max-turns 10
+
+# Single-shot mode
+g3 "your task here"
+
+# Options
+--workspace <DIR>          # Set workspace directory
+--provider <NAME>          # Override provider (anthropic, databricks, openai)
+--model <NAME>             # Override model
+--quiet                    # Disable log files
+--webdriver                # Enable browser automation
+--show-prompt              # Show system prompt
+--show-code                # Show generated code
+```
+
+## Architecture Overview
+
+G3 is organized as a Rust workspace with multiple crates:
+
+- **g3-core**: Agent engine, context management, tool system, streaming parser
+- **g3-providers**: LLM provider abstraction (Anthropic, Databricks, OpenAI, local models)
+- **g3-config**: Configuration management
+- **g3-execution**: Task execution framework
+- **g3-computer-control**: Mouse/keyboard automation, OCR, screenshots
+- **g3-cli**: Command-line interface
+
+### Key Capabilities
+
+**Intelligent Context Management**
+- Automatic context window monitoring with percentage-based tracking
+- Smart auto-summarization when approaching token limits
+- Context thinning at 50%, 60%, 70%, 80% thresholds
+- Dynamic token allocation (4k to 200k+ tokens)
+
+**Tool Ecosystem**
+- File operations (read, write, edit with line-range precision)
+- Shell command execution
+- TODO management
+- Computer control (experimental): mouse, keyboard, OCR, screenshots
+- Browser automation via WebDriver (Safari)
+
+**Error Handling**
+- Automatic retry logic with exponential backoff
+- Recoverable error detection (rate limits, network issues, timeouts)
+- Detailed error logging to `logs/errors/`
 
 ## WebDriver Browser Automation
 
-G3 includes WebDriver support for browser automation tasks using Safari.
-
-**One-Time Setup** (macOS only):
-
-Safari Remote Automation must be enabled before using WebDriver tools. Run this once:
+**One-Time Setup** (macOS):
 
 ```bash
-# Option 1: Use the provided script
-./scripts/enable-safari-automation.sh
-
-# Option 2: Enable manually
+# Enable Safari Remote Automation
 safaridriver --enable  # Requires password
 
-# Option 3: Enable via Safari UI
+# Or via Safari UI:
 # Safari → Preferences → Advanced → Show Develop menu
 # Then: Develop → Allow Remote Automation
 ```
 
-**For detailed setup instructions and troubleshooting**, see [WebDriver Setup Guide](docs/webdriver-setup.md).
+**Usage**:
 
-**Usage**: Run G3 with the `--webdriver` flag to enable browser automation tools.
+```bash
+g3 --webdriver "scrape the top stories from Hacker News"
+```
+
+See [docs/webdriver-setup.md](docs/webdriver-setup.md) for detailed setup.
 
 ## Computer Control (Experimental)
 
-G3 can interact with your computer's GUI for automation tasks:
+Enable in config:
+
+```toml
+[computer_control]
+enabled = true
+require_confirmation = true
+```
+
+Grant accessibility permissions:
+- **macOS**: System Preferences → Security & Privacy → Accessibility
+- **Linux**: Ensure X11 or Wayland access
+- **Windows**: Run as administrator (first time)
 
 **Available Tools**: `mouse_click`, `type_text`, `find_element`, `take_screenshot`, `extract_text`, `find_text_on_screen`, `list_windows`
 
-**Setup**: Enable in config with `computer_control.enabled = true` and grant OS accessibility permissions:
-- **macOS**: System Preferences → Security & Privacy → Accessibility  
-- **Linux**: Ensure X11 or Wayland access
-- **Windows**: Run as administrator (first time only)
+## Use Cases
+
+- Automated code generation and refactoring
+- File manipulation and project scaffolding
+- System administration tasks
+- Data processing and transformation
+- API integration and testing
+- Documentation generation
+- Complex multi-step workflows
+- Desktop application automation
 
 ## Session Logs
 
-G3 automatically saves session logs for each interaction in the `logs/` directory. These logs contain:
+G3 automatically saves session logs to `logs/` directory:
 - Complete conversation history
 - Token usage statistics
 - Timestamps and session status
 
-The `logs/` directory is created automatically on first use and is excluded from version control.
+Disable with `--quiet` flag.
+
+## Technology Stack
+
+- **Language**: Rust (2021 edition)
+- **Async Runtime**: Tokio
+- **HTTP Client**: Reqwest
+- **Serialization**: Serde
+- **CLI Framework**: Clap
+- **Logging**: Tracing
+- **Local Models**: llama.cpp with Metal acceleration
 
 ## License
 
@@ -182,4 +229,4 @@ MIT License - see LICENSE file for details
 
 ## Contributing
 
-G3 is an open-source project. Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
+Contributions welcome! Please see CONTRIBUTING.md for guidelines.

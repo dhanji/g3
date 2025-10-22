@@ -2,12 +2,16 @@ use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use std::path::Path;
 
+#[cfg(test)]
+mod autonomous_config_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub providers: ProvidersConfig,
     pub agent: AgentConfig,
     pub computer_control: ComputerControlConfig,
     pub webdriver: WebDriverConfig,
+    pub autonomous: AutonomousConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +90,20 @@ impl Default for WebDriverConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutonomousConfig {
+    pub coach_provider: Option<String>,
+    pub coach_model: Option<String>,
+    pub player_provider: Option<String>,
+    pub player_model: Option<String>,
+}
+
+impl Default for AutonomousConfig {
+    fn default() -> Self {
+        Self { coach_provider: None, coach_model: None, player_provider: None, player_model: None }
+    }
+}
+
 impl Default for ComputerControlConfig {
     fn default() -> Self {
         Self {
@@ -120,6 +138,7 @@ impl Default for Config {
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
+            autonomous: AutonomousConfig::default(),
         }
     }
 }
@@ -232,6 +251,7 @@ impl Config {
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
+            autonomous: AutonomousConfig::default(),
         }
     }
     
@@ -295,6 +315,80 @@ impl Config {
                 }
                 _ => return Err(anyhow::anyhow!("Unknown provider: {}", 
                     config.providers.default_provider)),
+            }
+        }
+        
+        Ok(config)
+    }
+    
+    /// Create a config for the coach agent in autonomous mode
+    pub fn for_coach(&self) -> Result<Self> {
+        let mut config = self.clone();
+        
+        // Apply coach-specific overrides if configured
+        if let Some(ref coach_provider) = self.autonomous.coach_provider {
+            config.providers.default_provider = coach_provider.clone();
+        }
+        
+        if let Some(ref coach_model) = self.autonomous.coach_model {
+            // Apply model override to the coach's provider
+            match config.providers.default_provider.as_str() {
+                "anthropic" => {
+                    if let Some(ref mut anthropic) = config.providers.anthropic {
+                        anthropic.model = coach_model.clone();
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Coach provider 'anthropic' is not configured. Please add anthropic configuration to your config file."
+                        ));
+                    }
+                }
+                "databricks" => {
+                    if let Some(ref mut databricks) = config.providers.databricks {
+                        databricks.model = coach_model.clone();
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Coach provider 'databricks' is not configured. Please add databricks configuration to your config file."
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        Ok(config)
+    }
+    
+    /// Create a config for the player agent in autonomous mode
+    pub fn for_player(&self) -> Result<Self> {
+        let mut config = self.clone();
+        
+        // Apply player-specific overrides if configured
+        if let Some(ref player_provider) = self.autonomous.player_provider {
+            config.providers.default_provider = player_provider.clone();
+        }
+        
+        if let Some(ref player_model) = self.autonomous.player_model {
+            // Apply model override to the player's provider
+            match config.providers.default_provider.as_str() {
+                "anthropic" => {
+                    if let Some(ref mut anthropic) = config.providers.anthropic {
+                        anthropic.model = player_model.clone();
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Player provider 'anthropic' is not configured. Please add anthropic configuration to your config file."
+                        ));
+                    }
+                }
+                "databricks" => {
+                    if let Some(ref mut databricks) = config.providers.databricks {
+                        databricks.model = player_model.clone();
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Player provider 'databricks' is not configured. Please add databricks configuration to your config file."
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
         

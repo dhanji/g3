@@ -302,6 +302,10 @@ pub struct Cli {
     #[arg(long, value_name = "TEXT")]
     pub requirements: Option<String>,
 
+    /// Interactive mode: prompt for requirements and save to requirements.md before starting autonomous mode
+    #[arg(long)]
+    pub interactive_requirements: bool,
+
     /// Use retro terminal UI (inspired by 80s sci-fi)
     #[arg(long)]
     pub retro: bool,
@@ -393,6 +397,42 @@ pub async fn run() -> Result<()> {
 
     // Create project model
     let project = if cli.autonomous {
+        // Handle interactive requirements mode
+        if cli.interactive_requirements {
+            println!("\n📝 Interactive Requirements Mode");
+            println!("================================\n");
+            println!("Please enter your project requirements.");
+            println!("You can enter multiple lines. Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.\n");
+            
+            use std::io::{self, Read};
+            let mut requirements_input = String::new();
+            io::stdin().read_to_string(&mut requirements_input)?;
+            
+            if requirements_input.trim().is_empty() {
+                anyhow::bail!("No requirements provided. Exiting.");
+            }
+            
+            // Save to requirements.md in workspace
+            let requirements_path = workspace_dir.join("requirements.md");
+            std::fs::write(&requirements_path, &requirements_input)?;
+            
+            println!("\n✅ Requirements saved to: {}", requirements_path.display());
+            println!("📏 Length: {} characters\n", requirements_input.len());
+            
+            // Show a preview
+            let preview_lines: Vec<&str> = requirements_input.lines().take(5).collect();
+            println!("Preview (first 5 lines):");
+            println!("---");
+            for line in preview_lines {
+                println!("{}", line);
+            }
+            if requirements_input.lines().count() > 5 {
+                println!("... ({} more lines)", requirements_input.lines().count() - 5);
+            }
+            println!("---\n");
+            println!("🚀 Starting autonomous mode...\n");
+        }
+        
         if let Some(requirements_text) = cli.requirements {
             // Use requirements text override
             Project::new_autonomous_with_requirements(workspace_dir.clone(), requirements_text)?
@@ -451,7 +491,8 @@ pub async fn run() -> Result<()> {
     
     let mut agent = if cli.autonomous {
         Agent::new_autonomous_with_readme_and_quiet(
-            config.clone(),
+            // Use player-specific config in autonomous mode
+            config.for_player()?,
             ui_writer,
             combined_content.clone(),
             cli.quiet,
@@ -1522,14 +1563,15 @@ async fn run_autonomous(
 
         // Create a new agent instance for coach mode to ensure fresh context
         // Use the same config with overrides that was passed to the player agent
-        let config = agent.get_config().clone();
+        let base_config = agent.get_config().clone();
+        let coach_config = base_config.for_coach()?;
         
         // Reset filter suppression state before creating coach agent
         g3_core::fixed_filter_json::reset_fixed_json_tool_state();
         
         let ui_writer = ConsoleUiWriter::new();
         let mut coach_agent =
-            Agent::new_autonomous_with_readme_and_quiet(config, ui_writer, None, quiet).await?;
+            Agent::new_autonomous_with_readme_and_quiet(coach_config, ui_writer, None, quiet).await?;
 
         // Ensure coach agent is also in the workspace directory
         project.enter_workspace()?;
