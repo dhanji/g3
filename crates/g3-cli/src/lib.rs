@@ -100,7 +100,7 @@ fn generate_turn_histogram(turn_metrics: &[TurnMetrics]) -> String {
 /// Extract coach feedback by reading from the coach agent's specific log file
 /// Uses the coach agent's session ID to find the exact log file
 fn extract_coach_feedback_from_logs(
-    _coach_result: &g3_core::TaskResult,
+    coach_result: &g3_core::TaskResult,
     coach_agent: &g3_core::Agent<ConsoleUiWriter>,
     output: &SimpleOutput,
 ) -> Result<String> {
@@ -142,10 +142,18 @@ fn extract_coach_feedback_from_logs(
         }
     }
 
-    Err(anyhow::anyhow!(
-        "Could not extract feedback from coach session: {}",
-        session_id
-    ))
+    // If we couldn't extract from logs, panic with detailed error
+    panic!(
+        "CRITICAL: Could not extract coach feedback from session: {}\n\
+         Log file path: {:?}\n\
+         Log file exists: {}\n\
+         This indicates the coach did not call any tool or the log is corrupted.\n\
+         Coach result response length: {} chars",
+        session_id,
+        log_file_path,
+        log_file_path.exists(),
+        coach_result.response.len()
+    );
 }
 
 use clap::Parser;
