@@ -156,15 +156,15 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
         }
 
         // No JSON tool call detected, return only the new content we haven't returned yet
-        let new_content = if state.buffer.len() > state.content_returned_up_to {
+        
+
+        if state.buffer.len() > state.content_returned_up_to {
             let result = state.buffer[state.content_returned_up_to..].to_string();
             state.content_returned_up_to = state.buffer.len();
             result
         } else {
             String::new()
-        };
-
-        new_content
+        }
     })
 }
 

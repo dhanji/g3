@@ -213,7 +213,7 @@ impl DatabricksProvider {
 
         let mut builder = self
             .client
-            .post(&format!(
+            .post(format!(
                 "{}/serving-endpoints/{}/invocations",
                 self.host, self.model
             ))

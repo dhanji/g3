@@ -637,8 +637,8 @@ fn extract_readme_heading(readme_content: &str) -> Option<String> {
         let trimmed = line.trim();
 
         // Check for H1 heading (# Title)
-        if trimmed.starts_with("# ") {
-            let title = trimmed[2..].trim();
+        if let Some(stripped) = trimmed.strip_prefix("# ") {
+            let title = stripped.trim();
             if !title.is_empty() {
                 // Return the full title (including any description after dash)
                 return Some(title.to_string());
@@ -807,9 +807,8 @@ async fn run_interactive_retro(
                             let trimmed = input_buffer.trim_end();
 
                             // Check if line ends with backslash for continuation
-                            if trimmed.ends_with('\\') {
+                            if let Some(without_backslash) = trimmed.strip_suffix('\\') {
                                 // Remove the backslash and add to buffer
-                                let without_backslash = &trimmed[..trimmed.len() - 1];
                                 multiline_buffer.push_str(without_backslash);
                                 multiline_buffer.push('\n');
                                 in_multiline = true;
@@ -1013,9 +1012,8 @@ async fn run_interactive<W: UiWriter>(
                 let trimmed = line.trim_end();
 
                 // Check if line ends with backslash for continuation
-                if trimmed.ends_with('\\') {
+                if let Some(without_backslash) = trimmed.strip_suffix('\\') {
                     // Remove the backslash and add to buffer
-                    let without_backslash = &trimmed[..trimmed.len() - 1];
                     multiline_buffer.push_str(without_backslash);
                     multiline_buffer.push('\n');
                     in_multiline = true;
@@ -1057,6 +1055,63 @@ async fn run_interactive<W: UiWriter>(
 
                     // Add to history
                     rl.add_history_entry(&input)?;
+
+                    // Check for control commands
+                    if input.starts_with('/') {
+                        match input.as_str() {
+                            "/help" => {
+                                output.print("");
+                                output.print("📖 Control Commands:");
+                                output.print("  /compact   - Trigger auto-summarization (compacts conversation history)");
+                                output.print("  /thinnify  - Trigger context thinning (replaces large tool results with file references)");
+                                output.print("  /readme    - Reload README.md and AGENTS.md from disk");
+                                output.print("  /stats     - Show detailed context and performance statistics");
+                                output.print("  /help      - Show this help message");
+                                output.print("  exit/quit  - Exit the interactive session");
+                                output.print("");
+                                continue;
+                            }
+                            "/compact" => {
+                                output.print("🗜️ Triggering manual summarization...");
+                                match agent.force_summarize().await {
+                                    Ok(true) => {
+                                        output.print("✅ Summarization completed successfully");
+                                    }
+                                    Ok(false) => {
+                                        output.print("⚠️ Summarization failed");
+                                    }
+                                    Err(e) => {
+                                        output.print(&format!("❌ Error during summarization: {}", e));
+                                    }
+                                }
+                                continue;
+                            }
+                            "/thinnify" => {
+                                output.print("🔧 Triggering manual context thinning...");
+                                let summary = agent.force_thin();
+                                output.print(&summary);
+                                continue;
+                            }
+                            "/readme" => {
+                                output.print("📚 Reloading README.md and AGENTS.md...");
+                                match agent.reload_readme() {
+                                    Ok(true) => output.print("✅ README content reloaded successfully"),
+                                    Ok(false) => output.print("⚠️ No README was loaded at startup, cannot reload"),
+                                    Err(e) => output.print(&format!("❌ Error reloading README: {}", e)),
+                                }
+                                continue;
+                            }
+                            "/stats" => {
+                                let stats = agent.get_stats();
+                                output.print(&stats);
+                                continue;
+                            }
+                            _ => {
+                                output.print(&format!("❌ Unknown command: {}. Type /help for available commands.", input));
+                                continue;
+                            }
+                        }
+                    }
 
                     // Process the single line input
                     execute_task(&mut agent, &input, show_prompt, show_code, &output).await;
@@ -1282,7 +1337,7 @@ async fn run_autonomous(
             elapsed.as_secs_f64()
         ));
         output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
-        output.print(&format!("📝 Final Status: ⚠️ NO REQUIREMENTS FILE"));
+        output.print("📝 Final Status: ⚠️ NO REQUIREMENTS FILE");
 
         output.print("\n📈 Token Usage Statistics:");
         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
@@ -1324,7 +1379,7 @@ async fn run_autonomous(
                 elapsed.as_secs_f64()
             ));
             output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
-            output.print(&format!("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS"));
+            output.print("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS");
 
             output.print("\n📈 Token Usage Statistics:");
             output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
@@ -1410,7 +1465,7 @@ async fn run_autonomous(
                     "📋 Player received coach feedback ({} chars):",
                     coach_feedback.len()
                 ));
-                output.print(&format!("{}", coach_feedback));
+                output.print(&coach_feedback.to_string());
             }
             output.print(""); // Empty line for readability
 
@@ -1455,7 +1510,7 @@ async fn run_autonomous(
                                 elapsed.as_secs_f64()
                             ));
                             output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
-                            output.print(&format!("📝 Final Status: 💥 PLAYER PANIC"));
+                            output.print("📝 Final Status: 💥 PLAYER PANIC");
 
                             output.print("\n📈 Token Usage Statistics:");
                             output.print(&format!(
@@ -1616,7 +1671,7 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
                             elapsed.as_secs_f64()
                         ));
                         output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
-                        output.print(&format!("📝 Final Status: 💥 COACH PANIC"));
+                        output.print("📝 Final Status: 💥 COACH PANIC");
 
                         output.print("\n📈 Token Usage Statistics:");
                         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));

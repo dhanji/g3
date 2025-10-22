@@ -72,6 +72,16 @@ G3 includes robust error handling with automatic retry logic:
 - Conversation history preservation through summaries
 - Dynamic token allocation for different providers (4k to 200k+ tokens)
 
+### Interactive Control Commands
+G3's interactive CLI includes control commands for manual context management:
+- **`/compact`**: Manually trigger summarization to compact conversation history
+- **`/thinnify`**: Manually trigger context thinning to replace large tool results with file references
+- **`/readme`**: Reload README.md and AGENTS.md from disk without restarting
+- **`/stats`**: Show detailed context and performance statistics
+- **`/help`**: Display all available control commands
+
+These commands give you fine-grained control over context management, allowing you to proactively optimize token usage and refresh project documentation. See [Control Commands Documentation](docs/CONTROL_COMMANDS.md) for detailed usage.
+
 ### Tool Ecosystem
 - **File Operations**: Read, write, and edit files with line-range precision
 - **Shell Integration**: Execute system commands with output capture

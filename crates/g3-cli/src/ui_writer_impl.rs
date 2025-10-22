@@ -115,7 +115,6 @@ impl UiWriter for ConsoleUiWriter {
         
         // For todo tools, we'll skip the normal header and print a custom one later
         if is_todo {
-            return;
         }
     }
 
@@ -404,7 +403,7 @@ impl UiWriter for RetroTuiWriter {
             
             // Add range information for read_file tool calls
             let tool_name = self.current_tool_name.lock().unwrap();
-            let range_suffix = if tool_name.as_ref().map_or(false, |name| name == "read_file") {
+            let range_suffix = if tool_name.as_ref().is_some_and(|name| name == "read_file") {
                 // We need to check if start/end args will be provided - for now just check if this is a partial read
                 // This is a simplified approach since we're building the caption incrementally
                 String::new() // We'll handle this in print_tool_output_header instead

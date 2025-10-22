@@ -259,7 +259,7 @@ impl LLMProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(&format!("{}/chat/completions", self.base_url))
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()
@@ -318,7 +318,7 @@ impl LLMProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(&format!("{}/chat/completions", self.base_url))
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()

@@ -60,6 +60,12 @@ pub struct StreamingToolParser {
     json_tool_start: Option<usize>,
 }
 
+impl Default for StreamingToolParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamingToolParser {
     pub fn new() -> Self {
         Self {
@@ -399,7 +405,12 @@ Format this as a detailed but concise summary that can be used to resume the con
     }
 
     /// Reset the context window with a summary
-    pub fn reset_with_summary(&mut self, summary: String, latest_user_message: Option<String>) {
+    pub fn reset_with_summary(&mut self, summary: String, latest_user_message: Option<String>) -> usize {
+        // Calculate chars saved (old history minus new summary)
+        let old_chars: usize = self.conversation_history.iter()
+            .map(|m| m.content.len())
+            .sum();
+        
         // Clear the conversation history
         self.conversation_history.clear();
         self.used_tokens = 0;
@@ -418,6 +429,11 @@ Format this as a detailed but concise summary that can be used to resume the con
                 content: user_msg,
             });
         }
+        
+        let new_chars: usize = self.conversation_history.iter()
+            .map(|m| m.content.len())
+            .sum();
+        old_chars.saturating_sub(new_chars)
     }
 
     /// Check if we should trigger context thinning
@@ -438,7 +454,7 @@ Format this as a detailed but concise summary that can be used to resume the con
 
     /// Perform context thinning: scan first third of conversation and replace large tool results
     /// Returns a summary message about what was thinned
-    pub fn thin_context(&mut self) -> String {
+    pub fn thin_context(&mut self) -> (String, usize) {
         let current_percentage = self.percentage_used() as u32;
         let current_threshold = (current_percentage / 10) * 10;
         
@@ -456,7 +472,7 @@ Format this as a detailed but concise summary that can be used to resume the con
         let tmp_dir = shellexpand::tilde("~/tmp").to_string();
         if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
             warn!("Failed to create ~/tmp directory: {}", e);
-            return format!("⚠️  Context thinning failed: could not create ~/tmp directory");
+            return ("⚠️  Context thinning failed: could not create ~/tmp directory".to_string(), 0);
         }
         
         // Scan the first third of messages
@@ -499,11 +515,11 @@ Format this as a detailed but concise summary that can be used to resume the con
         self.recalculate_tokens();
         
         if leaned_count > 0 {
-            format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
-                    current_threshold, leaned_count, chars_saved)
+            (format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
+                    current_threshold, leaned_count, chars_saved), chars_saved)
         } else {
-            format!("ℹ Context thinning triggered at {}% but no large tool results found in first third", 
-                    current_threshold)
+            (format!("ℹ Context thinning triggered at {}% but no large tool results found in first third", 
+                    current_threshold), 0)
         }
     }
     
@@ -522,6 +538,9 @@ Format this as a detailed but concise summary that can be used to resume the con
 pub struct Agent<W: UiWriter> {
     providers: ProviderRegistry,
     context_window: ContextWindow,
+    thinning_events: Vec<usize>, // chars saved per thinning event
+    summarization_events: Vec<usize>, // chars saved per summarization event
+    first_token_times: Vec<Duration>, // time to first token for each completion
     config: Config,
     session_id: Option<String>,
     tool_call_metrics: Vec<(String, Duration, bool)>, // (tool_name, duration, success)
@@ -745,6 +764,9 @@ impl<W: UiWriter> Agent<W> {
         Ok(Self {
             providers,
             context_window,
+            thinning_events: Vec::new(),
+            summarization_events: Vec::new(),
+            first_token_times: Vec::new(),
             config,
             session_id: None,
             tool_call_metrics: Vec::new(),
@@ -794,9 +816,7 @@ impl<W: UiWriter> Agent<W> {
                 // Databricks models have varying context windows depending on the model
                 if model_name.contains("claude") {
                     200000 // Claude models on Databricks have large context windows
-                } else if model_name.contains("llama") {
-                    32768 // Llama models typically support 32k context
-                } else if model_name.contains("dbrx") {
+                } else if model_name.contains("llama") || model_name.contains("dbrx") {
                     32768 // DBRX supports 32k context
                 } else {
                     16384 // Conservative default for other Databricks models
@@ -875,6 +895,7 @@ impl<W: UiWriter> Agent<W> {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_task_with_timing_cancellable(
         &mut self,
         description: &str,
@@ -1223,6 +1244,291 @@ Template:
 
     pub fn get_context_window(&self) -> &ContextWindow {
         &self.context_window
+    }
+
+    /// Manually trigger context summarization regardless of context window size
+    /// Returns Ok(true) if summarization was successful, Ok(false) if it failed
+    pub async fn force_summarize(&mut self) -> Result<bool> {
+        info!("Manual summarization triggered");
+        
+        self.ui_writer.print_context_status(&format!(
+            "\n🗜️ Manual summarization requested (current usage: {}%)...",
+            self.context_window.percentage_used() as u32
+        ));
+
+        // Create summary request with FULL history
+        let summary_prompt = self.context_window.create_summary_prompt();
+
+        // Get the full conversation history
+        let conversation_text = self
+            .context_window
+            .conversation_history
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let summary_messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: "You are a helpful assistant that creates concise summaries."
+                    .to_string(),
+            },
+            Message {
+                role: MessageRole::User,
+                content: format!(
+                    "Based on this conversation history, {}\n\nConversation:\n{}",
+                    summary_prompt, conversation_text
+                ),
+            },
+        ];
+
+        let provider = self.providers.get(None)?;
+
+        // Dynamically calculate max_tokens for summary based on what's left
+        let summary_max_tokens = match provider.name() {
+            "databricks" | "anthropic" => {
+                let model_limit = 200_000u32;
+                let current_usage = self.context_window.used_tokens;
+                let available = model_limit
+                    .saturating_sub(current_usage)
+                    .saturating_sub(5000);
+                Some(available.min(10_000))
+            }
+            "embedded" => {
+                let model_limit = self.context_window.total_tokens;
+                let current_usage = self.context_window.used_tokens;
+                let available = model_limit
+                    .saturating_sub(current_usage)
+                    .saturating_sub(1000);
+                Some(available.min(3000))
+            }
+            _ => {
+                let available = self.context_window.remaining_tokens().saturating_sub(2000);
+                Some(available.min(5000))
+            }
+        };
+
+        debug!(
+            "Requesting summary with max_tokens: {:?} (current usage: {} tokens)",
+            summary_max_tokens, self.context_window.used_tokens
+        );
+
+        let summary_request = CompletionRequest {
+            messages: summary_messages,
+            max_tokens: summary_max_tokens,
+            temperature: Some(0.3),
+            stream: false,
+            tools: None,
+        };
+
+        // Get the summary
+        match provider.complete(summary_request).await {
+            Ok(summary_response) => {
+                self.ui_writer.print_context_status(
+                    "✅ Context compacted successfully.\n",
+                );
+
+                // Get the latest user message to preserve it
+                let latest_user_msg = self
+                    .context_window
+                    .conversation_history
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, MessageRole::User))
+                    .map(|m| m.content.clone());
+
+                // Reset context with summary
+                let chars_saved = self.context_window
+                    .reset_with_summary(summary_response.content, latest_user_msg);
+                self.summarization_events.push(chars_saved);
+
+                Ok(true)
+            }
+            Err(e) => {
+                error!("Failed to create summary: {}", e);
+                self.ui_writer.print_context_status(
+                    "⚠️ Unable to create summary. Please try again or start a new session.\n",
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Manually trigger context thinning regardless of thresholds
+    pub fn force_thin(&mut self) -> String {
+        info!("Manual context thinning triggered");
+        let (message, chars_saved) = self.context_window.thin_context();
+        self.thinning_events.push(chars_saved);
+        message
+    }
+
+    /// Reload README.md and AGENTS.md and replace the first system message
+    /// Returns Ok(true) if README was found and reloaded, Ok(false) if no README was present initially
+    pub fn reload_readme(&mut self) -> Result<bool> {
+        info!("Manual README reload triggered");
+        
+        // Check if the first message in conversation history is a system message with README content
+        let has_readme = self
+            .context_window
+            .conversation_history
+            .first()
+            .map(|m| matches!(m.role, MessageRole::System) && 
+                    (m.content.contains("Project README") || m.content.contains("Agent Configuration")))
+            .unwrap_or(false);
+        
+        if !has_readme {
+            return Ok(false);
+        }
+        
+        // Try to load README.md and AGENTS.md
+        let mut combined_content = String::new();
+        let mut found_any = false;
+        
+        if let Ok(agents_content) = std::fs::read_to_string("AGENTS.md") {
+            combined_content.push_str("# Agent Configuration\n\n");
+            combined_content.push_str(&agents_content);
+            combined_content.push_str("\n\n");
+            found_any = true;
+        }
+        
+        if let Ok(readme_content) = std::fs::read_to_string("README.md") {
+            combined_content.push_str("# Project README\n\n");
+            combined_content.push_str(&readme_content);
+            found_any = true;
+        }
+        
+        if found_any {
+            // Replace the first message with the new content
+            if let Some(first_msg) = self.context_window.conversation_history.first_mut() {
+                first_msg.content = combined_content;
+                info!("README content reloaded successfully");
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get detailed context statistics
+    pub fn get_stats(&self) -> String {
+        let mut stats = String::new();
+        use std::time::Duration;
+        
+        stats.push_str("\n📊 Context Window Statistics\n");
+        stats.push_str(&"=".repeat(60));
+        stats.push_str("\n\n");
+        
+        // Context window usage
+        stats.push_str("🗂️  Context Window:\n");
+        stats.push_str(&format!("   • Used Tokens:       {:>10} / {}\n", 
+            self.context_window.used_tokens, 
+            self.context_window.total_tokens));
+        stats.push_str(&format!("   • Usage Percentage:  {:>10.1}%\n", 
+            self.context_window.percentage_used()));
+        stats.push_str(&format!("   • Remaining Tokens:  {:>10}\n", 
+            self.context_window.remaining_tokens()));
+        stats.push_str(&format!("   • Cumulative Tokens: {:>10}\n", 
+            self.context_window.cumulative_tokens));
+        stats.push_str(&format!("   • Last Thinning:     {:>10}%\n", 
+            self.context_window.last_thinning_percentage));
+        stats.push('\n');
+        
+        // Context optimization metrics
+        stats.push_str("🗜️  Context Optimization:\n");
+        stats.push_str(&format!("   • Thinning Events:   {:>10}\n", 
+            self.thinning_events.len()));
+        if !self.thinning_events.is_empty() {
+            let total_thinned: usize = self.thinning_events.iter().sum();
+            let avg_thinned = total_thinned / self.thinning_events.len();
+            stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_thinned));
+            stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_thinned));
+        }
+        
+        stats.push_str(&format!("   • Summarizations:    {:>10}\n", 
+            self.summarization_events.len()));
+        if !self.summarization_events.is_empty() {
+            let total_summarized: usize = self.summarization_events.iter().sum();
+            let avg_summarized = total_summarized / self.summarization_events.len();
+            stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_summarized));
+            stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_summarized));
+        }
+        stats.push('\n');
+        
+        // Performance metrics
+        stats.push_str("⚡ Performance:\n");
+        if !self.first_token_times.is_empty() {
+            let avg_ttft = self.first_token_times.iter().sum::<Duration>() / self.first_token_times.len() as u32;
+            let mut sorted_times = self.first_token_times.clone();
+            sorted_times.sort();
+            let median_ttft = sorted_times[sorted_times.len() / 2];
+            stats.push_str(&format!("   • Avg Time to First Token:    {:>6.3}s\n", avg_ttft.as_secs_f64()));
+            stats.push_str(&format!("   • Median Time to First Token: {:>6.3}s\n", median_ttft.as_secs_f64()));
+        }
+        stats.push('\n');
+        
+        // Conversation history
+        stats.push_str("💬 Conversation History:\n");
+        stats.push_str(&format!("   • Total Messages:    {:>10}\n", 
+            self.context_window.conversation_history.len()));
+        
+        // Count messages by role
+        let mut system_count = 0;
+        let mut user_count = 0;
+        let mut assistant_count = 0;
+        
+        for msg in &self.context_window.conversation_history {
+            match msg.role {
+                MessageRole::System => system_count += 1,
+                MessageRole::User => user_count += 1,
+                MessageRole::Assistant => assistant_count += 1,
+            }
+        }
+        
+        stats.push_str(&format!("   • System Messages:   {:>10}\n", system_count));
+        stats.push_str(&format!("   • User Messages:     {:>10}\n", user_count));
+        stats.push_str(&format!("   • Assistant Messages:{:>10}\n", assistant_count));
+        stats.push('\n');
+        
+        // Tool call metrics
+        stats.push_str("🔧 Tool Call Metrics:\n");
+        stats.push_str(&format!("   • Total Tool Calls:  {:>10}\n", 
+            self.tool_call_metrics.len()));
+        
+        let successful_calls = self.tool_call_metrics.iter()
+            .filter(|(_, _, success)| *success)
+            .count();
+        let failed_calls = self.tool_call_metrics.len() - successful_calls;
+        
+        stats.push_str(&format!("   • Successful:        {:>10}\n", successful_calls));
+        stats.push_str(&format!("   • Failed:            {:>10}\n", failed_calls));
+        
+        if !self.tool_call_metrics.is_empty() {
+            let total_duration: Duration = self.tool_call_metrics.iter()
+                .map(|(_, duration, _)| *duration)
+                .sum();
+            let avg_duration = total_duration / self.tool_call_metrics.len() as u32;
+            
+            stats.push_str(&format!("   • Total Duration:    {:>10.2}s\n", 
+                total_duration.as_secs_f64()));
+            stats.push_str(&format!("   • Average Duration:  {:>10.2}s\n", 
+                avg_duration.as_secs_f64()));
+        }
+        stats.push('\n');
+        
+        // Provider info
+        stats.push_str("🔌 Provider:\n");
+        if let Ok((provider, model)) = self.get_provider_info() {
+            stats.push_str(&format!("   • Provider:          {}\n", provider));
+            stats.push_str(&format!("   • Model:             {}\n", model));
+        }
+        
+        stats.push_str(&"=".repeat(60));
+        stats.push('\n');
+        
+        stats
     }
 
     pub fn get_tool_call_metrics(&self) -> &Vec<(String, Duration, bool)> {
@@ -1774,8 +2080,9 @@ Template:
                         .map(|m| m.content.clone());
 
                     // Reset context with summary
-                    self.context_window
+                    let chars_saved = self.context_window
                         .reset_with_summary(summary_response.content, latest_user_msg);
+                    self.summarization_events.push(chars_saved);
 
                     // Update the request with new context
                     request.messages = self.context_window.conversation_history.clone();
@@ -1904,6 +2211,10 @@ Template:
                         // Record time to first token
                         if first_token_time.is_none() && !chunk.content.is_empty() {
                             first_token_time = Some(stream_start.elapsed());
+                            // Record in agent metrics
+                            if let Some(ttft) = first_token_time {
+                                self.first_token_times.push(ttft);
+                            }
                         }
 
                         chunks_received += 1;
@@ -1919,12 +2230,13 @@ Template:
                         let completed_tools = parser.process_chunk(&chunk);
 
                         // Handle completed tool calls
-                        for tool_call in completed_tools {
+                        if let Some(tool_call) = completed_tools.into_iter().next() {
                             debug!("Processing completed tool call: {:?}", tool_call);
                             
                             // Check if we should thin the context BEFORE executing the tool
                             if self.context_window.should_thin() {
-                                let thin_summary = self.context_window.thin_context();
+                                let (thin_summary, chars_saved) = self.context_window.thin_context();
+                                self.thinning_events.push(chars_saved);
                                 // Print the thinning summary to the user
                                 self.ui_writer.println("");
                                 self.ui_writer.print_context_status(&format!("{}\n", thin_summary));
@@ -2001,18 +2313,16 @@ Template:
                                                     } else {
                                                         s.clone()
                                                     }
+                                                } else if s.len() > 100 {
+                                                    // Use char_indices to respect UTF-8 boundaries
+                                                    let truncated = s
+                                                        .char_indices()
+                                                        .take(100)
+                                                        .map(|(_, c)| c)
+                                                        .collect::<String>();
+                                                    format!("{}...", truncated)
                                                 } else {
-                                                    if s.len() > 100 {
-                                                        // Use char_indices to respect UTF-8 boundaries
-                                                        let truncated = s
-                                                            .char_indices()
-                                                            .take(100)
-                                                            .map(|(_, c)| c)
-                                                            .collect::<String>();
-                                                        format!("{}...", truncated)
-                                                    } else {
-                                                        s.clone()
-                                                    }
+                                                    s.clone()
                                                 }
                                             }
                                             _ => value.to_string(),
@@ -2034,7 +2344,7 @@ Template:
                                 Ok(result) => result?,
                                 Err(_) => {
                                     warn!("Tool call {} timed out after 8 minutes", tool_call.tool);
-                                    format!("❌ Tool execution timed out after 8 minutes")
+                                    "❌ Tool execution timed out after 8 minutes".to_string()
                                 }
                             };
                             let exec_duration = exec_start.elapsed();
@@ -2950,14 +3260,14 @@ Template:
 
                 // Write the result back to the file
                 match std::fs::write(&file_path, &result) {
-                    Ok(()) => Ok(format!("✅ applied unified diff")),
+                    Ok(()) => Ok("✅ applied unified diff".to_string()),
                     Err(e) => Ok(format!("❌ Failed to write to file '{}': {}", file_path, e)),
                 }
             }
             "final_output" => {
                 if let Some(summary) = tool_call.args.get("summary") {
                     if let Some(summary_str) = summary.as_str() {
-                        Ok(format!("{}", summary_str))
+                        Ok(summary_str.to_string())
                     } else {
                         Ok("✅ Turn completed".to_string())
                     }
@@ -3702,8 +4012,7 @@ fn parse_unified_diff_hunks(diff: &str) -> Vec<(String, String)> {
             }
         }
 
-        if line.starts_with(' ') {
-            let content = &line[1..];
+        if let Some(content) = line.strip_prefix(' ') {
             old_lines.push(content.to_string());
             new_lines.push(content.to_string());
         } else if line.starts_with('+') && !line.starts_with("+++") {

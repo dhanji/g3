@@ -40,7 +40,7 @@ impl SimpleOutput {
             trimmed.starts_with("* ") ||
             trimmed.starts_with("+ ") ||
             (trimmed.len() > 2 && 
-             trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) &&
+             trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) &&
              trimmed.chars().nth(1) == Some('.') &&
              trimmed.chars().nth(2) == Some(' ')) ||
             (trimmed.contains('[') && trimmed.contains("]("))
