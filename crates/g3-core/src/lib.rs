@@ -625,13 +625,32 @@ impl<W: UiWriter> Agent<W> {
     ) -> Result<Self> {
         let mut providers = ProviderRegistry::new();
 
+        // In autonomous mode, we need to register both coach and player providers
+        // Otherwise, only register the default provider
+        let providers_to_register: Vec<String> = if is_autonomous {
+            let mut providers = vec![config.providers.default_provider.clone()];
+            if let Some(coach) = &config.providers.coach {
+                if !providers.contains(coach) {
+                    providers.push(coach.clone());
+                }
+            }
+            if let Some(player) = &config.providers.player {
+                if !providers.contains(player) {
+                    providers.push(player.clone());
+                }
+            }
+            providers
+        } else {
+            vec![config.providers.default_provider.clone()]
+        };
+
         // Only register providers that are configured AND selected as the default provider
         // This prevents unnecessary initialization of heavy providers like embedded models
 
         // Register embedded provider if configured AND it's the default provider
         if let Some(embedded_config) = &config.providers.embedded {
-            if config.providers.default_provider == "embedded" {
-                info!("Initializing embedded provider (selected as default)");
+            if providers_to_register.contains(&"embedded".to_string()) {
+                info!("Initializing embedded provider");
                 let embedded_provider = g3_providers::EmbeddedProvider::new(
                     embedded_config.model_path.clone(),
                     embedded_config.model_type.clone(),
@@ -643,14 +662,31 @@ impl<W: UiWriter> Agent<W> {
                 )?;
                 providers.register(embedded_provider);
             } else {
-                info!("Embedded provider configured but not selected as default, skipping initialization");
+                info!("Embedded provider configured but not needed, skipping initialization");
+            }
+        }
+
+        // Register OpenAI provider if configured AND it's the default provider
+        if let Some(openai_config) = &config.providers.openai {
+            if providers_to_register.contains(&"openai".to_string()) {
+                info!("Initializing OpenAI provider");
+                let openai_provider = g3_providers::OpenAIProvider::new(
+                    openai_config.api_key.clone(),
+                    Some(openai_config.model.clone()),
+                    openai_config.base_url.clone(),
+                    openai_config.max_tokens,
+                    openai_config.temperature,
+                )?;
+                providers.register(openai_provider);
+            } else {
+                info!("OpenAI provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Anthropic provider if configured AND it's the default provider
         if let Some(anthropic_config) = &config.providers.anthropic {
-            if config.providers.default_provider == "anthropic" {
-                info!("Initializing Anthropic provider (selected as default)");
+            if providers_to_register.contains(&"anthropic".to_string()) {
+                info!("Initializing Anthropic provider");
                 let anthropic_provider = g3_providers::AnthropicProvider::new(
                     anthropic_config.api_key.clone(),
                     Some(anthropic_config.model.clone()),
@@ -659,14 +695,14 @@ impl<W: UiWriter> Agent<W> {
                 )?;
                 providers.register(anthropic_provider);
             } else {
-                info!("Anthropic provider configured but not selected as default, skipping initialization");
+                info!("Anthropic provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Databricks provider if configured AND it's the default provider
         if let Some(databricks_config) = &config.providers.databricks {
-            if config.providers.default_provider == "databricks" {
-                info!("Initializing Databricks provider (selected as default)");
+            if providers_to_register.contains(&"databricks".to_string()) {
+                info!("Initializing Databricks provider");
 
                 let databricks_provider = if let Some(token) = &databricks_config.token {
                     // Use token-based authentication
@@ -690,7 +726,7 @@ impl<W: UiWriter> Agent<W> {
 
                 providers.register(databricks_provider);
             } else {
-                info!("Databricks provider configured but not selected as default, skipping initialization");
+                info!("Databricks provider configured but not needed, skipping initialization");
             }
         }
 
@@ -772,6 +808,9 @@ impl<W: UiWriter> Agent<W> {
                 } else {
                     config.agent.max_context_length as u32
                 }
+            }
+            "openai" => {
+                192000
             }
             "anthropic" => {
                 // Claude models have large context windows
@@ -1060,7 +1099,6 @@ Template:
         };
 
         // Get max_tokens from provider configuration
-        // For Databricks, this should be much higher to support large file generation
         let max_tokens = match provider.name() {
             "databricks" => {
                 // Use the model's maximum limit for Databricks to allow large file generation
