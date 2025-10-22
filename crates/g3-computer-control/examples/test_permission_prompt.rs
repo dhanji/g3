@@ -1,4 +1,4 @@
-use g3_computer_control::{create_controller, ComputerController};
+use g3_computer_control::create_controller;
 
 #[tokio::main]
 async fn main() {

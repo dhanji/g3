@@ -1,3 +1,6 @@
+// Suppress warnings from objc crate macros
+#![allow(unexpected_cfgs)]
+
 pub mod types;
 pub mod platform;
 pub mod webdriver;

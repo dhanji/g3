@@ -1,6 +1,5 @@
 use core_graphics::display::CGDisplay;
 use image::{ImageBuffer, RgbaImage};
-use std::path::Path;
 
 fn main() {
     let display = CGDisplay::main();

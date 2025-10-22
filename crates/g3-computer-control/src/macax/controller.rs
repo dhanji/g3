@@ -11,9 +11,6 @@ use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
 
-#[cfg(target_os = "macos")]
-use core_foundation::boolean::CFBoolean;
-
 /// macOS Accessibility API controller using native APIs
 pub struct MacAxController {
     // Cache for application elements
@@ -202,7 +199,7 @@ impl MacAxController {
     /// Activate (bring to front) an application
     #[cfg(target_os = "macos")]
     pub fn activate_app(&self, app_name: &str) -> Result<()> {
-        use cocoa::base::{id, nil};
+        use cocoa::base::id;
         use objc::{class, msg_send, sel, sel_impl};
         
         // Find the app
@@ -507,7 +504,6 @@ impl MacAxController {
     /// Type text into the currently focused element (uses system text input)
     #[cfg(target_os = "macos")]
     pub fn type_text(&self, app_name: &str, text: &str) -> Result<()> {
-        use cocoa::appkit::NSPasteboard;
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSString;
         use objc::{class, msg_send, sel, sel_impl};

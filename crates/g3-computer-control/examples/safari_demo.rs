@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     
     // Find an element
     println!("Finding h1 element...");
-    let mut h1 = driver.find_element("h1").await?;
+    let h1 = driver.find_element("h1").await?;
     let h1_text = h1.text().await?;
     println!("H1 text: {}\n", h1_text);
     
