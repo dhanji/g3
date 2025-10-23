@@ -1239,7 +1239,7 @@ Template:
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled))
+            Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled))
         } else {
             None
         };
@@ -1700,7 +1700,7 @@ Template:
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions(enable_webdriver: bool, enable_macax: bool) -> Vec<Tool> {
+    fn create_tool_definitions(enable_webdriver: bool, enable_macax: bool, enable_computer_control: bool) -> Vec<Tool> {
         let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
@@ -2279,7 +2279,65 @@ Template:
                 }),
             });
         }
-
+        
+        // Add vision-guided tools (requires computer control)
+        if enable_computer_control {
+            // Add vision-guided tools
+            tools.push(Tool {
+                name: "vision_find_text".to_string(),
+                description: "Find text on screen and return its location (useful for locating UI elements)".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The text to search for on screen"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            });
+            
+            tools.push(Tool {
+                name: "vision_click_text".to_string(),
+                description: "Find text on screen and click on it (useful for clicking buttons, links, menu items)".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The text to click on (e.g., 'Submit', 'OK', 'Cancel', '+')"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            });
+            
+            tools.push(Tool {
+                name: "vision_click_near_text".to_string(),
+                description: "Find text on screen and click near it (useful for clicking text fields next to labels)".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The label text to find (e.g., 'Name:', 'Email:', 'Task:')"
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["right", "below", "left", "above"],
+                            "description": "Direction to click relative to the text (default: right)"
+                        },
+                        "distance": {
+                            "type": "integer",
+                            "description": "Distance in pixels from the text (default: 50)"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            });
+        }
+        
         tools
     }
 
@@ -2844,7 +2902,7 @@ Template:
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled));
+                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled));
                             }
 
                             // Only add to full_response if we haven't already added it
@@ -4527,6 +4585,97 @@ Template:
                 match controller.focus_element(app_name, role, title, identifier) {
                     Ok(_) => Ok(format!("✅ Focused {} element in {}", role, app_name)),
                     Err(e) => Ok(format!("❌ Failed to focus element: {}", e)),
+                }
+            }
+            "vision_find_text" => {
+                debug!("Processing vision_find_text tool call");
+                
+                if let Some(controller) = &self.computer_controller {
+                    let text = tool_call.args.get("text")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
+                    
+                    match controller.find_text_on_screen(text).await {
+                        Ok(Some(location)) => {
+                            Ok(format!(
+                                "✅ Found '{}' at position ({}, {}) with size {}x{} (confidence: {:.0}%)",
+                                location.text, location.x, location.y, location.width, location.height,
+                                location.confidence * 100.0
+                            ))
+                        }
+                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Err(e) => Ok(format!("❌ Error finding text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "vision_click_text" => {
+                debug!("Processing vision_click_text tool call");
+                
+                if let Some(controller) = &self.computer_controller {
+                    let text = tool_call.args.get("text")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
+                    
+                    match controller.find_text_on_screen(text).await {
+                        Ok(Some(location)) => {
+                            // Click on center of text
+                            let center_x = location.x + location.width / 2;
+                            let center_y = location.y + location.height / 2;
+                            
+                            match controller.click_at(center_x, center_y) {
+                                Ok(_) => Ok(format!("✅ Clicked on '{}' at ({}, {})", text, center_x, center_y)),
+                                Err(e) => Ok(format!("❌ Failed to click: {}", e)),
+                            }
+                        }
+                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Err(e) => Ok(format!("❌ Error finding text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "vision_click_near_text" => {
+                debug!("Processing vision_click_near_text tool call");
+                
+                if let Some(controller) = &self.computer_controller {
+                    let text = tool_call.args.get("text")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
+                    
+                    let direction = tool_call.args.get("direction")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("right");
+                    
+                    let distance = tool_call.args.get("distance")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(50) as i32;
+                    
+                    match controller.find_text_on_screen(text).await {
+                        Ok(Some(location)) => {
+                            // Calculate click position based on direction
+                            let (click_x, click_y) = match direction {
+                                "right" => (location.x + location.width + distance, location.y + location.height / 2),
+                                "below" => (location.x + location.width / 2, location.y + location.height + distance),
+                                "left" => (location.x - distance, location.y + location.height / 2),
+                                "above" => (location.x + location.width / 2, location.y - distance),
+                                _ => (location.x + location.width + distance, location.y + location.height / 2),
+                            };
+                            
+                            match controller.click_at(click_x, click_y) {
+                                Ok(_) => Ok(format!(
+                                    "✅ Clicked {} of '{}' at ({}, {})",
+                                    direction, text, click_x, click_y
+                                )),
+                                Err(e) => Ok(format!("❌ Failed to click: {}", e)),
+                            }
+                        }
+                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Err(e) => Ok(format!("❌ Error finding text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
                 }
             }
             _ => {

@@ -1,5 +1,5 @@
-use crate::{ComputerController, types::Rect};
-use anyhow::Result;
+use crate::{ComputerController, types::{Rect, TextLocation}};
+use anyhow::{Result, Context};
 use async_trait::async_trait;
 use std::path::Path;
 use tesseract::Tesseract;
@@ -121,5 +121,151 @@ impl ComputerController for MacOSController {
             .map_err(|e| anyhow::anyhow!("Failed to extract text from image: {}", e))?;
         
         Ok(text)
+    }
+    
+    async fn extract_text_with_locations(&self, path: &str) -> Result<Vec<TextLocation>> {
+        // For now, use tesseract CLI with TSV output to get bounding boxes
+        // This is a workaround since the Rust tesseract crate doesn't expose get_component_boxes
+        let output = std::process::Command::new("tesseract")
+            .arg(path)
+            .arg("stdout")
+            .arg("tsv")
+            .output()
+            .map_err(|e| anyhow::anyhow!("Failed to run tesseract: {}", e))?;
+        
+        if !output.status.success() {
+            anyhow::bail!("Tesseract failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        let tsv_text = String::from_utf8_lossy(&output.stdout);
+        let mut locations = Vec::new();
+        
+        // Parse TSV output (skip header line)
+        for (i, line) in tsv_text.lines().enumerate() {
+            if i == 0 { continue; } // Skip header
+            
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 12 {
+                // TSV format: level, page_num, block_num, par_num, line_num, word_num,
+                //             left, top, width, height, conf, text
+                if let (Ok(x), Ok(y), Ok(w), Ok(h), Ok(conf), text) = (
+                    parts[6].parse::<i32>(),
+                    parts[7].parse::<i32>(),
+                    parts[8].parse::<i32>(),
+                    parts[9].parse::<i32>(),
+                    parts[10].parse::<f32>(),
+                    parts[11],
+                ) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() && conf > 0.0 {
+                        locations.push(TextLocation {
+                            text: trimmed.to_string(),
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                            confidence: conf / 100.0, // Convert from 0-100 to 0-1
+                        });
+                    }
+                }
+            }
+        }
+        
+        Ok(locations)
+    }
+    
+    async fn find_text_on_screen(&self, search_text: &str) -> Result<Option<TextLocation>> {
+        // Take full screenshot
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let temp_path = format!("{}/Desktop/g3_find_text_{}.png", home, uuid::Uuid::new_v4());
+        self.take_screenshot(&temp_path, None, None).await?;
+        
+        // Extract all text with locations
+        let locations = self.extract_text_with_locations(&temp_path).await?;
+        
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_path);
+        
+        // Find matching text (case-insensitive)
+        let search_lower = search_text.to_lowercase();
+        for location in locations {
+            if location.text.to_lowercase().contains(&search_lower) {
+                return Ok(Some(location));
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    fn move_mouse(&self, x: i32, y: i32) -> Result<()> {
+        use core_graphics::event::{
+            CGEvent, CGEventTapLocation, CGEventType, CGMouseButton,
+        };
+        use core_graphics::event_source::{
+            CGEventSource, CGEventSourceStateID,
+        };
+        use core_graphics::geometry::CGPoint;
+        
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .ok().context("Failed to create event source")?;
+        
+        let event = CGEvent::new_mouse_event(
+            source,
+            CGEventType::MouseMoved,
+            CGPoint::new(x as f64, y as f64),
+            CGMouseButton::Left,
+        ).ok().context("Failed to create mouse event")?;
+        
+        event.post(CGEventTapLocation::HID);
+        
+        Ok(())
+    }
+    
+    fn click_at(&self, x: i32, y: i32) -> Result<()> {
+        use core_graphics::event::{
+            CGEvent, CGEventTapLocation, CGEventType, CGMouseButton,
+        };
+        use core_graphics::event_source::{
+            CGEventSource, CGEventSourceStateID,
+        };
+        use core_graphics::geometry::CGPoint;
+        
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .ok().context("Failed to create event source")?;
+        
+        let point = CGPoint::new(x as f64, y as f64);
+        
+        // Move mouse to position first
+        let move_event = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::MouseMoved,
+            point,
+            CGMouseButton::Left,
+        ).ok().context("Failed to create mouse move event")?;
+        move_event.post(CGEventTapLocation::HID);
+        
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Mouse down
+        let mouse_down = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::LeftMouseDown,
+            point,
+            CGMouseButton::Left,
+        ).ok().context("Failed to create mouse down event")?;
+        mouse_down.post(CGEventTapLocation::HID);
+        
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // Mouse up
+        let mouse_up = CGEvent::new_mouse_event(
+            source,
+            CGEventType::LeftMouseUp,
+            point,
+            CGMouseButton::Left,
+        ).ok().context("Failed to create mouse up event")?;
+        mouse_up.post(CGEventTapLocation::HID);
+        
+        Ok(())
     }
 }

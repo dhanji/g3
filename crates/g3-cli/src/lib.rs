@@ -1639,7 +1639,7 @@ Review the current state of the project and provide a concise critique focusing 
 2. Whether the project compiles successfully
 3. What requirements are missing or incorrect
 4. Specific improvements needed to satisfy requirements
-5. Use UI tools such as webdriver to test functionality thoroughly
+5. Use UI tools such as webdriver or macax to test functionality thoroughly
 
 CRITICAL INSTRUCTIONS:
 1. You MUST use the final_output tool to provide your feedback
@@ -1647,13 +1647,13 @@ CRITICAL INSTRUCTIONS:
 3. Focus ONLY on what needs to be fixed or improved
 4. Do NOT include your analysis process, file contents, or compilation output in the summary
 
-If the implementation thoroughly meets all requirements, compiles and is fully tested (especially UI flows) *WITHOUT* gaps or errors:
+If the implementation thoroughly meets all requirements, compiles and is fully tested (especially UI flows) *WITHOUT* minor gaps or errors:
 - Call final_output with summary: 'IMPLEMENTATION_APPROVED'
 
 If improvements are needed:
 - Call final_output with a brief summary listing ONLY the specific issues to fix
 
-Remember: Be clear in your review and concise in your feedback. APPROVE if the implementation works and thoroughly fits the requirements (implementation > 95% complete). Be rigorous, especially by testing that all UI features work.",
+Remember: Be clear in your review and concise in your feedback. APPROVE iff the implementation works and thoroughly fits the requirements (implementation > 95% complete). Be rigorous, especially by testing that all UI features work.",
             requirements
         );
 

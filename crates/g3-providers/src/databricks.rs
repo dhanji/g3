@@ -881,6 +881,14 @@ impl LLMProvider for DatabricksProvider {
             "Processing Databricks streaming request with {} messages",
             request.messages.len()
         );
+        
+        // Debug: Log tool count
+        if let Some(ref tools) = request.tools {
+            debug!("Request has {} tools", tools.len());
+            for tool in tools.iter().take(5) {
+                debug!("  Tool: {}", tool.name);
+            }
+        }
 
         let max_tokens = request.max_tokens.unwrap_or(self.max_tokens);
         let temperature = request.temperature.unwrap_or(self.temperature);
