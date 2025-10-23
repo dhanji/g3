@@ -1,7 +1,7 @@
 use core_graphics::window::{kCGWindowListOptionOnScreenOnly, kCGNullWindowID, CGWindowListCopyWindowInfo};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::CFString;
-use core_foundation::base::TCFType;
+use core_foundation::base::{TCFType, ToVoid};
 
 fn main() {
     println!("Listing all on-screen windows...");
@@ -22,7 +22,7 @@ fn main() {
             
             // Get window ID
             let window_id_key = CFString::from_static_string("kCGWindowNumber");
-            let window_id: i64 = if let Some(value) = dict.find(window_id_key.as_concrete_TypeRef()) {
+            let window_id: i64 = if let Some(value) = dict.find(window_id_key.to_void()) {
                 let num: core_foundation::number::CFNumber = TCFType::wrap_under_get_rule(*value as *const _);
                 num.to_i64().unwrap_or(0)
             } else {
@@ -31,7 +31,7 @@ fn main() {
             
             // Get owner name
             let owner_key = CFString::from_static_string("kCGWindowOwnerName");
-            let owner: String = if let Some(value) = dict.find(owner_key.as_concrete_TypeRef()) {
+            let owner: String = if let Some(value) = dict.find(owner_key.to_void()) {
                 let s: CFString = TCFType::wrap_under_get_rule(*value as *const _);
                 s.to_string()
             } else {
@@ -40,7 +40,7 @@ fn main() {
             
             // Get window name/title
             let name_key = CFString::from_static_string("kCGWindowName");
-            let title: String = if let Some(value) = dict.find(name_key.as_concrete_TypeRef()) {
+            let title: String = if let Some(value) = dict.find(name_key.to_void()) {
                 let s: CFString = TCFType::wrap_under_get_rule(*value as *const _);
                 s.to_string()
             } else {

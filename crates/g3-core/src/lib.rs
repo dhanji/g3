@@ -466,6 +466,7 @@ Format this as a detailed but concise summary that can be used to resume the con
         let first_third_end = (total_messages / 3).max(1);
         
         let mut leaned_count = 0;
+        let mut tool_call_leaned_count = 0;
         let mut chars_saved = 0;
         
         // Create ~/tmp directory if it doesn't exist
@@ -478,7 +479,7 @@ Format this as a detailed but concise summary that can be used to resume the con
         // Scan the first third of messages
         for i in 0..first_third_end {
             if let Some(message) = self.conversation_history.get_mut(i) {
-                // Only process User messages that look like tool results
+                // Process User messages that look like tool results
                 if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
                     let content_len = message.content.len();
                     
@@ -508,6 +509,109 @@ Format this as a detailed but concise summary that can be used to resume the con
                         debug!("Thinned tool result {} ({} chars) to {}", i, original_len, file_path);
                     }
                 }
+                
+                // Process Assistant messages that contain tool calls with large arguments
+                if matches!(message.role, MessageRole::Assistant) {
+                    // Try to parse the message content as JSON to find tool calls
+                    let content = &message.content;
+                    
+                    // Look for JSON tool call patterns
+                    if let Some(tool_call_start) = content.find(r#"{"tool":"#)
+                        .or_else(|| content.find(r#"{ "tool":"#))
+                        .or_else(|| content.find(r#"{"tool" :"#))
+                        .or_else(|| content.find(r#"{ "tool" :"#))
+                    {
+                        // Try to extract and parse the JSON tool call
+                        let json_portion = &content[tool_call_start..];
+                        
+                        // Find the end of the JSON object
+                        if let Some(json_end) = Self::find_json_end(json_portion) {
+                            let json_str = &json_portion[..=json_end];
+                            
+                            // Try to parse as ToolCall
+                            if let Ok(mut tool_call) = serde_json::from_str::<ToolCall>(json_str) {
+                                let mut modified = false;
+                                
+                                // Handle write_file tool calls
+                                if tool_call.tool == "write_file" {
+                                    if let Some(args_obj) = tool_call.args.as_object_mut() {
+                                        // Extract content to avoid borrow issues
+                                        let content_info = args_obj.get("content")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| (s.to_string(), s.len()));
+                                        
+                                        if let Some((content_str, content_len)) = content_info {
+                                            // Only thin if content is greater than 1000 chars
+                                            if content_len > 1000 {
+                                                let timestamp = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs();
+                                                let filename = format!("leaned_write_file_content_{}_{}.txt", timestamp, i);
+                                                let file_path = format!("{}/{}", tmp_dir, filename);
+                                                
+                                                if std::fs::write(&file_path, &content_str).is_ok() {
+                                                    args_obj.insert(
+                                                        "content".to_string(),
+                                                        serde_json::Value::String(format!("<content saved to {}>", file_path))
+                                                    );
+                                                    modified = true;
+                                                    chars_saved += content_len;
+                                                    tool_call_leaned_count += 1;
+                                                    debug!("Thinned write_file content {} ({} chars) to {}", i, content_len, file_path);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Handle str_replace tool calls
+                                if tool_call.tool == "str_replace" {
+                                    if let Some(args_obj) = tool_call.args.as_object_mut() {
+                                        // Extract diff to avoid borrow issues
+                                        let diff_info = args_obj.get("diff")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| (s.to_string(), s.len()));
+                                        
+                                        if let Some((diff_str, diff_len)) = diff_info {
+                                            // Only thin if diff is greater than 1000 chars
+                                            if diff_len > 1000 {
+                                                let timestamp = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs();
+                                                let filename = format!("leaned_str_replace_diff_{}_{}.txt", timestamp, i);
+                                                let file_path = format!("{}/{}", tmp_dir, filename);
+                                                
+                                                if std::fs::write(&file_path, &diff_str).is_ok() {
+                                                    args_obj.insert(
+                                                        "diff".to_string(),
+                                                        serde_json::Value::String(format!("<diff saved to {}>", file_path))
+                                                    );
+                                                    modified = true;
+                                                    chars_saved += diff_len;
+                                                    tool_call_leaned_count += 1;
+                                                    debug!("Thinned str_replace diff {} ({} chars) to {}", i, diff_len, file_path);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // If we modified the tool call, reconstruct the message
+                                if modified {
+                                    let prefix = &content[..tool_call_start];
+                                    let suffix = &content[tool_call_start + json_str.len()..];
+                                    
+                                    // Serialize the modified tool call
+                                    if let Ok(new_json) = serde_json::to_string(&tool_call) {
+                                        message.content = format!("{}{}{}", prefix, new_json, suffix);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         
@@ -515,10 +619,18 @@ Format this as a detailed but concise summary that can be used to resume the con
         self.recalculate_tokens();
         
         if leaned_count > 0 {
-            (format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
-                    current_threshold, leaned_count, chars_saved), chars_saved)
+            if tool_call_leaned_count > 0 {
+                (format!("🥒 Context thinned at {}%: {} tool results + {} tool calls, ~{} chars saved", 
+                        current_threshold, leaned_count, tool_call_leaned_count, chars_saved), chars_saved)
+            } else {
+                (format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
+                        current_threshold, leaned_count, chars_saved), chars_saved)
+            }
+        } else if tool_call_leaned_count > 0 {
+            (format!("🥒 Context thinned at {}%: {} tool calls, ~{} chars saved", 
+                    current_threshold, tool_call_leaned_count, chars_saved), chars_saved)
         } else {
-            (format!("ℹ Context thinning triggered at {}% but no large tool results found in first third", 
+            (format!("ℹ Context thinning triggered at {}% but no large tool results or tool calls found in first third", 
                     current_threshold), 0)
         }
     }
@@ -532,6 +644,35 @@ Format this as a detailed but concise summary that can be used to resume the con
         self.used_tokens = total;
         
         debug!("Recalculated tokens after thinning: {} tokens", total);
+    }
+    
+    /// Helper function to find the end of a JSON object
+    fn find_json_end(json_str: &str) -> Option<usize> {
+        let mut brace_count = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
+        
+        for (i, ch) in json_str.char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            
+            match ch {
+                '\\' => escape_next = true,
+                '"' if !escape_next => in_string = !in_string,
+                '{' if !in_string => brace_count += 1,
+                '}' if !in_string => {
+                    brace_count -= 1;
+                    if brace_count == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        None
     }
 }
 
