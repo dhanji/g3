@@ -104,6 +104,37 @@ impl UiWriter for ConsoleUiWriter {
         println!("{}", message);
     }
 
+    fn print_context_thinning(&self, message: &str) {
+        // Animated highlight for context thinning
+        // Use bright cyan/green with a quick flash animation
+        
+        // Flash animation: print with bright background, then normal
+        let frames = vec![
+            "\x1b[1;97;46m",  // Frame 1: Bold white on cyan background
+            "\x1b[1;97;42m",  // Frame 2: Bold white on green background
+            "\x1b[1;96;40m",  // Frame 3: Bold cyan on black background
+        ];
+        
+        println!();
+        
+        // Quick flash animation
+        for frame in &frames {
+            print!("\r{} ✨ {} ✨\x1b[0m", frame, message);
+            let _ = io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        
+        // Final display with bright cyan and sparkle emojis
+        print!("\r\x1b[1;96m✨ {} ✨\x1b[0m", message);
+        println!();
+        
+        // Add a subtle "success" indicator line
+        println!("\x1b[2;36m   └─ Context optimized successfully\x1b[0m");
+        println!();
+        
+        let _ = io::stdout().flush();
+    }
+
     fn print_tool_header(&self, tool_name: &str) {
         // Store the tool name and clear args for collection
         *self.current_tool_name.lock().unwrap() = Some(tool_name.to_string());
@@ -358,6 +389,19 @@ impl UiWriter for RetroTuiWriter {
 
     fn print_context_status(&self, message: &str) {
         self.tui.output(message);
+    }
+
+    fn print_context_thinning(&self, message: &str) {
+        // For TUI, we'll use a highlighted output with special formatting
+        // The TUI will handle the visual presentation
+        
+        // Add visual separators and emphasis
+        self.tui.output("");
+        self.tui.output("═══════════════════════════════════════════════════════════");
+        self.tui.output(&format!("✨ {} ✨", message));
+        self.tui.output("   └─ Context optimized successfully");
+        self.tui.output("═══════════════════════════════════════════════════════════");
+        self.tui.output("");
     }
 
     fn print_tool_header(&self, tool_name: &str) {

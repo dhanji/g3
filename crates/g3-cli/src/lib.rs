@@ -169,7 +169,7 @@ use tracing::{error, info};
 use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
 mod retro_tui;
 mod theme;
-mod tui;
+pub mod tui;
 mod ui_writer_impl;
 use retro_tui::RetroTui;
 use theme::ColorTheme;
@@ -1099,9 +1099,8 @@ async fn run_interactive<W: UiWriter>(
                                 continue;
                             }
                             "/thinnify" => {
-                                output.print("🔧 Triggering manual context thinning...");
                                 let summary = agent.force_thin();
-                                output.print(&summary);
+                                output.print_context_thinning(&summary);
                                 continue;
                             }
                             "/readme" => {

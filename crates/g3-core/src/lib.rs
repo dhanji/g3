@@ -2473,8 +2473,7 @@ Template:
                                 let (thin_summary, chars_saved) = self.context_window.thin_context();
                                 self.thinning_events.push(chars_saved);
                                 // Print the thinning summary to the user
-                                self.ui_writer.println("");
-                                self.ui_writer.print_context_status(&format!("{}\n", thin_summary));
+                                self.ui_writer.print_context_thinning(&thin_summary);
                             }
 
                             // Track what we've already displayed before getting new text

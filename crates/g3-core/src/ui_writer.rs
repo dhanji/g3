@@ -17,6 +17,9 @@ pub trait UiWriter: Send + Sync {
     /// Print a context window status message
     fn print_context_status(&self, message: &str);
     
+    /// Print a context thinning success message with highlight and animation
+    fn print_context_thinning(&self, message: &str);
+    
     /// Print a tool execution header
     fn print_tool_header(&self, tool_name: &str);
     
@@ -60,6 +63,7 @@ impl UiWriter for NullUiWriter {
     fn print_inline(&self, _message: &str) {}
     fn print_system_prompt(&self, _prompt: &str) {}
     fn print_context_status(&self, _message: &str) {}
+    fn print_context_thinning(&self, _message: &str) {}
     fn print_tool_header(&self, _tool_name: &str) {}
     fn print_tool_arg(&self, _key: &str, _value: &str) {}
     fn print_tool_output_header(&self) {}
