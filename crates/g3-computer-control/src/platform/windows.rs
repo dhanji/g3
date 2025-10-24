@@ -62,10 +62,15 @@ impl ComputerController for WindowsController {
     }
     
     async fn take_screenshot(&self, _path: &str, _region: Option<Rect>, _window_id: Option<&str>) -> Result<()> {
+        // Enforce that window_id must be provided
+        if _window_id.is_none() {
+            anyhow::bail!("window_id is required. You must specify which window to capture (e.g., 'Chrome', 'Terminal', 'Notepad'). Use list_windows to see available windows.");
+        }
+
         anyhow::bail!("Windows implementation not yet available")
     }
     
-    async fn extract_text_from_screen(&self, _region: Rect) -> Result<OCRResult> {
+    async fn extract_text_from_screen(&self, _region: Rect, _window_id: &str) -> Result<String> {
         anyhow::bail!("Windows implementation not yet available")
     }
     

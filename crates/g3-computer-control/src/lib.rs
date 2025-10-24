@@ -23,7 +23,7 @@ pub trait ComputerController: Send + Sync {
     async fn take_screenshot(&self, path: &str, region: Option<Rect>, window_id: Option<&str>) -> Result<()>;
     
     // OCR operations
-    async fn extract_text_from_screen(&self, region: Rect) -> Result<String>;
+    async fn extract_text_from_screen(&self, region: Rect, window_id: &str) -> Result<String>;
     async fn extract_text_from_image(&self, path: &str) -> Result<String>;
     async fn extract_text_with_locations(&self, path: &str) -> Result<Vec<TextLocation>>;
     async fn find_text_in_app(&self, app_name: &str, search_text: &str) -> Result<Option<TextLocation>>;

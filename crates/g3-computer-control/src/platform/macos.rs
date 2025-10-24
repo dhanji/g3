@@ -3,6 +3,11 @@ use crate::ocr::{OCREngine, DefaultOCR};
 use anyhow::{Result, Context};
 use async_trait::async_trait;
 use std::path::Path;
+use core_graphics::window::{kCGWindowListOptionOnScreenOnly, kCGNullWindowID, CGWindowListCopyWindowInfo};
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::string::CFString;
+use core_foundation::base::{TCFType, ToVoid};
+use core_foundation::array::CFArray;
 
 pub struct MacOSController {
     ocr_engine: Box<dyn OCREngine>,
@@ -22,6 +27,11 @@ impl MacOSController {
 #[async_trait]
 impl ComputerController for MacOSController {
     async fn take_screenshot(&self, path: &str, region: Option<Rect>, window_id: Option<&str>) -> Result<()> {
+        // Enforce that window_id must be provided
+        if window_id.is_none() {
+            return Err(anyhow::anyhow!("window_id is required. You must specify which window to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). Use list_windows to see available windows."));
+        }
+
         // Determine the temporary directory for screenshots
         let temp_dir = std::env::var("TMPDIR")
             .or_else(|_| std::env::var("HOME").map(|h| format!("{}/tmp", h)))
@@ -42,30 +52,63 @@ impl ComputerController for MacOSController {
             std::fs::create_dir_all(parent)?;
         }
         
-        let mut cmd = std::process::Command::new("screencapture");
+        let app_name = window_id.unwrap(); // Safe because we checked is_none() above
         
-        // Add flags
+        // Get the window ID for the specified application
+        let cg_window_id = unsafe {
+            let window_list = CGWindowListCopyWindowInfo(
+                kCGWindowListOptionOnScreenOnly,
+                kCGNullWindowID
+            );
+            
+            let array = CFArray::<CFDictionary>::wrap_under_create_rule(window_list);
+            let count = array.len();
+            
+            let mut found_window_id: Option<u32> = None;
+            
+            for i in 0..count {
+                let dict = array.get(i).unwrap();
+                
+                // Get owner name
+                let owner_key = CFString::from_static_string("kCGWindowOwnerName");
+                let owner: String = if let Some(value) = dict.find(owner_key.to_void()) {
+                    let s: CFString = TCFType::wrap_under_get_rule(*value as *const _);
+                    s.to_string()
+                } else {
+                    continue;
+                };
+                
+                // Check if this is the app we're looking for
+                if owner.to_lowercase().contains(&app_name.to_lowercase()) || app_name.to_lowercase().contains(&owner.to_lowercase()) {
+                    // Get window ID
+                    let window_id_key = CFString::from_static_string("kCGWindowNumber");
+                    if let Some(value) = dict.find(window_id_key.to_void()) {
+                        let num: core_foundation::number::CFNumber = TCFType::wrap_under_get_rule(*value as *const _);
+                        if let Some(id) = num.to_i64() {
+                            found_window_id = Some(id as u32);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            found_window_id
+        };
+        
+        let cg_window_id = cg_window_id.ok_or_else(|| {
+            anyhow::anyhow!("Could not find window for application '{}'. Use list_windows to see available windows.", app_name)
+        })?;
+        
+        // Use screencapture with the window ID for now
+        // TODO: Implement direct CGWindowListCreateImage approach with proper image saving
+        let mut cmd = std::process::Command::new("screencapture");
         cmd.arg("-x"); // No sound
+        cmd.arg("-l");
+        cmd.arg(cg_window_id.to_string());
         
         if let Some(region) = region {
-            // Capture specific region: -R x,y,width,height
             cmd.arg("-R");
             cmd.arg(format!("{},{},{},{}", region.x, region.y, region.width, region.height));
-        }
-        
-        if let Some(app_name) = window_id {
-            // Capture specific window by app name
-            // Use AppleScript to get window ID
-            let script = format!(r#"tell application "{}" to id of window 1"#, app_name);
-            let output = std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output()?;
-            
-            if output.status.success() {
-                let window_id_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                cmd.arg(format!("-l{}", window_id_str));
-            }
         }
         
         cmd.arg(&final_path);
@@ -74,16 +117,16 @@ impl ComputerController for MacOSController {
         
         if !screenshot_result.status.success() {
             let stderr = String::from_utf8_lossy(&screenshot_result.stderr);
-            return Err(anyhow::anyhow!("screencapture failed: {}", stderr));
+            return Err(anyhow::anyhow!("screencapture failed for window {}: {}", cg_window_id, stderr));
         }
         
         Ok(())
     }
     
-    async fn extract_text_from_screen(&self, region: Rect) -> Result<String> {
+    async fn extract_text_from_screen(&self, region: Rect, window_id: &str) -> Result<String> {
         // Take screenshot of region first
         let temp_path = format!("/tmp/g3_ocr_{}.png", uuid::Uuid::new_v4());
-        self.take_screenshot(&temp_path, Some(region), None).await?;
+        self.take_screenshot(&temp_path, Some(region), Some(window_id)).await?;
         
         // Extract text from the screenshot
         let result = self.extract_text_from_image(&temp_path).await?;

@@ -1798,7 +1798,7 @@ Template:
             },
             Tool {
                 name: "take_screenshot".to_string(),
-                description: "Capture a screenshot of the screen, region, or window. When capturing a specific application window (e.g., 'Safari', 'Terminal'), use the window_id parameter with just the application name. The tool will automatically use the native screencapture command with the application's window ID for a clean capture.".to_string(),
+                description: "Capture a screenshot of a specific application window. You MUST specify the window_id parameter with the application name (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will automatically use the native screencapture command with the application's window ID for a clean capture. Use list_windows first to identify available windows.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1808,7 +1808,7 @@ Template:
                         },
                         "window_id": {
                             "type": "string",
-                            "description": "Optional application name to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will capture the frontmost window of that application using its native window ID."
+                            "description": "REQUIRED: Application name to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will capture the frontmost window of that application using its native window ID."
                         },
                         "region": {
                             "type": "object",
@@ -1820,12 +1820,12 @@ Template:
                             }
                         }
                     },
-                    "required": ["path"]
+                    "required": ["path", "window_id"]
                 }),
             },
             Tool {
                 name: "extract_text".to_string(),
-                description: "Extract text from a screen region or image file using OCR. Returns plain text only (no bounding boxes). For text with location/coordinates, use vision_find_text instead.".to_string(),
+                description: "Extract text from an image file using OCR. For extracting text from a specific window, use vision_find_text instead which automatically handles window capture.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1833,16 +1833,6 @@ Template:
                             "type": "string",
                             "description": "Path to image file (optional if region is provided)"
                         },
-                        "region": {
-                            "type": "object",
-                            "description": "Screen region to capture and extract text from",
-                            "properties": {
-                                "x": {"type": "integer"},
-                                "y": {"type": "integer"},
-                                "width": {"type": "integer"},
-                                "height": {"type": "integer"}
-                            }
-                        }
                     }
                 }),
             },
@@ -3750,8 +3740,9 @@ Template:
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
 
-                    // Extract window_id (app name) if provided
-                    let window_id = tool_call.args.get("window_id").and_then(|v| v.as_str());
+                    // Extract window_id (app name) - REQUIRED
+                    let window_id = tool_call.args.get("window_id").and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing window_id argument. You must specify which window to capture (e.g., 'Safari', 'Terminal', 'Google Chrome')."))?;
 
                     // Extract region if provided
                     let region = tool_call
@@ -3771,7 +3762,7 @@ Template:
                                 .unwrap_or(0) as i32,
                         });
 
-                    match controller.take_screenshot(path, region, window_id).await {
+                    match controller.take_screenshot(path, region, Some(window_id)).await {
                         Ok(_) => {
                             // Get the actual path where the screenshot was saved
                             let actual_path = if path.starts_with('/') {
@@ -3785,14 +3776,10 @@ Template:
                                 format!("{}/{}", temp_dir.trim_end_matches('/'), path)
                             };
 
-                            if let Some(app) = window_id {
-                                Ok(format!(
-                                    "✅ Screenshot of {} saved to: {}",
-                                    app, actual_path
-                                ))
-                            } else {
-                                Ok(format!("✅ Screenshot saved to: {}", actual_path))
-                            }
+                            Ok(format!(
+                                "✅ Screenshot of {} saved to: {}",
+                                window_id, actual_path
+                            ))
                         }
                         Err(e) => Ok(format!("❌ Failed to take screenshot: {}", e)),
                     }
@@ -3802,36 +3789,14 @@ Template:
             }
             "extract_text" => {
                 if let Some(controller) = &self.computer_controller {
-                    // Check if we have a path or a region
-                    if let Some(path) = tool_call.args.get("path").and_then(|v| v.as_str()) {
-                        // Extract text from image file
-                        match controller.extract_text_from_image(path).await {
-                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
-                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
-                        }
-                    } else if let Some(region_obj) =
-                        tool_call.args.get("region").and_then(|v| v.as_object())
-                    {
-                        // Extract text from screen region
-                        let region = g3_computer_control::types::Rect {
-                            x: region_obj.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            y: region_obj.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            width: region_obj
-                                .get("width")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0) as i32,
-                            height: region_obj
-                                .get("height")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0) as i32,
-                        };
-
-                        match controller.extract_text_from_screen(region).await {
-                            Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
-                            Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
-                        }
-                    } else {
-                        Ok("❌ Missing path or region argument".to_string())
+                    let path = tool_call.args.get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+                    
+                    // Extract text from image file only
+                    match controller.extract_text_from_image(path).await {
+                        Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
+                        Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
