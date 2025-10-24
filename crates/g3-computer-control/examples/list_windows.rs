@@ -47,8 +47,8 @@ fn main() {
                 "".to_string()
             };
             
-            // Filter for iTerm or show all
-            if owner.contains("iTerm") || owner.contains("Terminal") {
+            // Show all windows
+            if !owner.is_empty() {
                 println!("{:<10} {:<25} {}", window_id, owner, title);
             }
         }

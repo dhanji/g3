@@ -64,7 +64,8 @@ impl ComputerController for MacOSController {
             let array = CFArray::<CFDictionary>::wrap_under_create_rule(window_list);
             let count = array.len();
             
-            let mut found_window_id: Option<u32> = None;
+            let mut found_window_id: Option<(u32, String, bool)> = None; // (id, owner, is_exact_match)
+            let app_name_lower = app_name.to_lowercase();
             
             for i in 0..count {
                 let dict = array.get(i).unwrap();
@@ -78,15 +79,35 @@ impl ComputerController for MacOSController {
                     continue;
                 };
                 
-                // Check if this is the app we're looking for
-                if owner.to_lowercase().contains(&app_name.to_lowercase()) || app_name.to_lowercase().contains(&owner.to_lowercase()) {
+                tracing::debug!("Checking window: owner='{}', looking for '{}'", owner, app_name);
+                let owner_lower = owner.to_lowercase();
+                
+                // Check for exact match first (case-insensitive)
+                let is_exact_match = owner_lower == app_name_lower;
+                
+                // Check for fuzzy match (either direction contains)
+                let is_fuzzy_match = owner_lower.contains(&app_name_lower) || app_name_lower.contains(&owner_lower);
+                
+                if is_exact_match || is_fuzzy_match {
                     // Get window ID
                     let window_id_key = CFString::from_static_string("kCGWindowNumber");
                     if let Some(value) = dict.find(window_id_key.to_void()) {
                         let num: core_foundation::number::CFNumber = TCFType::wrap_under_get_rule(*value as *const _);
                         if let Some(id) = num.to_i64() {
-                            found_window_id = Some(id as u32);
-                            break;
+                            tracing::debug!("Found candidate: window ID {} for app '{}' (exact={}, fuzzy={})", id, owner, is_exact_match, is_fuzzy_match);
+                            
+                            // If we found an exact match, use it immediately
+                            if is_exact_match {
+                                tracing::info!("Found exact match: window ID {} for app '{}'", id, owner);
+                                found_window_id = Some((id as u32, owner.clone(), true));
+                                break;
+                            }
+                            
+                            // Otherwise, keep the first fuzzy match but continue looking for exact match
+                            if found_window_id.is_none() {
+                                tracing::info!("Found fuzzy match: window ID {} for app '{}'", id, owner);
+                                found_window_id = Some((id as u32, owner.clone(), false));
+                            }
                         }
                     }
                 }
@@ -95,9 +116,15 @@ impl ComputerController for MacOSController {
             found_window_id
         };
         
-        let cg_window_id = cg_window_id.ok_or_else(|| {
+        let (cg_window_id, matched_owner, is_exact) = cg_window_id.ok_or_else(|| {
             anyhow::anyhow!("Could not find window for application '{}'. Use list_windows to see available windows.", app_name)
         })?;
+        
+        if !is_exact {
+            tracing::warn!("Using fuzzy match: requested '{}' but found '{}' (window ID {})", app_name, matched_owner, cg_window_id);
+        } else {
+            tracing::info!("Taking screenshot of window ID {} for app '{}'", cg_window_id, matched_owner);
+        }
         
         // Use screencapture with the window ID for now
         // TODO: Implement direct CGWindowListCreateImage approach with proper image saving
