@@ -193,7 +193,12 @@ impl UiWriter for ConsoleUiWriter {
 
                 // Truncate long values for display
                 let display_value = if first_line.len() > 80 {
-                    format!("{}...", &first_line[..77])
+                    // Use char_indices to safely truncate at character boundary
+                    let truncate_at = first_line.char_indices()
+                        .nth(77)
+                        .map(|(i, _)| i)
+                        .unwrap_or(first_line.len());
+                    format!("{}...", &first_line[..truncate_at])
                 } else {
                     first_line.to_string()
                 };
@@ -440,7 +445,12 @@ impl UiWriter for RetroTuiWriter {
         if caption.is_empty() && (key == "file_path" || key == "command" || key == "path") {
             // Truncate long values for the caption
             let truncated = if value.len() > 50 {
-                format!("{}...", &value[..47])
+                // Use char_indices to safely truncate at character boundary
+                let truncate_at = value.char_indices()
+                    .nth(47)
+                    .map(|(i, _)| i)
+                    .unwrap_or(value.len());
+                format!("{}...", &value[..truncate_at])
             } else {
                 value.to_string()
             };

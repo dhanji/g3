@@ -3,6 +3,7 @@
 
 pub mod types;
 pub mod platform;
+pub mod ocr;
 pub mod webdriver;
 pub mod macax;
 
@@ -25,11 +26,11 @@ pub trait ComputerController: Send + Sync {
     async fn extract_text_from_screen(&self, region: Rect) -> Result<String>;
     async fn extract_text_from_image(&self, path: &str) -> Result<String>;
     async fn extract_text_with_locations(&self, path: &str) -> Result<Vec<TextLocation>>;
-    async fn find_text_on_screen(&self, search_text: &str) -> Result<Option<TextLocation>>;
+    async fn find_text_in_app(&self, app_name: &str, search_text: &str) -> Result<Option<TextLocation>>;
     
     // Mouse operations
     fn move_mouse(&self, x: i32, y: i32) -> Result<()>;
-    fn click_at(&self, x: i32, y: i32) -> Result<()>;
+    fn click_at(&self, x: i32, y: i32, app_name: Option<&str>) -> Result<()>;
 }
 
 // Platform-specific constructor

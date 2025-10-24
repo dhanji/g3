@@ -1,16 +1,21 @@
 use crate::{ComputerController, types::{Rect, TextLocation}};
+use crate::ocr::{OCREngine, DefaultOCR};
 use anyhow::{Result, Context};
 use async_trait::async_trait;
 use std::path::Path;
-use tesseract::Tesseract;
 
 pub struct MacOSController {
-    // Empty struct for now
+    ocr_engine: Box<dyn OCREngine>,
+    #[allow(dead_code)]
+    ocr_name: String,
 }
 
 impl MacOSController {
     pub fn new() -> Result<Self> {
-        Ok(Self {})
+        let ocr = Box::new(DefaultOCR::new()?);
+        let ocr_name = ocr.name().to_string();
+        tracing::info!("Initialized macOS controller with OCR engine: {}", ocr_name);
+        Ok(Self { ocr_engine: ocr, ocr_name })
     }
 }
 
@@ -90,95 +95,21 @@ impl ComputerController for MacOSController {
     }
     
     async fn extract_text_from_image(&self, path: &str) -> Result<String> {
-        // Check if tesseract is available on the system
-        let tesseract_check = std::process::Command::new("which")
-            .arg("tesseract")
-            .output();
-        
-        if tesseract_check.is_err() || !tesseract_check.as_ref().unwrap().status.success() {
-            anyhow::bail!("Tesseract OCR is not installed on your system.\n\n\
-                To install tesseract:\n  macOS:   brew install tesseract\n  \
-                Linux:   sudo apt-get install tesseract-ocr (Ubuntu/Debian)\n           \
-                sudo yum install tesseract (RHEL/CentOS)\n  \
-                Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki\n\n\
-                After installation, restart your terminal and try again.");
-        }
-        
-        // Initialize Tesseract
-        let tess = Tesseract::new(None, Some("eng"))
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to initialize Tesseract: {}\n\n\
-                    This usually means:\n1. Tesseract is not properly installed\n\
-                    2. Language data files are missing\n\nTo fix:\n  \
-                    macOS:   brew reinstall tesseract\n  \
-                    Linux:   sudo apt-get install tesseract-ocr-eng\n  \
-                    Windows: Reinstall tesseract and ensure language files are included", e)
-            })?;
-        
-        let text = tess.set_image(path)
-            .map_err(|e| anyhow::anyhow!("Failed to load image '{}': {}", path, e))?
-            .get_text()
-            .map_err(|e| anyhow::anyhow!("Failed to extract text from image: {}", e))?;
-        
-        Ok(text)
+        // Extract all text and concatenate
+        let locations = self.ocr_engine.extract_text_with_locations(path).await?;
+        Ok(locations.iter().map(|loc| loc.text.as_str()).collect::<Vec<_>>().join(" "))
     }
     
     async fn extract_text_with_locations(&self, path: &str) -> Result<Vec<TextLocation>> {
-        // For now, use tesseract CLI with TSV output to get bounding boxes
-        // This is a workaround since the Rust tesseract crate doesn't expose get_component_boxes
-        let output = std::process::Command::new("tesseract")
-            .arg(path)
-            .arg("stdout")
-            .arg("tsv")
-            .output()
-            .map_err(|e| anyhow::anyhow!("Failed to run tesseract: {}", e))?;
-        
-        if !output.status.success() {
-            anyhow::bail!("Tesseract failed: {}", String::from_utf8_lossy(&output.stderr));
-        }
-        
-        let tsv_text = String::from_utf8_lossy(&output.stdout);
-        let mut locations = Vec::new();
-        
-        // Parse TSV output (skip header line)
-        for (i, line) in tsv_text.lines().enumerate() {
-            if i == 0 { continue; } // Skip header
-            
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 12 {
-                // TSV format: level, page_num, block_num, par_num, line_num, word_num,
-                //             left, top, width, height, conf, text
-                if let (Ok(x), Ok(y), Ok(w), Ok(h), Ok(conf), text) = (
-                    parts[6].parse::<i32>(),
-                    parts[7].parse::<i32>(),
-                    parts[8].parse::<i32>(),
-                    parts[9].parse::<i32>(),
-                    parts[10].parse::<f32>(),
-                    parts[11],
-                ) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() && conf > 0.0 {
-                        locations.push(TextLocation {
-                            text: trimmed.to_string(),
-                            x,
-                            y,
-                            width: w,
-                            height: h,
-                            confidence: conf / 100.0, // Convert from 0-100 to 0-1
-                        });
-                    }
-                }
-            }
-        }
-        
-        Ok(locations)
+        // Use the OCR engine
+        self.ocr_engine.extract_text_with_locations(path).await
     }
     
-    async fn find_text_on_screen(&self, search_text: &str) -> Result<Option<TextLocation>> {
-        // Take full screenshot
+    async fn find_text_in_app(&self, app_name: &str, search_text: &str) -> Result<Option<TextLocation>> {
+        // Take screenshot of specific app window
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let temp_path = format!("{}/Desktop/g3_find_text_{}.png", home, uuid::Uuid::new_v4());
-        self.take_screenshot(&temp_path, None, None).await?;
+        let temp_path = format!("{}/Desktop/g3_find_text_{}_{}.png", home, app_name, uuid::Uuid::new_v4());
+        self.take_screenshot(&temp_path, None, Some(app_name)).await?;
         
         // Extract all text with locations
         let locations = self.extract_text_with_locations(&temp_path).await?;
@@ -221,7 +152,44 @@ impl ComputerController for MacOSController {
         Ok(())
     }
     
-    fn click_at(&self, x: i32, y: i32) -> Result<()> {
+    fn click_at(&self, x: i32, y: i32, app_name: Option<&str>) -> Result<()> {
+        // If app_name is provided, get window position and offset coordinates
+        let (global_x, global_y) = if let Some(app) = app_name {
+            // Get window position using AppleScript
+            let script = format!(
+                r#"tell application "{}" to get bounds of window 1"#,
+                app
+            );
+            
+            let output = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()?;
+            
+            if output.status.success() {
+                let bounds_str = String::from_utf8_lossy(&output.stdout);
+                // Parse bounds: "x1, y1, x2, y2"
+                let parts: Vec<&str> = bounds_str.trim().split(", ").collect();
+                if parts.len() >= 2 {
+                    if let (Ok(window_x), Ok(window_y)) = (
+                        parts[0].trim().parse::<i32>(),
+                        parts[1].trim().parse::<i32>(),
+                    ) {
+                        // Offset relative coordinates by window position
+                        (x + window_x, y + window_y)
+                    } else {
+                        (x, y) // Fallback to absolute coordinates
+                    }
+                } else {
+                    (x, y) // Fallback to absolute coordinates
+                }
+            } else {
+                (x, y) // Fallback to absolute coordinates
+            }
+        } else {
+            (x, y) // No app name, use absolute coordinates
+        };
+        
         use core_graphics::event::{
             CGEvent, CGEventTapLocation, CGEventType, CGMouseButton,
         };
@@ -233,7 +201,7 @@ impl ComputerController for MacOSController {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .ok().context("Failed to create event source")?;
         
-        let point = CGPoint::new(x as f64, y as f64);
+        let point = CGPoint::new(global_x as f64, global_y as f64);
         
         // Move mouse to position first
         let move_event = CGEvent::new_mouse_event(

@@ -1825,7 +1825,7 @@ Template:
             },
             Tool {
                 name: "extract_text".to_string(),
-                description: "Extract text from a screen region or image file using OCR".to_string(),
+                description: "Extract text from a screen region or image file using OCR. Returns plain text only (no bounding boxes). For text with location/coordinates, use vision_find_text instead.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -2280,45 +2280,79 @@ Template:
             });
         }
         
+        // Add extract_text_with_boxes tool (requires macax flag)
+        if enable_macax {
+            tools.push(Tool {
+                name: "extract_text_with_boxes".to_string(),
+                description: "Extract all text from an image file with bounding box coordinates for each text element. Returns JSON array with text, position (x, y), size (width, height), and confidence for each detected text. Uses Apple Vision Framework for precise sub-pixel accuracy.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to image file to extract text from"
+                        },
+                        "app_name": {
+                            "type": "string",
+                            "description": "Optional: Name of application to screenshot first (e.g., 'Safari', 'Things3'). If provided, takes screenshot of app before extracting text."
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            });
+        }
+        
         // Add vision-guided tools (requires computer control)
         if enable_computer_control {
             // Add vision-guided tools
             tools.push(Tool {
                 name: "vision_find_text".to_string(),
-                description: "Find text on screen and return its location (useful for locating UI elements)".to_string(),
+                description: "Find text in a specific application window and return its location with bounding box coordinates (x, y, width, height) and confidence score. Useful for locating UI elements. Uses Apple Vision Framework for precise sub-pixel accuracy.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Name of the application to search in (e.g., 'Things3', 'Safari', 'TextEdit')"
+                        },
                         "text": {
                             "type": "string",
                             "description": "The text to search for on screen"
                         }
                     },
-                    "required": ["text"]
+                    "required": ["app_name", "text"]
                 }),
             });
             
             tools.push(Tool {
                 name: "vision_click_text".to_string(),
-                description: "Find text on screen and click on it (useful for clicking buttons, links, menu items)".to_string(),
+                description: "Find text in a specific application window and click on it (useful for clicking buttons, links, menu items)".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Name of the application (e.g., 'Things3', 'Safari', 'TextEdit')"
+                        },
                         "text": {
                             "type": "string",
                             "description": "The text to click on (e.g., 'Submit', 'OK', 'Cancel', '+')"
                         }
                     },
-                    "required": ["text"]
+                    "required": ["app_name", "text"]
                 }),
             });
             
             tools.push(Tool {
                 name: "vision_click_near_text".to_string(),
-                description: "Find text on screen and click near it (useful for clicking text fields next to labels)".to_string(),
+                description: "Find text in a specific application window and click near it (useful for clicking text fields next to labels)".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Name of the application (e.g., 'Things3', 'Safari', 'TextEdit')"
+                        },
                         "text": {
                             "type": "string",
                             "description": "The label text to find (e.g., 'Name:', 'Email:', 'Task:')"
@@ -2333,7 +2367,7 @@ Template:
                             "description": "Distance in pixels from the text (default: 50)"
                         }
                     },
-                    "required": ["text"]
+                    "required": ["app_name", "text"]
                 }),
             });
         }
@@ -4591,19 +4625,23 @@ Template:
                 debug!("Processing vision_find_text tool call");
                 
                 if let Some(controller) = &self.computer_controller {
+                    let app_name = tool_call.args.get("app_name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
+                    
                     let text = tool_call.args.get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
                     
-                    match controller.find_text_on_screen(text).await {
+                    match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             Ok(format!(
-                                "✅ Found '{}' at position ({}, {}) with size {}x{} (confidence: {:.0}%)",
-                                location.text, location.x, location.y, location.width, location.height,
+                                "✅ Found '{}' in {} at position ({}, {}) with size {}x{} (confidence: {:.0}%)",
+                                location.text, app_name, location.x, location.y, location.width, location.height,
                                 location.confidence * 100.0
                             ))
                         }
-                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Ok(None) => Ok(format!("❌ Could not find '{}' in {}", text, app_name)),
                         Err(e) => Ok(format!("❌ Error finding text: {}", e)),
                     }
                 } else {
@@ -4614,23 +4652,70 @@ Template:
                 debug!("Processing vision_click_text tool call");
                 
                 if let Some(controller) = &self.computer_controller {
+                    let app_name = tool_call.args.get("app_name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
+                    
                     let text = tool_call.args.get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
                     
-                    match controller.find_text_on_screen(text).await {
+                    match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Click on center of text
                             let center_x = location.x + location.width / 2;
                             let center_y = location.y + location.height / 2;
                             
-                            match controller.click_at(center_x, center_y) {
-                                Ok(_) => Ok(format!("✅ Clicked on '{}' at ({}, {})", text, center_x, center_y)),
+                            match controller.click_at(center_x, center_y, Some(app_name)) {
+                                Ok(_) => Ok(format!("✅ Clicked on '{}' in {} at ({}, {})", text, app_name, center_x, center_y)),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
-                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Ok(None) => Ok(format!("❌ Could not find '{}' in {}", text, app_name)),
                         Err(e) => Ok(format!("❌ Error finding text: {}", e)),
+                    }
+                } else {
+                    Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "extract_text_with_boxes" => {
+                debug!("Processing extract_text_with_boxes tool call");
+                
+                if !self.config.macax.enabled {
+                    return Ok("❌ extract_text_with_boxes requires --macax flag to be enabled".to_string());
+                }
+                
+                if let Some(controller) = &self.computer_controller {
+                    let path = tool_call.args.get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?;
+                    
+                    // Optional: take screenshot of app first
+                    let final_path = if let Some(app_name) = tool_call.args.get("app_name").and_then(|v| v.as_str()) {
+                        let temp_path = format!("/tmp/g3_extract_boxes_{}.png", uuid::Uuid::new_v4());
+                        match controller.take_screenshot(&temp_path, None, Some(app_name)).await {
+                            Ok(_) => temp_path,
+                            Err(e) => return Ok(format!("❌ Failed to take screenshot: {}", e)),
+                        }
+                    } else {
+                        path.to_string()
+                    };
+                    
+                    // Extract text with locations
+                    match controller.extract_text_with_locations(&final_path).await {
+                        Ok(locations) => {
+                            // Clean up temp file if we created one
+                            if final_path != path {
+                                let _ = std::fs::remove_file(&final_path);
+                            }
+                            
+                            // Return as JSON
+                            match serde_json::to_string_pretty(&locations) {
+                                Ok(json) => Ok(format!("✅ Extracted {} text elements:\n{}", locations.len(), json)),
+                                Err(e) => Ok(format!("❌ Failed to serialize results: {}", e)),
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to extract text: {}", e)),
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
@@ -4640,6 +4725,10 @@ Template:
                 debug!("Processing vision_click_near_text tool call");
                 
                 if let Some(controller) = &self.computer_controller {
+                    let app_name = tool_call.args.get("app_name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
+                    
                     let text = tool_call.args.get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
@@ -4652,7 +4741,7 @@ Template:
                         .and_then(|v| v.as_i64())
                         .unwrap_or(50) as i32;
                     
-                    match controller.find_text_on_screen(text).await {
+                    match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Calculate click position based on direction
                             let (click_x, click_y) = match direction {
@@ -4663,15 +4752,15 @@ Template:
                                 _ => (location.x + location.width + distance, location.y + location.height / 2),
                             };
                             
-                            match controller.click_at(click_x, click_y) {
+                            match controller.click_at(click_x, click_y, Some(app_name)) {
                                 Ok(_) => Ok(format!(
-                                    "✅ Clicked {} of '{}' at ({}, {})",
-                                    direction, text, click_x, click_y
+                                    "✅ Clicked {} of '{}' in {} at ({}, {})",
+                                    direction, text, app_name, click_x, click_y
                                 )),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
-                        Ok(None) => Ok(format!("❌ Could not find '{}' on screen", text)),
+                        Ok(None) => Ok(format!("❌ Could not find '{}' in {}", text, app_name)),
                         Err(e) => Ok(format!("❌ Error finding text: {}", e)),
                     }
                 } else {
