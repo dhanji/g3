@@ -2677,12 +2677,19 @@ Template:
                             if tool_call.tool != "final_output" {
                                 let output_lines: Vec<&str> = tool_result.lines().collect();
 
+                                // Check if UI wants full output (machine mode) or truncated (human mode)
+                                let wants_full = self.ui_writer.wants_full_output();
+                                
                                 // Helper function to safely truncate strings at character boundaries
-                                let truncate_line = |line: &str, max_width: usize| -> String {
-                                    let char_count = line.chars().count();
-                                    if char_count <= max_width {
+                                let truncate_line = |line: &str, max_width: usize, truncate: bool| -> String {
+                                    if !truncate {
+                                        // Machine mode - return full line
+                                        line.to_string()
+                                    } else if line.chars().count() <= max_width {
+                                        // Human mode - line fits within limit
                                         line.to_string()
                                     } else {
+                                        // Human mode - truncate long line
                                         let truncated: String = line
                                             .chars()
                                             .take(max_width.saturating_sub(3))
@@ -2697,18 +2704,18 @@ Template:
                                 
                                 // For todo tools, show all lines without truncation
                                 let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
-                                let max_lines_to_show = if is_todo_tool { output_len } else { MAX_LINES };
+                                let max_lines_to_show = if is_todo_tool || wants_full { output_len } else { MAX_LINES };
 
                                 for (idx, line) in output_lines.iter().enumerate() {
-                                    if !is_todo_tool && idx >= max_lines_to_show {
+                                    if !is_todo_tool && !wants_full && idx >= max_lines_to_show {
                                         break;
                                     }
                                     // Clip line to max width
-                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
+                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full);
                                     self.ui_writer.update_tool_output_line(&clipped_line);
                                 }
 
-                                if !is_todo_tool && output_len > MAX_LINES {
+                                if !is_todo_tool && !wants_full && output_len > MAX_LINES {
                                     self.ui_writer.print_tool_output_summary(output_len);
                                 }
                             }
