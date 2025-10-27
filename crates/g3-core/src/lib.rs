@@ -2675,7 +2675,12 @@ Template:
 
                             // Display tool execution result with proper indentation
                             if tool_call.tool != "final_output" {
-                                let output_lines: Vec<&str> = tool_result.lines().collect();
+                                // Skip displaying output for shell tool since it was already streamed
+                                let should_display_output = tool_call.tool != "shell";
+                                
+                                let output_lines: Vec<&str> = if should_display_output {
+                                    tool_result.lines().collect()
+                                } else { vec![] };
 
                                 // Check if UI wants full output (machine mode) or truncated (human mode)
                                 let wants_full = self.ui_writer.wants_full_output();
@@ -3186,13 +3191,16 @@ Template:
                         {
                             Ok(result) => {
                                 if result.success {
-                                    Ok(if result.stdout.is_empty() {
-                                        "✅ Command executed successfully".to_string()
-                                    } else {
-                                        result.stdout.trim().to_string()
-                                    })
+                                    // Don't return stdout - it was already streamed to the UI
+                                    // Returning it would cause duplicate output
+                                    Ok("✅ Command executed successfully".to_string())
                                 } else {
-                                    Ok(format!("❌ Command failed: {}", result.stderr.trim()))
+                                    // For errors, return stderr since it wasn't streamed
+                                    Ok(if result.stderr.is_empty() {
+                                        "❌ Command failed".to_string()
+                                    } else {
+                                        format!("❌ Command failed: {}", result.stderr.trim())
+                                    })
                                 }
                             }
                             Err(e) => Ok(format!("❌ Execution error: {}", e)),
