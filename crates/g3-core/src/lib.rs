@@ -2727,7 +2727,8 @@ Template:
 
                             // Check if this was a final_output tool call
                             if tool_call.tool == "final_output" {
-                                full_response.push_str(final_display_content);
+                                // Don't add final_display_content here - it was already added before tool execution
+                                // Adding it again would duplicate the output
                                 if let Some(summary) = tool_call.args.get("summary") {
                                     if let Some(summary_str) = summary.as_str() {
                                         full_response.push_str(&format!("\n\n{}", summary_str));
