@@ -1145,6 +1145,27 @@ async fn run_interactive_machine(
                             println!("{}", summary);
                             continue;
                         }
+                        "/readme" => {
+                            println!("COMMAND: readme");
+                            match agent.reload_readme() {
+                                Ok(true) => println!("RESULT: README content reloaded successfully"),
+                                Ok(false) => println!("RESULT: No README was loaded at startup, cannot reload"),
+                                Err(e) => println!("ERROR: {}", e),
+                            }
+                            continue;
+                        }
+                        "/stats" => {
+                            println!("COMMAND: stats");
+                            let stats = agent.get_stats();
+                            // Emit stats as structured data (name: value pairs)
+                            println!("{}", stats);
+                            continue;
+                        }
+                        "/help" => {
+                            println!("COMMAND: help");
+                            println!("AVAILABLE_COMMANDS: /compact /thinnify /readme /stats /help");
+                            continue;
+                        }
                         _ => {
                             println!("ERROR: Unknown command: {}", input);
                             continue;
