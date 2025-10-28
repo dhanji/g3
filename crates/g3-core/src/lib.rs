@@ -18,6 +18,9 @@ mod tilde_expansion_tests;
 
 #[cfg(test)]
 mod error_handling_test;
+
+#[cfg(test)]
+mod gitignore_prompt_tests;
 use anyhow::Result;
 use g3_computer_control::WebDriverController;
 use g3_config::Config;
@@ -1031,6 +1034,28 @@ impl<W: UiWriter> Agent<W> {
         Ok(context_length)
     }
 
+    /// Check if .gitignore exists and return a prompt snippet about respecting it
+    fn get_gitignore_prompt_snippet() -> String {
+        // Check if .gitignore exists in the current directory
+        if std::path::Path::new(".gitignore").exists() {
+            // Try to read it to show some examples of what's ignored
+            if let Ok(gitignore_content) = std::fs::read_to_string(".gitignore") {
+                // Extract non-comment, non-empty lines as examples
+                let patterns: Vec<&str> = gitignore_content
+                    .lines()
+                    .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
+                    .take(5) // Show up to 5 patterns
+                    .collect();
+                
+                if !patterns.is_empty() {
+                    return format!("\n\nIMPORTANT: This project has a .gitignore file. When using ripgrep or other file operations, be aware that the following patterns are ignored: {}. Ripgrep automatically respects .gitignore by default.", patterns.join(", "));
+                }
+            }
+            return "\n\nIMPORTANT: This project has a .gitignore file. When using ripgrep or other file operations, ripgrep automatically respects .gitignore by default.".to_string();
+        }
+        String::new()
+    }
+
     pub fn get_provider_info(&self) -> Result<(String, String)> {
         let provider = self.providers.get(None)?;
         Ok((provider.name().to_string(), provider.model().to_string()))
@@ -1135,7 +1160,9 @@ impl<W: UiWriter> Agent<W> {
         // Only add system message if this is the first interaction (empty conversation history)
         if self.context_window.conversation_history.is_empty() {
             let provider = self.providers.get(None)?;
-            let system_prompt = if provider.has_native_tool_calling() {
+            let gitignore_snippet = Self::get_gitignore_prompt_snippet();
+            
+            let mut system_prompt = if provider.has_native_tool_calling() {
                 // For native tool calling providers, use a more explicit system prompt
                 "You are G3, an AI programming agent of the same skill level as a seasoned engineer at a major technology company. You analyze given tasks and write code to achieve goals.
 
@@ -1267,6 +1294,9 @@ Template:
 
 ".to_string()
             };
+            
+            // Append gitignore snippet if present
+            system_prompt.push_str(&gitignore_snippet);
 
             if show_prompt {
                 self.ui_writer.print_system_prompt(&system_prompt);

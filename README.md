@@ -14,6 +14,7 @@ The heart of the agent system, containing:
 - **Context Window Management**: Intelligent tracking of token usage with context thinning (50-80%) and auto-summarization at 80% capacity
 - **Tool System**: Built-in tools for file operations, shell commands, computer control, TODO management, and structured output
 - **Streaming Response Parser**: Real-time parsing of LLM responses with tool call detection and execution
+- **Smart Project Awareness**: Automatically detects and respects `.gitignore` patterns, informing the agent about ignored files
 - **Task Execution**: Support for single and iterative task execution with automatic retry logic
 
 #### **g3-providers**
@@ -97,7 +98,10 @@ These commands give you fine-grained control over context management, allowing y
 - **Final Output**: Formatted result presentation
 
 ### Provider Flexibility
-- Support for multiple LLM providers through a unified interface
+
+### Smart Project Awareness
+
+- Automatically detects and respects `.gitignore` when present
 - Hot-swappable providers without code changes
 - Provider-specific optimizations and feature support
 - Local model support for offline operation
