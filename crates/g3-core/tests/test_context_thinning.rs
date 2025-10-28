@@ -72,7 +72,7 @@ fn test_thin_context_basic() {
     
     // Trigger thinning at 50%
     context.used_tokens = 5000;
-    let summary = context.thin_context();
+    let (summary, _chars_saved) = context.thin_context();
     
     println!("Thinning summary: {}", summary);
     
@@ -94,6 +94,119 @@ fn test_thin_context_basic() {
 }
 
 #[test]
+fn test_thin_write_file_tool_calls() {
+    let mut context = ContextWindow::new(10000);
+    
+    // Add some messages including a write_file tool call with large content
+    context.add_message(Message {
+        role: MessageRole::User,
+        content: "Please create a large file".to_string(),
+    });
+    
+    // Add an assistant message with a write_file tool call containing large content
+    let large_content = "x".repeat(1500);
+    let tool_call_json = format!(
+        r#"{{"tool": "write_file", "args": {{"file_path": "test.txt", "content": "{}"}}}}"#,
+        large_content
+    );
+    context.add_message(Message {
+        role: MessageRole::Assistant,
+        content: format!("I'll create that file.\n\n{}", tool_call_json),
+    });
+    
+    context.add_message(Message {
+        role: MessageRole::User,
+        content: "Tool result: ✅ Successfully wrote 1500 lines".to_string(),
+    });
+    
+    // Add more messages to ensure we have enough for "first third" logic
+    for i in 0..6 {
+        context.add_message(Message {
+            role: MessageRole::Assistant,
+            content: format!("Response {}", i),
+        });
+    }
+    
+    // Trigger thinning at 50%
+    context.used_tokens = 5000;
+    let (summary, _chars_saved) = context.thin_context();
+    
+    println!("Thinning summary: {}", summary);
+    
+    // Should have thinned the write_file tool call
+    assert!(summary.contains("tool call") || summary.contains("chars saved"));
+    
+    // Check that the large content was replaced with a file reference
+    let first_third_end = context.conversation_history.len() / 3;
+    for i in 0..first_third_end {
+        if let Some(msg) = context.conversation_history.get(i) {
+            if matches!(msg.role, MessageRole::Assistant) && msg.content.contains("write_file") {
+                // The content should now reference an external file
+                assert!(msg.content.contains("<content saved to"));
+                assert!(!msg.content.contains(&large_content));
+            }
+        }
+    }
+}
+
+#[test]
+fn test_thin_str_replace_tool_calls() {
+    let mut context = ContextWindow::new(10000);
+    
+    // Add some messages including a str_replace tool call with large diff
+    context.add_message(Message {
+        role: MessageRole::User,
+        content: "Please update the file".to_string(),
+    });
+    
+    // Add an assistant message with a str_replace tool call containing large diff
+    let large_diff = format!("--- old\n{}\n+++ new\n{}", "-old line\n".repeat(100), "+new line\n".repeat(100));
+    let tool_call_json = format!(
+        r#"{{"tool": "str_replace", "args": {{"file_path": "test.txt", "diff": "{}"}}}}"#,
+        large_diff.replace('\n', "\\n")
+    );
+    context.add_message(Message {
+        role: MessageRole::Assistant,
+        content: format!("I'll update that file.\n\n{}", tool_call_json),
+    });
+    
+    context.add_message(Message {
+        role: MessageRole::User,
+        content: "Tool result: ✅ applied unified diff".to_string(),
+    });
+    
+    // Add more messages to ensure we have enough for "first third" logic
+    for i in 0..6 {
+        context.add_message(Message {
+            role: MessageRole::Assistant,
+            content: format!("Response {}", i),
+        });
+    }
+    
+    // Trigger thinning at 50%
+    context.used_tokens = 5000;
+    let (summary, _chars_saved) = context.thin_context();
+    
+    println!("Thinning summary: {}", summary);
+    
+    // Should have thinned the str_replace tool call
+    assert!(summary.contains("tool call") || summary.contains("chars saved"));
+    
+    // Check that the large diff was replaced with a file reference
+    let first_third_end = context.conversation_history.len() / 3;
+    for i in 0..first_third_end {
+        if let Some(msg) = context.conversation_history.get(i) {
+            if matches!(msg.role, MessageRole::Assistant) && msg.content.contains("str_replace") {
+                // The diff should now reference an external file
+                assert!(msg.content.contains("<diff saved to"));
+                // Should not contain the large diff content
+                assert!(!msg.content.contains("old line"));
+            }
+        }
+    }
+}
+
+#[test]
 fn test_thin_context_no_large_results() {
     let mut context = ContextWindow::new(10000);
     
@@ -106,10 +219,10 @@ fn test_thin_context_no_large_results() {
     }
     
     context.used_tokens = 5000;
-    let summary = context.thin_context();
+    let (summary, _chars_saved) = context.thin_context();
     
     // Should report no large results found
-    assert!(summary.contains("no large tool results found"));
+    assert!(summary.contains("no large tool results or tool calls found"));
 }
 
 #[test]
@@ -135,7 +248,7 @@ fn test_thin_context_only_affects_first_third() {
     }
     
     context.used_tokens = 5000;
-    let summary = context.thin_context();
+    let (summary, _chars_saved) = context.thin_context();
     
     // First third is 4 messages (indices 0-3), so only indices 1 and 3 should be thinned
     // That's 2 tool results

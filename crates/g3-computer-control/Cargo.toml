@@ -3,6 +3,9 @@ name = "g3-computer-control"
 version = "0.1.0"
 edition = "2021"
 
+[build-dependencies]
+# Only needed for building Swift bridge on macOS
+
 [dependencies]
 # Workspace dependencies
 tokio = { workspace = true }
@@ -20,15 +23,13 @@ async-trait = "0.1"
 # WebDriver support
 fantoccini = "0.21"
 
-# OCR dependencies
-tesseract = "0.14"
-
 # macOS dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.23"
-core-foundation = "0.9"
+core-foundation = "0.10"
 cocoa = "0.25"
 objc = "0.2"
+accessibility = "0.2"
 image = "0.24"
 
 # Linux dependencies

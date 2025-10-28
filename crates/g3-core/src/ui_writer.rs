@@ -17,6 +17,9 @@ pub trait UiWriter: Send + Sync {
     /// Print a context window status message
     fn print_context_status(&self, message: &str);
     
+    /// Print a context thinning success message with highlight and animation
+    fn print_context_thinning(&self, message: &str);
+    
     /// Print a tool execution header
     fn print_tool_header(&self, tool_name: &str);
     
@@ -49,6 +52,10 @@ pub trait UiWriter: Send + Sync {
     
     /// Flush any buffered output
     fn flush(&self);
+    
+    /// Returns true if this UI writer wants full, untruncated output
+    /// Default is false (truncate for human readability)
+    fn wants_full_output(&self) -> bool { false }
 }
 
 /// A no-op implementation for when UI output is not needed
@@ -60,6 +67,7 @@ impl UiWriter for NullUiWriter {
     fn print_inline(&self, _message: &str) {}
     fn print_system_prompt(&self, _prompt: &str) {}
     fn print_context_status(&self, _message: &str) {}
+    fn print_context_thinning(&self, _message: &str) {}
     fn print_tool_header(&self, _tool_name: &str) {}
     fn print_tool_arg(&self, _key: &str, _value: &str) {}
     fn print_tool_output_header(&self) {}
@@ -71,4 +79,5 @@ impl UiWriter for NullUiWriter {
     fn print_agent_response(&self, _content: &str) {}
     fn notify_sse_received(&self) {}
     fn flush(&self) {}
+    fn wants_full_output(&self) -> bool { false }
 }

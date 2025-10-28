@@ -104,6 +104,7 @@ impl Project {
     }
     
     /// Recursively check a directory for implementation files
+    #[allow(clippy::only_used_in_recursion)]
     fn check_dir_for_implementation_files(&self, dir: &Path) -> bool {
         // Common source file extensions
         let extensions = vec![

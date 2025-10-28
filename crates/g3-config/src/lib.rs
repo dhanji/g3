@@ -8,6 +8,7 @@ pub struct Config {
     pub agent: AgentConfig,
     pub computer_control: ComputerControlConfig,
     pub webdriver: WebDriverConfig,
+    pub macax: MacAxConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +80,19 @@ pub struct WebDriverConfig {
     pub safari_port: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacAxConfig {
+    pub enabled: bool,
+}
+
+impl Default for MacAxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+        }
+    }
+}
+
 impl Default for WebDriverConfig {
     fn default() -> Self {
         Self {
@@ -124,6 +138,7 @@ impl Default for Config {
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
+            macax: MacAxConfig::default(),
         }
     }
 }
@@ -238,6 +253,7 @@ impl Config {
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
+            macax: MacAxConfig::default(),
         }
     }
     

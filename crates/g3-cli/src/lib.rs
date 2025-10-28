@@ -167,14 +167,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
-mod retro_tui;
-mod theme;
-mod tui;
 mod ui_writer_impl;
-use retro_tui::RetroTui;
-use theme::ColorTheme;
-use tui::SimpleOutput;
-use ui_writer_impl::{ConsoleUiWriter, RetroTuiWriter};
+mod simple_output;
+use simple_output::SimpleOutput;
+mod machine_ui_writer;
+use machine_ui_writer::MachineUiWriter;
+use ui_writer_impl::ConsoleUiWriter;
 
 #[derive(Parser)]
 #[command(name = "g3")]
@@ -216,13 +214,13 @@ pub struct Cli {
     #[arg(long, value_name = "TEXT")]
     pub requirements: Option<String>,
 
-    /// Use retro terminal UI (inspired by 80s sci-fi)
+    /// Interactive mode: prompt for requirements and save to requirements.md before starting autonomous mode
     #[arg(long)]
-    pub retro: bool,
+    pub interactive_requirements: bool,
 
-    /// Color theme for retro mode (default, dracula, or path to theme file)
-    #[arg(long, value_name = "THEME")]
-    pub theme: Option<String>,
+    /// Enable machine-friendly output mode with JSON markers and stats
+    #[arg(long)]
+    pub machine: bool,
 
     /// Override the configured provider (anthropic, databricks, embedded, openai)
     #[arg(long, value_name = "PROVIDER")]
@@ -235,13 +233,21 @@ pub struct Cli {
     /// Disable log file creation (no logs/ directory or session logs)
     #[arg(long)]
     pub quiet: bool,
+
+    /// Enable macOS Accessibility API tools for native app automation
+    #[arg(long)]
+    pub macax: bool,
+
+    /// Enable WebDriver browser automation tools
+    #[arg(long)]
+    pub webdriver: bool,
 }
 
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Only initialize logging if not in retro mode
-    if !cli.retro {
+    if !cli.machine {
         // Initialize logging with filtering
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -279,16 +285,16 @@ pub async fn run() -> Result<()> {
         tracing_subscriber::registry().with(filter).init();
     }
 
-    if !cli.retro {
+    if !cli.machine {
         info!("Starting G3 AI Coding Agent");
     }
 
     // Set up workspace directory
-    let workspace_dir = if let Some(ws) = cli.workspace {
-        ws
+    let workspace_dir = if let Some(ws) = &cli.workspace {
+        ws.clone()
     } else if cli.autonomous {
         // For autonomous mode, use G3_WORKSPACE env var or default
-        setup_workspace_directory()?
+        setup_workspace_directory(cli.machine)?
     } else {
         // Default to current directory for interactive/single-shot mode
         std::env::current_dir()?
@@ -303,9 +309,115 @@ pub async fn run() -> Result<()> {
 
     // Create project model
     let project = if cli.autonomous {
-        if let Some(requirements_text) = cli.requirements {
+        // Handle interactive requirements mode with AI enhancement
+        if cli.interactive_requirements {
+            println!("\n📝 Interactive Requirements Mode");
+            println!("================================\n");
+            println!("Describe what you want to build (can be brief):");
+            println!("Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.\n");
+            
+            use std::io::{self, Read, Write};
+            let mut requirements_input = String::new();
+            io::stdin().read_to_string(&mut requirements_input)?;
+            
+            if requirements_input.trim().is_empty() {
+                anyhow::bail!("No requirements provided. Exiting.");
+            }
+            
+            println!("\n🤖 Enhancing your requirements with AI...\n");
+            
+            // Create a temporary agent to enhance the requirements
+            let temp_config = Config::load_with_overrides(
+                cli.config.as_deref(),
+                cli.provider.clone(),
+                cli.model.clone(),
+            )?;
+            
+            let ui_writer = ConsoleUiWriter::new();
+            let mut temp_agent = Agent::new_with_readme_and_quiet(
+                temp_config,
+                ui_writer,
+                None,
+                true, // quiet mode
+            ).await?;
+            
+            // Craft the enhancement prompt
+            let enhancement_prompt = format!(
+                r#"You are a requirements analyst. Take this brief user input and expand it into a structured requirements document.
+
+USER INPUT:
+{}
+
+Create a professional requirements document with:
+1. A clear project title (# heading)
+2. An overview section explaining what will be built
+3. Organized requirements (functional, technical, quality)
+4. Acceptance criteria
+5. Any technical constraints or preferences mentioned
+
+Format as proper markdown. Be specific and actionable. If the user's input is vague, make reasonable assumptions but keep it focused on what they described.
+
+Output ONLY the markdown content, no explanations or meta-commentary."#,
+                requirements_input.trim()
+            );
+            
+            // Execute enhancement task
+            let result = temp_agent
+                .execute_task_with_timing(&enhancement_prompt, None, false, false, false, false)
+                .await?;
+            
+            let enhanced_requirements = result.response.trim().to_string();
+            
+            // Show the enhanced requirements
+            println!("\n📋 Enhanced Requirements Document:");
+            println!("{}\n", "=".repeat(60));
+            println!("{}", enhanced_requirements);
+            println!("{}\n", "=".repeat(60));
+            
+            // Ask for confirmation
+            println!("\n❓ Is this requirements document acceptable?");
+            println!("   [y] Yes, proceed with autonomous mode");
+            println!("   [e] Edit and save manually");
+            println!("   [n] No, cancel\n");
+            
+            print!("Your choice (y/e/n): ");
+            io::stdout().flush()?;
+            
+            let mut choice = String::new();
+            io::stdin().read_line(&mut choice)?;
+            let choice = choice.trim().to_lowercase();
+            
+            let requirements_path = workspace_dir.join("requirements.md");
+            
+            match choice.as_str() {
+                "y" | "yes" => {
+                    // Save enhanced requirements
+                    std::fs::write(&requirements_path, &enhanced_requirements)?;
+                    println!("\n✅ Requirements saved to: {}", requirements_path.display());
+                    println!("🚀 Starting autonomous mode...\n");
+                }
+                "e" | "edit" => {
+                    // Save enhanced requirements for manual editing
+                    std::fs::write(&requirements_path, &enhanced_requirements)?;
+                    println!("\n✅ Requirements saved to: {}", requirements_path.display());
+                    println!("📝 Please edit the file and run: g3 --autonomous");
+                    println!("   Exiting for now.\n");
+                    return Ok(());
+                }
+                "n" | "no" => {
+                    println!("\n❌ Cancelled. No files were saved.\n");
+                    return Ok(());
+                }
+                _ => {
+                    println!("\n❌ Invalid choice. Cancelled.\n");
+                    return Ok(());
+                }
+            }
+        }
+        
+        if let Some(requirements_text) = &cli.requirements {
             // Use requirements text override
-            Project::new_autonomous_with_requirements(workspace_dir.clone(), requirements_text)?
+            Project::new_autonomous_with_requirements(workspace_dir.clone(), requirements_text.clone())?
         } else {
             // Use traditional requirements.md file
             Project::new_autonomous(workspace_dir.clone())?
@@ -318,16 +430,29 @@ pub async fn run() -> Result<()> {
     project.ensure_workspace_exists()?;
     project.enter_workspace()?;
 
-    if !cli.retro {
+    if !cli.machine {
         info!("Using workspace: {}", project.workspace().display());
     }
 
     // Load configuration with CLI overrides
-    let config = Config::load_with_overrides(
+    let mut config = Config::load_with_overrides(
         cli.config.as_deref(),
         cli.provider.clone(),
         cli.model.clone(),
     )?;
+
+    // Apply macax flag override
+    if cli.macax {
+        config.macax.enabled = true;
+        if !cli.machine {
+            info!("macOS Accessibility API tools enabled");
+        }
+    }
+
+    // Apply webdriver flag override
+    if cli.webdriver {
+        config.webdriver.enabled = true;
+    }
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
@@ -342,7 +467,7 @@ pub async fn run() -> Result<()> {
     }
 
     // Initialize agent
-    let ui_writer = ConsoleUiWriter::new();
+    // ui_writer will be created conditionally based on machine mode
     
     // Combine AGENTS.md and README content if both exist
     let combined_content = match (agents_content.clone(), readme_content.clone()) {
@@ -354,28 +479,117 @@ pub async fn run() -> Result<()> {
         (None, None) => None,
     };
     
-    let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_readme_and_quiet(
-            config.clone(),
-            ui_writer,
-            combined_content.clone(),
-            cli.quiet,
-        )
-        .await?
+    // Execute task, autonomous mode, or start interactive mode based on machine mode
+    if cli.machine {
+        // Machine mode - use MachineUiWriter
+        let ui_writer = MachineUiWriter::new();
+        
+        let agent = if cli.autonomous {
+            Agent::new_autonomous_with_readme_and_quiet(
+                config.clone(),
+                ui_writer,
+                combined_content.clone(),
+                cli.quiet,
+            )
+            .await?
+        } else {
+            Agent::new_with_readme_and_quiet(
+                config.clone(),
+                ui_writer,
+                combined_content.clone(),
+                cli.quiet,
+            )
+            .await?
+        };
+        
+        run_with_machine_mode(agent, cli, project).await?;
     } else {
-        Agent::new_with_readme_and_quiet(
-            config.clone(),
-            ui_writer,
-            combined_content.clone(),
-            cli.quiet,
-        )
-        .await?
+        // Normal mode - use ConsoleUiWriter
+        let ui_writer = ConsoleUiWriter::new();
+        
+        let agent = if cli.autonomous {
+            Agent::new_autonomous_with_readme_and_quiet(
+                config.clone(),
+                ui_writer,
+                combined_content.clone(),
+                cli.quiet,
+            )
+            .await?
+        } else {
+            Agent::new_with_readme_and_quiet(
+                config.clone(),
+                ui_writer,
+                combined_content.clone(),
+                cli.quiet,
+            )
+            .await?
+        };
+        
+        run_with_console_mode(agent, cli, project, combined_content).await?;
+    }
+
+    Ok(())
+}
+
+// Simplified machine mode version of autonomous mode
+async fn run_autonomous_machine(
+    mut agent: Agent<MachineUiWriter>,
+    project: Project,
+    show_prompt: bool,
+    show_code: bool,
+    max_turns: usize,
+    _quiet: bool,
+) -> Result<()> {
+    println!("AUTONOMOUS_MODE_STARTED");
+    println!("WORKSPACE: {}", project.workspace().display());
+    println!("MAX_TURNS: {}", max_turns);
+
+    // Check if requirements exist
+    if !project.has_requirements() {
+        println!("ERROR: requirements.md not found in workspace directory");
+        return Ok(());
+    }
+
+    // Read requirements
+    let requirements = match project.read_requirements()? {
+        Some(content) => content,
+        None => {
+            println!("ERROR: Could not read requirements");
+            return Ok(());
+        }
     };
+
+    println!("REQUIREMENTS_LOADED");
+
+    // For now, just execute a simple autonomous loop
+    // This is a simplified version - full implementation would need coach-player loop
+    let task = format!(
+        "You are G3 in implementation mode. Read and implement the following requirements:\n\n{}\n\nImplement this step by step, creating all necessary files and code.",
+        requirements
+    );
+
+    println!("TASK_START");
+    let result = agent.execute_task_with_timing(&task, None, false, show_prompt, show_code, true).await?;
+    println!("AGENT_RESPONSE:");
+    println!("{}", result.response);
+    println!("END_AGENT_RESPONSE");
+    println!("TASK_END");
+
+    println!("AUTONOMOUS_MODE_ENDED");
+    Ok(())
+}
+
+async fn run_with_console_mode(
+    mut agent: Agent<ConsoleUiWriter>,
+    cli: Cli,
+    project: Project,
+    combined_content: Option<String>,
+) -> Result<()> {
 
     // Execute task, autonomous mode, or start interactive mode
     if cli.autonomous {
         // Autonomous mode with coach-player feedback loop
-        if !cli.retro {
+        if !cli.machine {
             info!("Starting autonomous mode");
         }
         run_autonomous(
@@ -389,7 +603,7 @@ pub async fn run() -> Result<()> {
         .await?;
     } else if let Some(task) = cli.task {
         // Single-shot mode
-        if !cli.retro {
+        if !cli.machine {
             info!("Executing task: {}", task);
         }
         let output = SimpleOutput::new();
@@ -399,26 +613,43 @@ pub async fn run() -> Result<()> {
         output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
-        if !cli.retro {
+        if !cli.machine {
             info!("Starting interactive mode");
         }
+        println!("📁 Workspace: {}", project.workspace().display());
+        run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
+    }
 
-        if cli.retro {
-            // Use retro terminal UI
-            run_interactive_retro(
-                config, // Already has overrides applied
-                cli.show_prompt,
-                cli.show_code,
-                cli.theme,
-                combined_content,
-            )
+    Ok(())
+}
+
+async fn run_with_machine_mode(
+    mut agent: Agent<MachineUiWriter>,
+    cli: Cli,
+    project: Project,
+) -> Result<()> {
+    if cli.autonomous {
+        // Autonomous mode with coach-player feedback loop
+        run_autonomous_machine(
+            agent,
+            project,
+            cli.show_prompt,
+            cli.show_code,
+            cli.max_turns,
+            cli.quiet,
+        )
+        .await?;
+    } else if let Some(task) = cli.task {
+        // Single-shot mode
+        let result = agent
+            .execute_task_with_timing(&task, None, false, cli.show_prompt, cli.show_code, true)
             .await?;
-        } else {
-            // Use standard terminal UI
-            let output = SimpleOutput::new();
-            output.print(&format!("📁 Workspace: {}", project.workspace().display()));
-            run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
-        }
+        println!("AGENT_RESPONSE:");
+        println!("{}", result.response);
+        println!("END_AGENT_RESPONSE");
+    } else {
+        // Interactive mode
+        run_interactive_machine(agent, cli.show_prompt, cli.show_code).await?;
     }
 
     Ok(())
@@ -527,8 +758,8 @@ fn extract_readme_heading(readme_content: &str) -> Option<String> {
         let trimmed = line.trim();
 
         // Check for H1 heading (# Title)
-        if trimmed.starts_with("# ") {
-            let title = trimmed[2..].trim();
+        if let Some(stripped) = trimmed.strip_prefix("# ") {
+            let title = stripped.trim();
             if !title.is_empty() {
                 // Return the full title (including any description after dash)
                 return Some(title.to_string());
@@ -558,275 +789,6 @@ fn extract_readme_heading(readme_content: &str) -> Option<String> {
         }
     }
     None
-}
-
-async fn run_interactive_retro(
-    config: Config,
-    show_prompt: bool,
-    show_code: bool,
-    theme_name: Option<String>,
-    combined_content: Option<String>,
-) -> Result<()> {
-    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-    use std::time::Duration;
-
-    // Set environment variable to suppress println in other crates
-    std::env::set_var("G3_RETRO_MODE", "1");
-
-    // Load the color theme
-    let theme = match ColorTheme::load(theme_name.as_deref()) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to load theme: {}. Using default.", e);
-            ColorTheme::default()
-        }
-    };
-
-    // Initialize the retro terminal UI
-    let tui = RetroTui::start(theme).await?;
-
-    // Create agent with RetroTuiWriter
-    let ui_writer = RetroTuiWriter::new(tui.clone());
-    let mut agent = Agent::new_with_readme_and_quiet(config, ui_writer, combined_content.clone(), false).await?;
-
-    // Display initial system messages
-    tui.output("SYSTEM: AGENT ONLINE\n\n");
-
-    // Display message if AGENTS.md or README was loaded
-    if let Some(ref content) = combined_content {
-        // Check what was loaded
-        let has_agents = content.contains("Agent Configuration");
-        let has_readme = content.contains("Project README");
-        
-        if has_agents {
-            tui.output("SYSTEM: AGENT CONFIGURATION LOADED\n\n");
-        }
-        
-        if has_readme {
-            // Extract the first heading or title from the README
-            let readme_snippet = extract_readme_heading(content)
-                .unwrap_or_else(|| "PROJECT DOCUMENTATION LOADED".to_string());
-            
-            tui.output(&format!(
-                "SYSTEM: PROJECT README LOADED - {}\n\n",
-                readme_snippet
-            ));
-        }
-    }
-    tui.output("SYSTEM: READY FOR INPUT\n\n");
-    tui.output("\n\n");
-
-    // Display provider and model information
-    match agent.get_provider_info() {
-        Ok((provider, model)) => {
-            tui.update_provider_info(&provider, &model);
-        }
-        Err(e) => {
-            tui.update_provider_info("ERROR", &e.to_string());
-        }
-    }
-
-    // Track multiline input
-    let mut multiline_buffer = String::new();
-    let mut in_multiline = false;
-
-    // Main event loop
-    loop {
-        // Update context window display
-        let context = agent.get_context_window();
-        tui.update_context(
-            context.used_tokens,
-            context.total_tokens,
-            context.percentage_used(),
-        );
-
-        // Poll for keyboard events
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.exit();
-                        break;
-                    }
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.exit();
-                        break;
-                    }
-                    // Emacs/bash-like shortcuts
-                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.cursor_home();
-                    }
-                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.cursor_end();
-                    }
-                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.delete_word();
-                    }
-                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.delete_to_end();
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        // Delete from beginning to cursor (similar to Ctrl-K but opposite direction)
-                        let (input_buffer, cursor_pos) = tui.get_input_state();
-                        if cursor_pos > 0 {
-                            let after = input_buffer.chars().skip(cursor_pos).collect::<String>();
-                            tui.update_input(&after);
-                            tui.cursor_home();
-                        }
-                    }
-                    KeyCode::Left => {
-                        tui.cursor_left();
-                    }
-                    KeyCode::Right => {
-                        tui.cursor_right();
-                    }
-                    KeyCode::Home if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.cursor_home();
-                    }
-                    KeyCode::End if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.cursor_end();
-                    }
-                    KeyCode::Delete => {
-                        tui.delete_char();
-                    }
-                    KeyCode::Enter => {
-                        let (input_buffer, _) = tui.get_input_state();
-                        if !input_buffer.is_empty() {
-                            // Clear the input for next command
-                            tui.update_input("");
-                            let trimmed = input_buffer.trim_end();
-
-                            // Check if line ends with backslash for continuation
-                            if trimmed.ends_with('\\') {
-                                // Remove the backslash and add to buffer
-                                let without_backslash = &trimmed[..trimmed.len() - 1];
-                                multiline_buffer.push_str(without_backslash);
-                                multiline_buffer.push('\n');
-                                in_multiline = true;
-                                tui.status("MULTILINE INPUT");
-                                continue;
-                            }
-
-                            // If we're in multiline mode and no backslash, this is the final line
-                            let final_input = if in_multiline {
-                                multiline_buffer.push_str(&input_buffer);
-                                in_multiline = false;
-                                let result = multiline_buffer.clone();
-                                multiline_buffer.clear();
-                                tui.status("READY");
-                                result
-                            } else {
-                                input_buffer.clone()
-                            };
-
-                            let input = final_input.trim().to_string();
-                            if input.is_empty() {
-                                continue;
-                            }
-
-                            if input == "exit" || input == "quit" {
-                                tui.exit();
-                                break;
-                            }
-
-                            // Execute the task
-                            tui.output(&format!("> {}", input));
-                            tui.status("PROCESSING");
-
-                            const MAX_TIMEOUT_RETRIES: u32 = 3;
-                            let mut attempt = 0;
-
-                            loop {
-                                attempt += 1;
-
-                                match agent
-                                    .execute_task_with_timing(
-                                        &input,
-                                        None,
-                                        false,
-                                        show_prompt,
-                                        show_code,
-                                        true,
-                                    )
-                                    .await
-                                {
-                                    Ok(result) => {
-                                        if attempt > 1 {
-                                            tui.output(&format!(
-                                                "SYSTEM: REQUEST SUCCEEDED AFTER {} ATTEMPTS",
-                                                attempt
-                                            ));
-                                        }
-                                        tui.output(&result.response);
-                                        tui.status("READY");
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        // Check if this is a timeout error that we should retry
-                                        let error_type = classify_error(&e);
-
-                                        if matches!(
-                                            error_type,
-                                            ErrorType::Recoverable(RecoverableError::Timeout)
-                                        ) && attempt < MAX_TIMEOUT_RETRIES
-                                        {
-                                            // Calculate retry delay with exponential backoff
-                                            let delay_ms = 1000 * (2_u64.pow(attempt - 1));
-                                            let delay = std::time::Duration::from_millis(delay_ms);
-
-                                            tui.output(&format!("SYSTEM: TIMEOUT ERROR (ATTEMPT {}/{}). RETRYING IN {:?}...",
-                                                attempt, MAX_TIMEOUT_RETRIES, delay));
-                                            tui.status("RETRYING");
-
-                                            // Wait before retrying
-                                            tokio::time::sleep(delay).await;
-                                            continue;
-                                        }
-
-                                        // For non-timeout errors or after max retries
-                                        tui.error(&format!("Task execution failed: {}", e));
-                                        tui.status("ERROR");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        tui.insert_char(c);
-                    }
-                    KeyCode::Backspace => {
-                        tui.backspace();
-                    }
-                    KeyCode::Up => {
-                        tui.scroll_up();
-                    }
-                    KeyCode::Down => {
-                        tui.scroll_down();
-                    }
-                    KeyCode::PageUp => {
-                        tui.scroll_page_up();
-                    }
-                    KeyCode::PageDown => {
-                        tui.scroll_page_down();
-                    }
-                    KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.scroll_home(); // Ctrl+Home for scrolling to top
-                    }
-                    KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        tui.scroll_end(); // Ctrl+End for scrolling to bottom
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Small delay to prevent CPU spinning
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    tui.output("SYSTEM: SHUTDOWN INITIATED");
-    Ok(())
 }
 
 async fn run_interactive<W: UiWriter>(
@@ -903,9 +865,8 @@ async fn run_interactive<W: UiWriter>(
                 let trimmed = line.trim_end();
 
                 // Check if line ends with backslash for continuation
-                if trimmed.ends_with('\\') {
+                if let Some(without_backslash) = trimmed.strip_suffix('\\') {
                     // Remove the backslash and add to buffer
-                    let without_backslash = &trimmed[..trimmed.len() - 1];
                     multiline_buffer.push_str(without_backslash);
                     multiline_buffer.push('\n');
                     in_multiline = true;
@@ -947,6 +908,62 @@ async fn run_interactive<W: UiWriter>(
 
                     // Add to history
                     rl.add_history_entry(&input)?;
+
+                    // Check for control commands
+                    if input.starts_with('/') {
+                        match input.as_str() {
+                            "/help" => {
+                                output.print("");
+                                output.print("📖 Control Commands:");
+                                output.print("  /compact   - Trigger auto-summarization (compacts conversation history)");
+                                output.print("  /thinnify  - Trigger context thinning (replaces large tool results with file references)");
+                                output.print("  /readme    - Reload README.md and AGENTS.md from disk");
+                                output.print("  /stats     - Show detailed context and performance statistics");
+                                output.print("  /help      - Show this help message");
+                                output.print("  exit/quit  - Exit the interactive session");
+                                output.print("");
+                                continue;
+                            }
+                            "/compact" => {
+                                output.print("🗜️ Triggering manual summarization...");
+                                match agent.force_summarize().await {
+                                    Ok(true) => {
+                                        output.print("✅ Summarization completed successfully");
+                                    }
+                                    Ok(false) => {
+                                        output.print("⚠️ Summarization failed");
+                                    }
+                                    Err(e) => {
+                                        output.print(&format!("❌ Error during summarization: {}", e));
+                                    }
+                                }
+                                continue;
+                            }
+                            "/thinnify" => {
+                                let summary = agent.force_thin();
+                                println!("{}", summary);
+                                continue;
+                            }
+                            "/readme" => {
+                                output.print("📚 Reloading README.md and AGENTS.md...");
+                                match agent.reload_readme() {
+                                    Ok(true) => output.print("✅ README content reloaded successfully"),
+                                    Ok(false) => output.print("⚠️ No README was loaded at startup, cannot reload"),
+                                    Err(e) => output.print(&format!("❌ Error reloading README: {}", e)),
+                                }
+                                continue;
+                            }
+                            "/stats" => {
+                                let stats = agent.get_stats();
+                                output.print(&stats);
+                                continue;
+                            }
+                            _ => {
+                                output.print(&format!("❌ Unknown command: {}. Type /help for available commands.", input));
+                                continue;
+                            }
+                        }
+                    }
 
                     // Process the single line input
                     execute_task(&mut agent, &input, show_prompt, show_code, &output).await;
@@ -1062,6 +1079,199 @@ async fn execute_task<W: UiWriter>(
     }
 }
 
+async fn run_interactive_machine(
+    mut agent: Agent<MachineUiWriter>,
+    show_prompt: bool,
+    show_code: bool,
+) -> Result<()> {
+    println!("INTERACTIVE_MODE_STARTED");
+
+    // Display provider and model information
+    match agent.get_provider_info() {
+        Ok((provider, model)) => {
+            println!("PROVIDER: {}", provider);
+            println!("MODEL: {}", model);
+        }
+        Err(e) => {
+            println!("ERROR: Failed to get provider info: {}", e);
+        }
+    }
+
+    // Initialize rustyline editor with history
+    let mut rl = DefaultEditor::new()?;
+
+    // Try to load history from a file in the user's home directory
+    let history_file = dirs::home_dir().map(|mut path| {
+        path.push(".g3_history");
+        path
+    });
+
+    if let Some(ref history_path) = history_file {
+        let _ = rl.load_history(history_path);
+    }
+
+    loop {
+        let readline = rl.readline("");
+        match readline {
+            Ok(line) => {
+                let input = line.trim().to_string();
+
+                if input.is_empty() {
+                    continue;
+                }
+
+                if input == "exit" || input == "quit" {
+                    break;
+                }
+
+                // Add to history
+                rl.add_history_entry(&input)?;
+
+                // Check for control commands
+                if input.starts_with('/') {
+                    match input.as_str() {
+                        "/compact" => {
+                            println!("COMMAND: compact");
+                            match agent.force_summarize().await {
+                                Ok(true) => println!("RESULT: Summarization completed"),
+                                Ok(false) => println!("RESULT: Summarization failed"),
+                                Err(e) => println!("ERROR: {}", e),
+                            }
+                            continue;
+                        }
+                        "/thinnify" => {
+                            println!("COMMAND: thinnify");
+                            let summary = agent.force_thin();
+                            println!("{}", summary);
+                            continue;
+                        }
+                        "/readme" => {
+                            println!("COMMAND: readme");
+                            match agent.reload_readme() {
+                                Ok(true) => println!("RESULT: README content reloaded successfully"),
+                                Ok(false) => println!("RESULT: No README was loaded at startup, cannot reload"),
+                                Err(e) => println!("ERROR: {}", e),
+                            }
+                            continue;
+                        }
+                        "/stats" => {
+                            println!("COMMAND: stats");
+                            let stats = agent.get_stats();
+                            // Emit stats as structured data (name: value pairs)
+                            println!("{}", stats);
+                            continue;
+                        }
+                        "/help" => {
+                            println!("COMMAND: help");
+                            println!("AVAILABLE_COMMANDS: /compact /thinnify /readme /stats /help");
+                            continue;
+                        }
+                        _ => {
+                            println!("ERROR: Unknown command: {}", input);
+                            continue;
+                        }
+                    }
+                }
+
+                // Execute task
+                println!("TASK_START");
+                execute_task_machine(&mut agent, &input, show_prompt, show_code).await;
+                println!("TASK_END");
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(err) => {
+                println!("ERROR: {:?}", err);
+                break;
+            }
+        }
+    }
+
+    // Save history before exiting
+    if let Some(ref history_path) = history_file {
+        let _ = rl.save_history(history_path);
+    }
+
+    println!("INTERACTIVE_MODE_ENDED");
+    Ok(())
+}
+
+async fn execute_task_machine(
+    agent: &mut Agent<MachineUiWriter>,
+    input: &str,
+    show_prompt: bool,
+    show_code: bool,
+) {
+    const MAX_TIMEOUT_RETRIES: u32 = 3;
+    let mut attempt = 0;
+
+    // Create cancellation token for this request
+    let cancellation_token = CancellationToken::new();
+    let cancel_token_clone = cancellation_token.clone();
+
+    loop {
+        attempt += 1;
+
+        // Execute task with cancellation support
+        let execution_result = tokio::select! {
+            result = agent.execute_task_with_timing_cancellable(
+                input, None, false, show_prompt, show_code, true, cancellation_token.clone()
+            ) => {
+                result
+            }
+            _ = tokio::signal::ctrl_c() => {
+                cancel_token_clone.cancel();
+                println!("CANCELLED");
+                return;
+            }
+        };
+
+        match execution_result {
+            Ok(result) => {
+                if attempt > 1 {
+                    println!("RETRY_SUCCESS: attempt {}", attempt);
+                }
+                println!("AGENT_RESPONSE:");
+                println!("{}", result.response);
+                println!("END_AGENT_RESPONSE");
+                return;
+            }
+            Err(e) => {
+                if e.to_string().contains("cancelled") {
+                    println!("CANCELLED");
+                    return;
+                }
+
+                // Check if this is a timeout error that we should retry
+                let error_type = classify_error(&e);
+
+                if matches!(
+                    error_type,
+                    ErrorType::Recoverable(RecoverableError::Timeout)
+                ) && attempt < MAX_TIMEOUT_RETRIES
+                {
+                    // Calculate retry delay with exponential backoff
+                    let delay_ms = 1000 * (2_u64.pow(attempt - 1));
+                    let delay = std::time::Duration::from_millis(delay_ms);
+
+                    println!("TIMEOUT: attempt {} of {}, retrying in {:?}", attempt, MAX_TIMEOUT_RETRIES, delay);
+
+                    // Wait before retrying
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+
+                // For non-timeout errors or after max retries
+                println!("ERROR: {}", e);
+                if attempt > 1 {
+                    println!("FAILED_AFTER_RETRIES: {}", attempt);
+                }
+                return;
+            }
+        }
+    }
+}
+
 fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput, attempt: u32) {
     // Enhanced error logging with detailed information
     error!("=== TASK EXECUTION ERROR ===");
@@ -1095,16 +1305,13 @@ fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput,
 
 fn display_context_progress<W: UiWriter>(agent: &Agent<W>, output: &SimpleOutput) {
     let context = agent.get_context_window();
-    output.print_context(
-        context.used_tokens,
-        context.total_tokens,
-        context.percentage_used(),
-    );
+    output.print(&format!("Context: {}/{} tokens ({:.1}%)", 
+        context.used_tokens, context.total_tokens, context.percentage_used()));
 }
 
 /// Set up the workspace directory for autonomous mode
 /// Uses G3_WORKSPACE environment variable or defaults to ~/tmp/workspace
-fn setup_workspace_directory() -> Result<PathBuf> {
+fn setup_workspace_directory(machine_mode: bool) -> Result<PathBuf> {
     let workspace_dir = if let Ok(env_workspace) = std::env::var("G3_WORKSPACE") {
         PathBuf::from(env_workspace)
     } else {
@@ -1117,7 +1324,7 @@ fn setup_workspace_directory() -> Result<PathBuf> {
     // Create the directory if it doesn't exist
     if !workspace_dir.exists() {
         std::fs::create_dir_all(&workspace_dir)?;
-        let output = SimpleOutput::new();
+        let output = SimpleOutput::new_with_mode(machine_mode);
         output.print(&format!(
             "📁 Created workspace directory: {}",
             workspace_dir.display()
@@ -1172,7 +1379,7 @@ async fn run_autonomous(
             elapsed.as_secs_f64()
         ));
         output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
-        output.print(&format!("📝 Final Status: ⚠️ NO REQUIREMENTS FILE"));
+        output.print("📝 Final Status: ⚠️ NO REQUIREMENTS FILE");
 
         output.print("\n📈 Token Usage Statistics:");
         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
@@ -1214,7 +1421,7 @@ async fn run_autonomous(
                 elapsed.as_secs_f64()
             ));
             output.print(&format!("🔄 Turns Taken: 0/{}", max_turns));
-            output.print(&format!("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS"));
+            output.print("📝 Final Status: ⚠️ CANNOT READ REQUIREMENTS");
 
             output.print("\n📈 Token Usage Statistics:");
             output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));
@@ -1300,7 +1507,7 @@ async fn run_autonomous(
                     "📋 Player received coach feedback ({} chars):",
                     coach_feedback.len()
                 ));
-                output.print(&format!("{}", coach_feedback));
+                output.print(&coach_feedback.to_string());
             }
             output.print(""); // Empty line for readability
 
@@ -1345,7 +1552,7 @@ async fn run_autonomous(
                                 elapsed.as_secs_f64()
                             ));
                             output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
-                            output.print(&format!("📝 Final Status: 💥 PLAYER PANIC"));
+                            output.print("📝 Final Status: 💥 PLAYER PANIC");
 
                             output.print("\n📈 Token Usage Statistics:");
                             output.print(&format!(
@@ -1454,6 +1661,7 @@ Review the current state of the project and provide a concise critique focusing 
 2. Whether the project compiles successfully
 3. What requirements are missing or incorrect
 4. Specific improvements needed to satisfy requirements
+5. Use UI tools such as webdriver or macax to test functionality thoroughly
 
 CRITICAL INSTRUCTIONS:
 1. You MUST use the final_output tool to provide your feedback
@@ -1461,13 +1669,13 @@ CRITICAL INSTRUCTIONS:
 3. Focus ONLY on what needs to be fixed or improved
 4. Do NOT include your analysis process, file contents, or compilation output in the summary
 
-If the implementation generally meets all requirements and compiles without errors:
+If the implementation thoroughly meets all requirements, compiles and is fully tested (especially UI flows) *WITHOUT* minor gaps or errors:
 - Call final_output with summary: 'IMPLEMENTATION_APPROVED'
 
 If improvements are needed:
 - Call final_output with a brief summary listing ONLY the specific issues to fix
 
-Remember: Be clear in your review and concise in your feedback. APPROVE if the implementation works and generally fits the requirements. Don't be picky.",
+Remember: Be clear in your review and concise in your feedback. APPROVE iff the implementation works and thoroughly fits the requirements (implementation > 95% complete). Be rigorous, especially by testing that all UI features work.",
             requirements
         );
 
@@ -1506,7 +1714,7 @@ Remember: Be clear in your review and concise in your feedback. APPROVE if the i
                             elapsed.as_secs_f64()
                         ));
                         output.print(&format!("🔄 Turns Taken: {}/{}", turn, max_turns));
-                        output.print(&format!("📝 Final Status: 💥 COACH PANIC"));
+                        output.print("📝 Final Status: 💥 COACH PANIC");
 
                         output.print("\n📈 Token Usage Statistics:");
                         output.print(&format!("   • Used Tokens: {}", context_window.used_tokens));

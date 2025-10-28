@@ -1,9 +1,17 @@
+// Suppress warnings from objc crate macros
+#![allow(unexpected_cfgs)]
+
 pub mod types;
 pub mod platform;
+pub mod ocr;
 pub mod webdriver;
+pub mod macax;
 
 // Re-export webdriver types for convenience
 pub use webdriver::{WebDriverController, WebElement, safari::SafariDriver};
+
+// Re-export macax types for convenience
+pub use macax::{MacAxController, AXElement, AXApplication};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,8 +23,14 @@ pub trait ComputerController: Send + Sync {
     async fn take_screenshot(&self, path: &str, region: Option<Rect>, window_id: Option<&str>) -> Result<()>;
     
     // OCR operations
-    async fn extract_text_from_screen(&self, region: Rect) -> Result<String>;
+    async fn extract_text_from_screen(&self, region: Rect, window_id: &str) -> Result<String>;
     async fn extract_text_from_image(&self, path: &str) -> Result<String>;
+    async fn extract_text_with_locations(&self, path: &str) -> Result<Vec<TextLocation>>;
+    async fn find_text_in_app(&self, app_name: &str, search_text: &str) -> Result<Option<TextLocation>>;
+    
+    // Mouse operations
+    fn move_mouse(&self, x: i32, y: i32) -> Result<()>;
+    fn click_at(&self, x: i32, y: i32, app_name: Option<&str>) -> Result<()>;
 }
 
 // Platform-specific constructor

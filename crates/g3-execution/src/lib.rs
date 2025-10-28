@@ -166,6 +166,31 @@ impl CodeExecutor {
     
     /// Execute Bash code
     async fn execute_bash(&self, code: &str) -> Result<ExecutionResult> {
+        // Check if this is a detached/daemon command that should run independently
+        let is_detached = code.trim_start().starts_with("setsid ") 
+            || code.trim_start().starts_with("nohup ")
+            || code.contains(" disown")
+            || (code.contains(" &") && (code.contains("nohup") || code.contains("setsid")));
+        
+        if is_detached {
+            // For detached commands, just spawn and return immediately
+            use std::process::Stdio;
+            Command::new("bash")
+                .arg("-c")
+                .arg(code)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            
+            return Ok(ExecutionResult {
+                stdout: "✅ Command launched in background (detached process)".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            });
+        }
+        
         let output = Command::new("bash")
             .arg("-c")
             .arg(code)
@@ -221,6 +246,29 @@ impl CodeExecutor {
         use tokio::io::{AsyncBufReadExt, BufReader};
         use tokio::process::Command as TokioCommand;
         
+        // Check if this is a detached/daemon command that should run independently
+        // Look for patterns like: setsid, nohup with &, or explicit backgrounding with disown
+        let is_detached = code.trim_start().starts_with("setsid ") 
+            || code.trim_start().starts_with("nohup ")
+            || code.contains(" disown")
+            || (code.contains(" &") && (code.contains("nohup") || code.contains("setsid")));
+        
+        if is_detached {
+            // For detached commands, just spawn and return immediately
+            TokioCommand::new("bash")
+                .arg("-c")
+                .arg(code)
+                .spawn()?;
+            
+            // Don't wait for the process - it's meant to run independently
+            return Ok(ExecutionResult {
+                stdout: "✅ Command launched in background (detached process)".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                success: true,
+            });
+        }
+        
         let mut child = TokioCommand::new("bash")
             .arg("-c")
             .arg(code)
@@ -259,7 +307,7 @@ impl CodeExecutor {
                 line = stderr_lines.next_line() => {
                     match line {
                         Ok(Some(line)) => {
-                            receiver.on_output_line(&format!("{}", line));
+                            receiver.on_output_line(&line.to_string());
                             stderr_output.push(line);
                         }
                         Ok(None) => {}, // stderr EOF, continue

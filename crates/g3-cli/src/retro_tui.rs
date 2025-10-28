@@ -267,23 +267,23 @@ impl TerminalState {
         let mut current_text = String::new();
         
         // Check for headers first
-        if line.starts_with("### ") {
+        if let Some(stripped) = line.strip_prefix("### ") {
             return Line::from(Span::styled(
-                format!(" {}", &line[4..]),
+                format!(" {}", stripped),
                 Style::default()
                     .fg(self.theme.terminal_cyan.to_color())
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             ));
-        } else if line.starts_with("## ") {
+        } else if let Some(stripped) = line.strip_prefix("## ") {
             return Line::from(Span::styled(
-                format!(" {}", &line[3..]),
+                format!(" {}", stripped),
                 Style::default()
                     .fg(self.theme.terminal_amber.to_color())
                     .add_modifier(Modifier::BOLD),
             ));
-        } else if line.starts_with("# ") {
+        } else if let Some(stripped) = line.strip_prefix("# ") {
             return Line::from(Span::styled(
-                format!(" {}", &line[2..]),
+                format!(" {}", stripped),
                 Style::default()
                     .fg(self.theme.terminal_green.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -343,7 +343,7 @@ impl TerminalState {
                     }
                     // Find closing *
                     let mut italic_text = String::new();
-                    while let Some(ch) = chars.next() {
+                    for ch in chars.by_ref() {
                         if ch == '*' {
                             break;
                         }
@@ -367,7 +367,7 @@ impl TerminalState {
                 }
                 // Find closing `
                 let mut code_text = String::new();
-                while let Some(ch) = chars.next() {
+                for ch in chars.by_ref() {
                     if ch == '`' {
                         break;
                     }
@@ -612,11 +612,9 @@ impl RetroTui {
                     }
 
                     // Update status blink only if status is "PROCESSING"
-                    if state.status_line == "PROCESSING" {
-                        if state.last_status_blink.elapsed() > Duration::from_millis(500) {
-                            state.status_blink = !state.status_blink;
-                            state.last_status_blink = Instant::now();
-                        }
+                    if state.status_line == "PROCESSING" && state.last_status_blink.elapsed() > Duration::from_millis(500) {
+                        state.status_blink = !state.status_blink;
+                        state.last_status_blink = Instant::now();
                     }
                     
                     // Update activity area animation
@@ -771,12 +769,7 @@ impl RetroTui {
             let total_cursor_pos = cursor_position;
             
             // Determine the window into the buffer we should show
-            let window_start = if total_cursor_pos > available_width - 1 {
-                // Cursor is beyond the visible area, scroll the view
-                total_cursor_pos - (available_width - 1)
-            } else {
-                0
-            };
+            let window_start = total_cursor_pos.saturating_sub(available_width - 1);
             
             // Get the visible portion of the buffer
             let visible_buffer: String = input_buffer
@@ -1013,9 +1006,9 @@ impl RetroTui {
         let fade_color = |color: Color| -> Color {
             match color {
                 Color::Rgb(r, g, b) => {
-                    let faded_r = ((r as f32 * opacity) as u8).max(0);
-                    let faded_g = ((g as f32 * opacity) as u8).max(0);
-                    let faded_b = ((b as f32 * opacity) as u8).max(0);
+                    let faded_r = (r as f32 * opacity) as u8;
+                    let faded_g = (g as f32 * opacity) as u8;
+                    let faded_b = (b as f32 * opacity) as u8;
                     Color::Rgb(faded_r, faded_g, faded_b)
                 }
                 _ => color,
@@ -1098,9 +1091,9 @@ impl RetroTui {
         let fade_color = |color: Color| -> Color {
             match color {
                 Color::Rgb(r, g, b) => {
-                    let faded_r = ((r as f32 * opacity) as u8).max(0);
-                    let faded_g = ((g as f32 * opacity) as u8).max(0);
-                    let faded_b = ((b as f32 * opacity) as u8).max(0);
+                    let faded_r = (r as f32 * opacity) as u8;
+                    let faded_g = (g as f32 * opacity) as u8;
+                    let faded_b = (b as f32 * opacity) as u8;
                     Color::Rgb(faded_r, faded_g, faded_b)
                 }
                 _ => color,
@@ -1176,7 +1169,7 @@ impl RetroTui {
         }
         
         // Wave characters for smooth animation
-        let wave_chars = vec!['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let wave_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         
         // Build the wave line
         let mut wave_line = String::new();
@@ -1190,7 +1183,7 @@ impl RetroTui {
             let idx = wave_data.len().saturating_sub(display_width) + i;
             
             if idx < wave_data.len() {
-                let value = wave_data[idx].min(1.0).max(0.0);
+                let value = wave_data[idx].clamp(0.0, 1.0);
                 let char_idx = ((value * 7.0) as usize).min(7);
                 wave_line.push(wave_chars[char_idx]);
             } else {
@@ -1206,8 +1199,6 @@ impl RetroTui {
         f.render_widget(wave_paragraph, area);
     }
     
-    /// Draw the status bar
-
     /// Draw the status bar
     fn draw_status_bar(
         f: &mut Frame,
