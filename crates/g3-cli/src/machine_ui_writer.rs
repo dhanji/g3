@@ -71,6 +71,7 @@ impl UiWriter for MachineUiWriter {
     }
 
     fn print_agent_prompt(&self) {
+        println!("AGENT_RESPONSE:");
         let _ = io::stdout().flush();
     }
 
