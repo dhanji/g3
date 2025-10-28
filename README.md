@@ -136,8 +136,12 @@ G3 is designed for:
 # Build the project
 cargo build --release
 
-# Run G3
-cargo run
+# Run from the build directory
+./target/release/g3
+
+# Or copy both files to somewhere in your PATH (macOS only needs both files)
+cp target/release/g3 ~/.local/bin/
+cp target/release/libVisionBridge.dylib ~/.local/bin/  # macOS only
 
 # Execute a task
 g3 "implement a function to calculate fibonacci numbers"
