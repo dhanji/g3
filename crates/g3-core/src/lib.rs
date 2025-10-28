@@ -483,8 +483,8 @@ Format this as a detailed but concise summary that can be used to resume the con
                 if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
                     let content_len = message.content.len();
                     
-                    // Only thin if the content is greater than 1000 chars
-                    if content_len > 1000 {
+                    // Only thin if the content is greater than 500 chars
+                    if content_len > 500 {
                         // Generate a unique filename based on timestamp and index
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -541,8 +541,8 @@ Format this as a detailed but concise summary that can be used to resume the con
                                             .map(|s| (s.to_string(), s.len()));
                                         
                                         if let Some((content_str, content_len)) = content_info {
-                                            // Only thin if content is greater than 1000 chars
-                                            if content_len > 1000 {
+                                            // Only thin if content is greater than 500 chars
+                                            if content_len > 500 {
                                                 let timestamp = std::time::SystemTime::now()
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
@@ -574,8 +574,8 @@ Format this as a detailed but concise summary that can be used to resume the con
                                             .map(|s| (s.to_string(), s.len()));
                                         
                                         if let Some((diff_str, diff_len)) = diff_info {
-                                            // Only thin if diff is greater than 1000 chars
-                                            if diff_len > 1000 {
+                                            // Only thin if diff is greater than 500 chars
+                                            if diff_len > 500 {
                                                 let timestamp = std::time::SystemTime::now()
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
@@ -2081,132 +2081,6 @@ Template:
                     }),
                 },
                 Tool {
-                    name: "macax_get_ui_tree".to_string(),
-                    description: "Get the UI element hierarchy of an application as a tree structure".to_string(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "app_name": {
-                                "type": "string",
-                                "description": "Name of the application"
-                            },
-                            "max_depth": {
-                                "type": "integer",
-                                "description": "Maximum depth to traverse (default: 3)"
-                            }
-                        },
-                        "required": ["app_name"]
-                    }),
-                },
-                Tool {
-                    name: "macax_find_elements".to_string(),
-                    description: "Find UI elements in an application by role, title, or identifier. Use this to locate buttons, text fields, etc.".to_string(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "app_name": {
-                                "type": "string",
-                                "description": "Name of the application"
-                            },
-                            "role": {
-                                "type": "string",
-                                "description": "UI element role (e.g., 'button', 'text field', 'window')"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Element title or label to match"
-                            },
-                            "identifier": {
-                                "type": "string",
-                                "description": "Element identifier (accessibility identifier)"
-                            }
-                        },
-                        "required": ["app_name"]
-                    }),
-                },
-                Tool {
-                    name: "macax_click".to_string(),
-                    description: "Click a UI element in an application".to_string(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "app_name": {
-                                "type": "string",
-                                "description": "Name of the application"
-                            },
-                            "role": {
-                                "type": "string",
-                                "description": "UI element role (e.g., 'button')"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Element title or label"
-                            },
-                            "identifier": {
-                                "type": "string",
-                                "description": "Element identifier"
-                            }
-                        },
-                        "required": ["app_name", "role"]
-                    }),
-                },
-                Tool {
-                    name: "macax_set_value".to_string(),
-                    description: "Set the value of a UI element (e.g., type into a text field)".to_string(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "app_name": {
-                                "type": "string",
-                                "description": "Name of the application"
-                            },
-                            "role": {
-                                "type": "string",
-                                "description": "UI element role (e.g., 'text field')"
-                            },
-                            "value": {
-                                "type": "string",
-                                "description": "Value to set"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Element title or label"
-                            },
-                            "identifier": {
-                                "type": "string",
-                                "description": "Element identifier"
-                            }
-                        },
-                        "required": ["app_name", "role", "value"]
-                    }),
-                },
-                Tool {
-                    name: "macax_get_value".to_string(),
-                    description: "Get the value of a UI element (e.g., read text from a text field)".to_string(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "app_name": {
-                                "type": "string",
-                                "description": "Name of the application"
-                            },
-                            "role": {
-                                "type": "string",
-                                "description": "UI element role (e.g., 'text field')"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Element title or label"
-                            },
-                            "identifier": {
-                                "type": "string",
-                                "description": "Element identifier"
-                            }
-                        },
-                        "required": ["app_name", "role"]
-                    }),
-                },
-                Tool {
                     name: "macax_press_key".to_string(),
                     description: "Press a keyboard key or shortcut in an application (e.g., Cmd+S to save)".to_string(),
                     input_schema: json!({
@@ -2253,21 +2127,6 @@ Template:
                 }),
             });
             
-            // Add focus_element tool
-            tools.push(Tool {
-                name: "macax_focus_element".to_string(),
-                description: "Focus on a UI element (text field, text area, etc.) before typing".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "app_name": {"type": "string", "description": "Name of the application"},
-                        "role": {"type": "string", "description": "UI element role (e.g., 'text field', 'text area')"},
-                        "title": {"type": "string", "description": "Element title or label (optional)"},
-                        "identifier": {"type": "string", "description": "Element accessibility identifier (optional)"}
-                    },
-                    "required": ["app_name", "role"]
-                }),
-            });
         }
         
         // Add extract_text_with_boxes tool (requires macax flag)
@@ -2816,14 +2675,26 @@ Template:
 
                             // Display tool execution result with proper indentation
                             if tool_call.tool != "final_output" {
-                                let output_lines: Vec<&str> = tool_result.lines().collect();
+                                // Skip displaying output for shell tool since it was already streamed
+                                let should_display_output = tool_call.tool != "shell";
+                                
+                                let output_lines: Vec<&str> = if should_display_output {
+                                    tool_result.lines().collect()
+                                } else { vec![] };
 
+                                // Check if UI wants full output (machine mode) or truncated (human mode)
+                                let wants_full = self.ui_writer.wants_full_output();
+                                
                                 // Helper function to safely truncate strings at character boundaries
-                                let truncate_line = |line: &str, max_width: usize| -> String {
-                                    let char_count = line.chars().count();
-                                    if char_count <= max_width {
+                                let truncate_line = |line: &str, max_width: usize, truncate: bool| -> String {
+                                    if !truncate {
+                                        // Machine mode - return full line
+                                        line.to_string()
+                                    } else if line.chars().count() <= max_width {
+                                        // Human mode - line fits within limit
                                         line.to_string()
                                     } else {
+                                        // Human mode - truncate long line
                                         let truncated: String = line
                                             .chars()
                                             .take(max_width.saturating_sub(3))
@@ -2838,25 +2709,26 @@ Template:
                                 
                                 // For todo tools, show all lines without truncation
                                 let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
-                                let max_lines_to_show = if is_todo_tool { output_len } else { MAX_LINES };
+                                let max_lines_to_show = if is_todo_tool || wants_full { output_len } else { MAX_LINES };
 
                                 for (idx, line) in output_lines.iter().enumerate() {
-                                    if !is_todo_tool && idx >= max_lines_to_show {
+                                    if !is_todo_tool && !wants_full && idx >= max_lines_to_show {
                                         break;
                                     }
                                     // Clip line to max width
-                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH);
+                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full);
                                     self.ui_writer.update_tool_output_line(&clipped_line);
                                 }
 
-                                if !is_todo_tool && output_len > MAX_LINES {
+                                if !is_todo_tool && !wants_full && output_len > MAX_LINES {
                                     self.ui_writer.print_tool_output_summary(output_len);
                                 }
                             }
 
                             // Check if this was a final_output tool call
                             if tool_call.tool == "final_output" {
-                                full_response.push_str(final_display_content);
+                                // Don't add final_display_content here - it was already added before tool execution
+                                // Adding it again would duplicate the output
                                 if let Some(summary) = tool_call.args.get("summary") {
                                     if let Some(summary_str) = summary.as_str() {
                                         full_response.push_str(&format!("\n\n{}", summary_str));
@@ -3320,13 +3192,16 @@ Template:
                         {
                             Ok(result) => {
                                 if result.success {
-                                    Ok(if result.stdout.is_empty() {
-                                        "✅ Command executed successfully".to_string()
-                                    } else {
-                                        result.stdout.trim().to_string()
-                                    })
+                                    // Don't return stdout - it was already streamed to the UI
+                                    // Returning it would cause duplicate output
+                                    Ok("✅ Command executed successfully".to_string())
                                 } else {
-                                    Ok(format!("❌ Command failed: {}", result.stderr.trim()))
+                                    // For errors, return stderr since it wasn't streamed
+                                    Ok(if result.stderr.is_empty() {
+                                        "❌ Command failed".to_string()
+                                    } else {
+                                        format!("❌ Command failed: {}", result.stderr.trim())
+                                    })
                                 }
                             }
                             Err(e) => Ok(format!("❌ Execution error: {}", e)),
@@ -4323,168 +4198,6 @@ Template:
                     Err(e) => Ok(format!("❌ Failed to activate app: {}", e)),
                 }
             }
-            "macax_get_ui_tree" => {
-                debug!("Processing macax_get_ui_tree tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let max_depth = tool_call.args.get("max_depth")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as usize)
-                    .unwrap_or(3);
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.get_ui_tree(app_name, max_depth) {
-                    Ok(tree) => Ok(tree),
-                    Err(e) => Ok(format!("❌ Failed to get UI tree: {}", e)),
-                }
-            }
-            "macax_find_elements" => {
-                debug!("Processing macax_find_elements tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let role = tool_call.args.get("role").and_then(|v| v.as_str());
-                let title = tool_call.args.get("title").and_then(|v| v.as_str());
-                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.find_elements(app_name, role, title, identifier) {
-                    Ok(elements) => {
-                        if elements.is_empty() {
-                            Ok("No elements found matching criteria".to_string())
-                        } else {
-                            let element_strs: Vec<String> = elements.iter()
-                                .map(|e| e.to_string())
-                                .collect();
-                            Ok(format!("Found {} element(s):\n{}", elements.len(), element_strs.join("\n")))
-                        }
-                    }
-                    Err(e) => Ok(format!("❌ Failed to find elements: {}", e)),
-                }
-            }
-            "macax_click" => {
-                debug!("Processing macax_click tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
-                    Some(r) => r,
-                    None => return Ok("❌ Missing role argument".to_string()),
-                };
-                
-                let title = tool_call.args.get("title").and_then(|v| v.as_str());
-                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.click_element(app_name, role, title, identifier) {
-                    Ok(_) => Ok(format!("✅ Clicked {} element", role)),
-                    Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
-                }
-            }
-            "macax_set_value" => {
-                debug!("Processing macax_set_value tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
-                    Some(r) => r,
-                    None => return Ok("❌ Missing role argument".to_string()),
-                };
-                
-                let value = match tool_call.args.get("value").and_then(|v| v.as_str()) {
-                    Some(v) => v,
-                    None => return Ok("❌ Missing value argument".to_string()),
-                };
-                
-                let title = tool_call.args.get("title").and_then(|v| v.as_str());
-                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.set_value(app_name, role, value, title, identifier) {
-                    Ok(_) => Ok(format!("✅ Set value of {} element to: {}", role, value)),
-                    Err(e) => Ok(format!("❌ Failed to set value: {}", e)),
-                }
-            }
-            "macax_get_value" => {
-                debug!("Processing macax_get_value tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
-                    Some(r) => r,
-                    None => return Ok("❌ Missing role argument".to_string()),
-                };
-                
-                let title = tool_call.args.get("title").and_then(|v| v.as_str());
-                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.get_value(app_name, role, title, identifier) {
-                    Ok(value) => Ok(format!("Value: {}", value)),
-                    Err(e) => Ok(format!("❌ Failed to get value: {}", e)),
-                }
-            }
             "macax_press_key" => {
                 debug!("Processing macax_press_key tool call");
                 
@@ -4555,37 +4268,6 @@ Template:
                     Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
                 }
             }
-            "macax_focus_element" => {
-                debug!("Processing macax_focus_element tool call");
-                
-                if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
-                }
-                
-                let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                    Some(n) => n,
-                    None => return Ok("❌ Missing app_name argument".to_string()),
-                };
-                
-                let role = match tool_call.args.get("role").and_then(|v| v.as_str()) {
-                    Some(r) => r,
-                    None => return Ok("❌ Missing role argument".to_string()),
-                };
-                
-                let title = tool_call.args.get("title").and_then(|v| v.as_str());
-                let identifier = tool_call.args.get("identifier").and_then(|v| v.as_str());
-                
-                let controller_guard = self.macax_controller.read().await;
-                let controller = match controller_guard.as_ref() {
-                    Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
-                };
-                
-                match controller.focus_element(app_name, role, title, identifier) {
-                    Ok(_) => Ok(format!("✅ Focused {} element in {}", role, app_name)),
-                    Err(e) => Ok(format!("❌ Failed to focus element: {}", e)),
-                }
-            }
             "vision_find_text" => {
                 debug!("Processing vision_find_text tool call");
                 
@@ -4628,11 +4310,34 @@ Template:
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Click on center of text
-                            let center_x = location.x + location.width / 2;
-                            let center_y = location.y + location.height / 2;
+                            // IMPORTANT: location coordinates are in NSScreen space (Y=0 at BOTTOM, increases UPWARD)
+                            // location.x is the LEFT edge of the bounding box
+                            // location.y is the TOP edge of the bounding box (highest Y value in NSScreen space)
+                            // location.width and location.height are already scaled to screen space
+                            // To get center: we need to add half the SCALED width and subtract half the SCALED height
                             
-                            match controller.click_at(center_x, center_y, Some(app_name)) {
-                                Ok(_) => Ok(format!("✅ Clicked on '{}' in {} at ({}, {})", text, app_name, center_x, center_y)),
+                            if location.width == 0 || location.height == 0 {
+                                return Ok(format!("❌ Invalid bounding box dimensions: width={}, height={}", location.width, location.height));
+                            }
+                            
+                            debug!("[vision_click_text] Location from find_text_in_app: x={}, y={}, width={}, height={}, text='{}'",
+                                location.x, location.y, location.width, location.height, location.text);
+                            
+                            // Calculate center using the SCALED dimensions
+                            // X: Use right edge instead of center (Vision OCR bounding box seems offset)
+                            // This gives us: left edge + full width = right edge
+                            // Y: top edge - half of scaled height (subtract because Y increases upward)
+                            let click_x = location.x + location.width;  // Right edge
+                            let half_height = location.height / 2;
+                            let click_y = location.y - half_height;
+                            
+                            debug!("[vision_click_text] Click position calculation: x={} + {} = {} (right edge), y={} - {} = {}",
+                                location.x, location.width, click_x, location.y, half_height, click_y);
+                            debug!("[vision_click_text] This means: left_edge={}, center={}, right_edge={}",
+                                location.x, click_x, location.x + location.width);
+                            
+                            match controller.click_at(click_x, click_y, Some(app_name)) {
+                                Ok(_) => Ok(format!("✅ Clicked on '{}' in {} at ({}, {})", text, app_name, click_x, click_y)),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
@@ -4709,13 +4414,15 @@ Template:
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Calculate click position based on direction
+                            // location.x is LEFT edge, location.y is TOP edge (in NSScreen space)
                             let (click_x, click_y) = match direction {
-                                "right" => (location.x + location.width + distance, location.y + location.height / 2),
-                                "below" => (location.x + location.width / 2, location.y + location.height + distance),
-                                "left" => (location.x - distance, location.y + location.height / 2),
-                                "above" => (location.x + location.width / 2, location.y - distance),
-                                _ => (location.x + location.width + distance, location.y + location.height / 2),
+                                "right" => (location.x + location.width + distance, location.y - (location.height / 2)),
+                                "below" => (location.x + (location.width / 2), location.y - location.height - distance),
+                                "left" => (location.x - distance, location.y - (location.height / 2)),
+                                "above" => (location.x + (location.width / 2), location.y + distance),
+                                _ => (location.x + location.width + distance, location.y - (location.height / 2)),
                             };
+                            debug!("[vision_click_near_text] Clicking {} of text at ({}, {})", direction, click_x, click_y);
                             
                             match controller.click_at(click_x, click_y, Some(app_name)) {
                                 Ok(_) => Ok(format!(
