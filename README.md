@@ -162,8 +162,8 @@ g3 "implement a function to calculate fibonacci numbers"
 # Traditional autonomous mode (reads requirements.md)
 g3 --autonomous
 
-# Traditional interactive mode (chat-style, disables accumulative mode)
-g3 --accumulative  # Note: --accumulative flag disables the new default
+# Traditional chat mode (simple interactive chat without autonomous runs)
+g3 --chat
 ```
 
 ```bash

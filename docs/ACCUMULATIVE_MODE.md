@@ -191,9 +191,12 @@ g3 --quiet
 
 ### Disable Accumulative Mode
 
-To use the traditional interactive chat mode:
+To use the traditional chat mode (without automatic autonomous runs):
 
 ```bash
+g3 --chat
+
+# Alternative: legacy flag also works
 g3 --accumulative
 ```
 
