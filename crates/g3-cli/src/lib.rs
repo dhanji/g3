@@ -504,19 +504,6 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
             )
             .await?
         } else {
-            // NEW DEFAULT: Accumulative mode for interactive sessions
-            // It runs when:
-            // 1. No task is provided (not single-shot)
-            // 2. Not in autonomous mode
-            // 3. Not explicitly disabled with --accumulative flag
-            let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.accumulative;
-            
-            if use_accumulative {
-                // Run accumulative mode and return early
-                run_accumulative_mode(workspace_dir.clone(), cli.clone(), combined_content.clone()).await?;
-                return Ok(());
-            }
-            
             Agent::new_with_readme_and_quiet(
                 config.clone(),
                 ui_writer,
@@ -529,6 +516,20 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
         run_with_machine_mode(agent, cli, project).await?;
     } else {
         // Normal mode - use ConsoleUiWriter
+        
+        // NEW DEFAULT: Accumulative mode for interactive sessions
+        // It runs when:
+        // 1. No task is provided (not single-shot)
+        // 2. Not in autonomous mode
+        // 3. Not explicitly disabled with --accumulative flag
+        let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.accumulative;
+        
+        if use_accumulative {
+            // Run accumulative mode and return early
+            run_accumulative_mode(workspace_dir.clone(), cli.clone(), combined_content.clone()).await?;
+            return Ok(());
+        }
+        
         let ui_writer = ConsoleUiWriter::new();
         
         let agent = if cli.autonomous {
