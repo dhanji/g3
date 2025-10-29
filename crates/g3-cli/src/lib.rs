@@ -459,7 +459,7 @@ async fn run_accumulative_mode(
     output.print("   and I'll automatically work on implementing them. You can");
     output.print("   interrupt at any time (Ctrl+C) to add clarifications or more requirements.");
     output.print("");
-    output.print("   Type 'exit' or 'quit' to stop, Ctrl+D to finish");
+    output.print("   Type '/help' for commands, 'exit' or 'quit' to stop, Ctrl+D to finish");
     output.print("");
     
     // Initialize rustyline editor with history
@@ -498,6 +498,98 @@ async fn run_accumulative_mode(
                 if input == "exit" || input == "quit" {
                     output.print("\n👋 Goodbye!");
                     break;
+                }
+                
+                // Check for slash commands
+                if input.starts_with('/') {
+                    match input.as_str() {
+                        "/help" => {
+                            output.print("");
+                            output.print("📖 Available Commands:");
+                            output.print("  /requirements - Show all accumulated requirements");
+                            output.print("  /chat         - Switch to interactive chat mode");
+                            output.print("  /help         - Show this help message");
+                            output.print("  exit/quit     - Exit the session");
+                            output.print("");
+                            continue;
+                        }
+                        "/requirements" => {
+                            output.print("");
+                            if accumulated_requirements.is_empty() {
+                                output.print("📋 No requirements accumulated yet");
+                            } else {
+                                output.print("📋 Accumulated Requirements:");
+                                output.print("");
+                                for req in &accumulated_requirements {
+                                    output.print(&format!("   {}", req));
+                                }
+                            }
+                            output.print("");
+                            continue;
+                        }
+                        "/chat" => {
+                            output.print("");
+                            output.print("🔄 Switching to interactive chat mode...");
+                            output.print("");
+                            
+                            // Build context message with accumulated requirements
+                            let requirements_context = if accumulated_requirements.is_empty() {
+                                None
+                            } else {
+                                Some(format!(
+                                    "📋 Context from Accumulative Mode:\n\n\
+                                    We were working on these requirements. There may be unstaged or in-progress changes or recent changes to this branch. This is for your information.\n\n\
+                                    Requirements:\n{}\n",
+                                    accumulated_requirements.join("\n")
+                                ))
+                            };
+                            
+                            // Combine with existing content (README/AGENTS.md)
+                            let chat_combined_content = match (requirements_context, combined_content.clone()) {
+                                (Some(req_ctx), Some(existing)) => Some(format!("{}\n\n{}", req_ctx, existing)),
+                                (Some(req_ctx), None) => Some(req_ctx),
+                                (None, existing) => existing,
+                            };
+                            
+                            // Load configuration
+                            let mut config = Config::load_with_overrides(
+                                cli.config.as_deref(),
+                                cli.provider.clone(),
+                                cli.model.clone(),
+                            )?;
+                            
+                            // Apply macax flag override
+                            if cli.macax {
+                                config.macax.enabled = true;
+                            }
+                            
+                            // Apply webdriver flag override
+                            if cli.webdriver {
+                                config.webdriver.enabled = true;
+                            }
+                            
+                            // Create agent for interactive mode with requirements context
+                            let ui_writer = ConsoleUiWriter::new();
+                            let agent = Agent::new_with_readme_and_quiet(
+                                config,
+                                ui_writer,
+                                chat_combined_content.clone(),
+                                cli.quiet,
+                            )
+                            .await?;
+                            
+                            // Run interactive mode
+                            run_interactive(agent, cli.show_prompt, cli.show_code, chat_combined_content).await?;
+                            
+                            // After returning from interactive mode, exit
+                            output.print("\n👋 Goodbye!");
+                            break;
+                        }
+                        _ => {
+                            output.print(&format!("❌ Unknown command: {}. Type /help for available commands.", input));
+                            continue;
+                        }
+                    }
                 }
                 
                 // Add to history
