@@ -1444,6 +1444,13 @@ Template:
                 let available = model_limit
                     .saturating_sub(current_usage)
                     .saturating_sub(5000);
+                // Ensure we have at least 1 token available, otherwise we can't generate a summary
+                if available == 0 {
+                    return Err(anyhow::anyhow!(
+                        "Insufficient tokens available for summary generation. Current usage: {} tokens, model limit: {} tokens. Please start a new session.",
+                        current_usage, model_limit
+                    ));
+                }
                 Some(available.min(10_000))
             }
             "embedded" => {
@@ -1452,10 +1459,24 @@ Template:
                 let available = model_limit
                     .saturating_sub(current_usage)
                     .saturating_sub(1000);
+                // Ensure we have at least 1 token available
+                if available == 0 {
+                    return Err(anyhow::anyhow!(
+                        "Insufficient tokens available for summary generation. Current usage: {} tokens, model limit: {} tokens. Please start a new session.",
+                        current_usage, model_limit
+                    ));
+                }
                 Some(available.min(3000))
             }
             _ => {
                 let available = self.context_window.remaining_tokens().saturating_sub(2000);
+                // Ensure we have at least 1 token available
+                if available == 0 {
+                    return Err(anyhow::anyhow!(
+                        "Insufficient tokens available for summary generation. Current usage: {} tokens. Please start a new session.",
+                        self.context_window.used_tokens
+                    ));
+                }
                 Some(available.min(5000))
             }
         };
@@ -2347,6 +2368,13 @@ Template:
                     let available = model_limit
                         .saturating_sub(current_usage)
                         .saturating_sub(5000);
+                    // Ensure we have at least 1 token available, otherwise we can't generate a summary
+                    if available == 0 {
+                        return Err(anyhow::anyhow!(
+                            "Insufficient tokens available for summary generation. Current usage: {} tokens, model limit: {} tokens. Please start a new session.",
+                            current_usage, model_limit
+                        ));
+                    }
                     // Cap at a reasonable summary size (10k tokens max)
                     Some(available.min(10_000))
                 }
@@ -2358,12 +2386,26 @@ Template:
                     let available = model_limit
                         .saturating_sub(current_usage)
                         .saturating_sub(1000);
+                    // Ensure we have at least 1 token available
+                    if available == 0 {
+                        return Err(anyhow::anyhow!(
+                            "Insufficient tokens available for summary generation. Current usage: {} tokens, model limit: {} tokens. Please start a new session.",
+                            current_usage, model_limit
+                        ));
+                    }
                     // Cap at 3k for embedded models
                     Some(available.min(3000))
                 }
                 _ => {
                     // Default: conservative approach
                     let available = self.context_window.remaining_tokens().saturating_sub(2000);
+                    // Ensure we have at least 1 token available
+                    if available == 0 {
+                        return Err(anyhow::anyhow!(
+                            "Insufficient tokens available for summary generation. Current usage: {} tokens. Please start a new session.",
+                            self.context_window.used_tokens
+                        ));
+                    }
                     Some(available.min(5000))
                 }
             };
