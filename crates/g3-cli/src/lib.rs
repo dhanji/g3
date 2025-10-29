@@ -241,10 +241,6 @@ pub struct Cli {
     /// Enable WebDriver browser automation tools
     #[arg(long)]
     pub webdriver: bool,
-
-    /// Disable accumulative mode and use traditional interactive mode instead
-    #[arg(long, help = "Disable accumulative mode (use traditional interactive chat)")]
-    pub accumulative: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -380,12 +376,6 @@ pub async fn run() -> Result<()> {
     // Execute task, autonomous mode, or start interactive mode based on machine mode
     if cli.machine {
         // Machine mode - use MachineUiWriter
-        if cli.accumulative {
-            eprintln!("ERROR: --accumulative mode is not compatible with --machine mode");
-            eprintln!("Please use either --accumulative or --machine, but not both.");
-            std::process::exit(1);
-        }
-        
         
         let ui_writer = MachineUiWriter::new();
         
@@ -415,8 +405,8 @@ pub async fn run() -> Result<()> {
         // It runs when:
         // 1. No task is provided (not single-shot)
         // 2. Not in autonomous mode
-        // 3. Not explicitly disabled with --accumulative flag
-        let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.accumulative && !cli.chat;
+        // 3. Not explicitly disabled with --chat flag
+        let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.chat;
         
         if use_accumulative {
             // Run accumulative mode and return early
