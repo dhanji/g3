@@ -679,15 +679,22 @@ async fn run_accumulative_mode(
                 .await?;
                 
                 // Run autonomous mode with the accumulated requirements
-                match run_autonomous(
+                let autonomous_result = tokio::select! {
+                    result = run_autonomous(
                     agent,
                     project,
                     cli.show_prompt,
                     cli.show_code,
                     cli.max_turns,
                     cli.quiet,
-                )
-                .await
+                    ) => result,
+                    _ = tokio::signal::ctrl_c() => {
+                        output.print("\n⚠️  Autonomous run cancelled by user (Ctrl+C)");
+                        Ok(())
+                    }
+                };
+                
+                match autonomous_result
                 {
                     Ok(_) => {
                         output.print("");
