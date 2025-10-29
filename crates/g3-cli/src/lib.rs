@@ -700,7 +700,10 @@ async fn run_accumulative_mode(
                     }
                 }
             }
-            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Interrupted) => {
+                output.print("\n👋 Interrupted. Goodbye!");
+                break;
+            }
             Err(ReadlineError::Eof) => {
                 output.print("\n👋 Goodbye!");
                 break;
