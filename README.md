@@ -132,6 +132,40 @@ G3 is designed for:
 
 ## Getting Started
 
+### Default Mode: Accumulative Autonomous
+
+The default interactive mode now uses **accumulative autonomous mode**, which combines the best of interactive and autonomous workflows:
+
+```bash
+# Simply run g3 in any directory
+g3
+
+# You'll be prompted to describe what you want to build
+# Each input you provide:
+# 1. Gets added to accumulated requirements
+# 2. Automatically triggers autonomous mode (coach-player loop)
+# 3. Implements your requirements iteratively
+
+# Example session:
+requirement> create a simple web server in Python with Flask
+# ... autonomous mode runs and implements it ...
+requirement> add a /health endpoint that returns JSON
+# ... autonomous mode runs again with both requirements ...
+```
+
+### Other Modes
+
+```bash
+# Single-shot mode (one task, then exit)
+g3 "implement a function to calculate fibonacci numbers"
+
+# Traditional autonomous mode (reads requirements.md)
+g3 --autonomous
+
+# Traditional interactive mode (chat-style, disables accumulative mode)
+g3 --accumulative  # Note: --accumulative flag disables the new default
+```
+
 ```bash
 # Build the project
 cargo build --release

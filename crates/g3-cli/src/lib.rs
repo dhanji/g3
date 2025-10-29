@@ -174,7 +174,7 @@ mod machine_ui_writer;
 use machine_ui_writer::MachineUiWriter;
 use ui_writer_impl::ConsoleUiWriter;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "g3")]
 #[command(about = "A modular, composable AI coding agent")]
 #[command(version)]
@@ -241,6 +241,10 @@ pub struct Cli {
     /// Enable WebDriver browser automation tools
     #[arg(long)]
     pub webdriver: bool,
+
+    /// Disable accumulative mode and use traditional interactive mode instead
+    #[arg(long, help = "Disable accumulative mode (use traditional interactive chat)")]
+    pub accumulative: bool,
 }
 
 pub async fn run() -> Result<()> {
@@ -482,6 +486,13 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
     // Execute task, autonomous mode, or start interactive mode based on machine mode
     if cli.machine {
         // Machine mode - use MachineUiWriter
+        if cli.accumulative {
+            eprintln!("ERROR: --accumulative mode is not compatible with --machine mode");
+            eprintln!("Please use either --accumulative or --machine, but not both.");
+            std::process::exit(1);
+        }
+        
+        
         let ui_writer = MachineUiWriter::new();
         
         let agent = if cli.autonomous {
@@ -493,6 +504,19 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
             )
             .await?
         } else {
+            // NEW DEFAULT: Accumulative mode for interactive sessions
+            // It runs when:
+            // 1. No task is provided (not single-shot)
+            // 2. Not in autonomous mode
+            // 3. Not explicitly disabled with --accumulative flag
+            let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.accumulative;
+            
+            if use_accumulative {
+                // Run accumulative mode and return early
+                run_accumulative_mode(workspace_dir.clone(), cli.clone(), combined_content.clone()).await?;
+                return Ok(());
+            }
+            
             Agent::new_with_readme_and_quiet(
                 config.clone(),
                 ui_writer,
@@ -527,7 +551,171 @@ Output ONLY the markdown content, no explanations or meta-commentary."#,
         
         run_with_console_mode(agent, cli, project, combined_content).await?;
     }
+    
+    Ok(())
+}
 
+/// Accumulative autonomous mode: accumulates requirements from user input
+/// and runs autonomous mode after each input
+async fn run_accumulative_mode(
+    workspace_dir: PathBuf,
+    cli: Cli,
+    combined_content: Option<String>,
+) -> Result<()> {
+    let output = SimpleOutput::new();
+    
+    output.print("");
+    output.print("🪿 G3 AI Coding Agent - Accumulative Mode");
+    output.print("      >> describe what you want, I'll build it iteratively");
+    output.print("");
+    output.print(&format!("📁 Workspace: {}", workspace_dir.display()));
+    output.print("");
+    output.print("💡 Each input you provide will be added to requirements");
+    output.print("   and I'll automatically work on implementing them.");
+    output.print("");
+    output.print("   Type 'exit' or 'quit' to stop, Ctrl+D to finish");
+    output.print("");
+    
+    // Initialize rustyline editor with history
+    let mut rl = DefaultEditor::new()?;
+    let history_file = dirs::home_dir().map(|mut path| {
+        path.push(".g3_accumulative_history");
+        path
+    });
+    
+    if let Some(ref history_path) = history_file {
+        let _ = rl.load_history(history_path);
+    }
+    
+    // Accumulated requirements stored in memory
+    let mut accumulated_requirements = Vec::new();
+    let mut turn_number = 0;
+    
+    loop {
+        output.print(&format!("\n{}", "=".repeat(60)));
+        if accumulated_requirements.is_empty() {
+            output.print("📝 What would you like me to build? (describe your requirements)");
+        } else {
+            output.print(&format!("📝 Turn {} - What's next? (add more requirements or refinements)", turn_number + 1));
+        }
+        output.print(&format!("{}", "=".repeat(60)));
+        
+        let readline = rl.readline("requirement> ");
+        match readline {
+            Ok(line) => {
+                let input = line.trim().to_string();
+                
+                if input.is_empty() {
+                    continue;
+                }
+                
+                if input == "exit" || input == "quit" {
+                    output.print("\n👋 Goodbye!");
+                    break;
+                }
+                
+                // Add to history
+                rl.add_history_entry(&input)?;
+                
+                // Add this requirement to accumulated list
+                turn_number += 1;
+                accumulated_requirements.push(format!("{}. {}", turn_number, input));
+                
+                // Build the complete requirements document
+                let requirements_doc = format!(
+                    "# Project Requirements\n\n\
+                    ## Current Instructions and Requirements:\n\n\
+                    {}\n\n\
+                    ## Latest Requirement (Turn {}):\n\n\
+                    {}",
+                    accumulated_requirements.join("\n"),
+                    turn_number,
+                    input
+                );
+                
+                output.print("");
+                output.print(&format!("📋 Current instructions and requirements (Turn {}):", turn_number));
+                output.print(&format!("   {}", input));
+                output.print("");
+                output.print("🚀 Starting autonomous implementation...");
+                output.print("");
+                
+                // Create a project with the accumulated requirements
+                let project = Project::new_autonomous_with_requirements(
+                    workspace_dir.clone(),
+                    requirements_doc.clone()
+                )?;
+                
+                // Ensure workspace exists and enter it
+                project.ensure_workspace_exists()?;
+                project.enter_workspace()?;
+                
+                // Load configuration with CLI overrides
+                let mut config = Config::load_with_overrides(
+                    cli.config.as_deref(),
+                    cli.provider.clone(),
+                    cli.model.clone(),
+                )?;
+                
+                // Apply macax flag override
+                if cli.macax {
+                    config.macax.enabled = true;
+                }
+                
+                // Apply webdriver flag override
+                if cli.webdriver {
+                    config.webdriver.enabled = true;
+                }
+                
+                // Create agent for this autonomous run
+                let ui_writer = ConsoleUiWriter::new();
+                let agent = Agent::new_autonomous_with_readme_and_quiet(
+                    config.clone(),
+                    ui_writer,
+                    combined_content.clone(),
+                    cli.quiet,
+                )
+                .await?;
+                
+                // Run autonomous mode with the accumulated requirements
+                match run_autonomous(
+                    agent,
+                    project,
+                    cli.show_prompt,
+                    cli.show_code,
+                    cli.max_turns,
+                    cli.quiet,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        output.print("");
+                        output.print("✅ Autonomous run completed");
+                    }
+                    Err(e) => {
+                        output.print("");
+                        output.print(&format!("❌ Autonomous run failed: {}", e));
+                        output.print("   You can provide more requirements to continue.");
+                    }
+                }
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => {
+                output.print("\n👋 Goodbye!");
+                break;
+            }
+            Err(err) => {
+                error!("Error: {:?}", err);
+                break;
+            }
+        }
+    }
+    
+    // Save history before exiting
+    if let Some(ref history_path) = history_file {
+        let _ = rl.save_history(history_path);
+    }
+    
     Ok(())
 }
 
