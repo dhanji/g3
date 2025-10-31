@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crossterm::style::{Color, SetForegroundColor, ResetColor};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -1479,10 +1480,32 @@ fn handle_execution_error(e: &anyhow::Error, input: &str, output: &SimpleOutput,
     }
 }
 
-fn display_context_progress<W: UiWriter>(agent: &Agent<W>, output: &SimpleOutput) {
+fn display_context_progress<W: UiWriter>(agent: &Agent<W>, _output: &SimpleOutput) {
     let context = agent.get_context_window();
-    output.print(&format!("Context: {}/{} tokens ({:.1}%)", 
-        context.used_tokens, context.total_tokens, context.percentage_used()));
+    let percentage = context.percentage_used();
+    
+    // Create 10 dots representing context fullness
+    let total_dots: usize = 10;
+    let filled_dots = ((percentage / 100.0) * total_dots as f32).round() as usize;
+    let empty_dots = total_dots.saturating_sub(filled_dots);
+    
+    let filled_str = "●".repeat(filled_dots);
+    let empty_str = "○".repeat(empty_dots);
+    
+    // Determine color based on percentage
+    let color = if percentage < 40.0 {
+        Color::Green
+    } else if percentage < 60.0 {
+        Color::Yellow
+    } else if percentage < 80.0 {
+        Color::Rgb { r: 255, g: 165, b: 0 } // Orange
+    } else {
+        Color::Red
+    };
+    
+    // Print with colored dots (using print! directly to handle color codes)
+    print!("Context: {}{}{}{} {:.0}% ({}/{} tokens)\n", 
+        SetForegroundColor(color), filled_str, empty_str, ResetColor, percentage, context.used_tokens, context.total_tokens);
 }
 
 /// Set up the workspace directory for autonomous mode

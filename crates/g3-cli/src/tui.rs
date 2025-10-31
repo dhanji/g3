@@ -71,18 +71,20 @@ impl SimpleOutput {
     }
 
     pub fn print_context(&self, used: u32, total: u32, percentage: f32) {
-        let bar_width: usize = 10;
-        let filled_width = ((percentage / 100.0) * bar_width as f32) as usize;
-        let empty_width = bar_width.saturating_sub(filled_width);
+        let total_dots = 10;
+        let filled_dots = ((percentage / 100.0) * total_dots as f32) as usize;
+        let empty_dots = total_dots.saturating_sub(filled_dots);
 
-        let filled_chars = "●".repeat(filled_width);
-        let empty_chars = "○".repeat(empty_width);
+        let filled_str = "●".repeat(filled_dots);
+        let empty_str = "○".repeat(empty_dots);
         
         // Determine color based on percentage
-        let color = if percentage < 60.0 {
+        let color = if percentage < 40.0 {
             crossterm::style::Color::Green
-        } else if percentage < 80.0 {
+        } else if percentage < 60.0 {
             crossterm::style::Color::Yellow
+        } else if percentage < 80.0 {
+            crossterm::style::Color::Rgb { r: 255, g: 165, b: 0 } // Orange
         } else {
             crossterm::style::Color::Red
         };
@@ -90,9 +92,9 @@ impl SimpleOutput {
         // Print with colored progress bar
         print!("Context: ");
         print!("{}", SetForegroundColor(color));
-        print!("{}{}", filled_chars, empty_chars);
+        print!("{}{}", filled_str, empty_str);
         print!("{}", ResetColor);
-        println!(" {:.1}% | {}/{} tokens", percentage, used, total);
+        println!(" {:.0}% ({}/{} tokens)", percentage, used, total);
     }
 
     pub fn print_context_thinning(&self, message: &str) {
