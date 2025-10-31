@@ -2596,7 +2596,8 @@ Template:
                                     String::new()
                                 };
 
-                            if !new_content.trim().is_empty() {
+                            // Don't display text before final_output - it will be in the summary
+                            if !new_content.trim().is_empty() && tool_call.tool != "final_output" {
                                 #[allow(unused_assignments)]
                                 if !response_started {
                                     self.ui_writer.print_agent_prompt();
@@ -2722,13 +2723,8 @@ Template:
 
                             // Check if this was a final_output tool call
                             if tool_call.tool == "final_output" {
-                                // Don't add final_display_content here - it was already added before tool execution
-                                // Adding it again would duplicate the output
-                                if let Some(summary) = tool_call.args.get("summary") {
-                                    if let Some(summary_str) = summary.as_str() {
-                                        full_response.push_str(&format!("\n\n{}", summary_str));
-                                    }
-                                }
+                                // Don't return anything - the summary was already displayed during streaming
+                                // Returning it again would cause duplication
                                 self.ui_writer.println("");
                                 let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
@@ -2760,7 +2756,7 @@ Template:
 
                             // Add the tool call and result to the context window using RAW unfiltered content
                             // This ensures the log file contains the true raw content including JSON tool calls
-                            let tool_message = if !full_response.contains(final_display_content) && !raw_content_for_log.trim().is_empty() {
+                            let tool_message = if !raw_content_for_log.trim().is_empty() {
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
@@ -2771,7 +2767,7 @@ Template:
                                     ),
                                 }
                             } else {
-                                // If we've already added the text or there's no text, just include the tool call
+                                // No text content before tool call, just include the tool call
                                 Message {
                                     role: MessageRole::Assistant,
                                     content: format!(
@@ -2796,18 +2792,22 @@ Template:
                                 request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled));
                             }
 
-                            // Only add to full_response if we haven't already added it
-                            if !full_response.contains(final_display_content) {
-                                full_response.push_str(final_display_content);
-                            }
+                            // DO NOT add final_display_content to full_response here!
+                            // The content was already displayed during streaming and added to current_response.
+                            // Adding it again would cause duplication when the agent message is printed.
+                            // The only time we should add to full_response is:
+                            // 1. For final_output tool (handled separately)
+                            // 2. At the end when no tools were executed (handled in the "no tool executed" branch)
+                            
                             tool_executed = true;
 
                             // Reset the JSON tool call filter state after each tool execution
                             // This ensures the filter doesn't stay in suppression mode for subsequent streaming content
                             fixed_filter_json::reset_fixed_json_tool_state();
 
-                            // Reset parser for next iteration
+                            // Reset parser for next iteration - this clears the text buffer
                             parser.reset();
+                            
                             // Clear current_response for next iteration to prevent buffered text
                             // from being incorrectly displayed after tool execution
                             current_response.clear();
@@ -2985,11 +2985,10 @@ Template:
 
                                 // Set full_response to current_response (don't append)
                                 // current_response already contains everything that was displayed
-                                // Appending would duplicate the output
-                                if !current_response.is_empty() && full_response.is_empty() {
-                                    full_response = current_response.clone();
-                                    debug!("Set full_response from current_response (no tool): {} chars", full_response.len());
-                                }
+                                // Don't set full_response here - it would duplicate the output
+                                // The text was already displayed during streaming
+                                // Return empty string to avoid duplication
+                                full_response = String::new();
 
                                 self.ui_writer.println("");
                                 let _ttft =
