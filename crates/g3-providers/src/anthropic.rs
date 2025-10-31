@@ -276,6 +276,7 @@ impl AnthropicProvider {
         let mut partial_tool_json = String::new(); // Accumulate partial JSON for tool calls
         let mut accumulated_usage: Option<Usage> = None;
         let mut byte_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
+        let mut message_stopped = false; // Track if we've received message_stop
         
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
@@ -313,6 +314,12 @@ impl AnthropicProvider {
                         buffer.drain(..line_end + 1);
 
                         if line.is_empty() {
+                            continue;
+                        }
+
+                        // If we've already sent the final chunk, skip processing more events
+                        if message_stopped {
+                            debug!("Skipping event after message_stop: {}", line);
                             continue;
                         }
 
@@ -451,6 +458,7 @@ impl AnthropicProvider {
                                         }
                                         "message_stop" => {
                                             debug!("Received message stop event");
+                                            message_stopped = true;
                                             let final_chunk = CompletionChunk {
                                                 content: String::new(),
                                                 finished: true,
@@ -460,7 +468,8 @@ impl AnthropicProvider {
                                             if tx.send(Ok(final_chunk)).await.is_err() {
                                                 debug!("Receiver dropped, stopping stream");
                                             }
-                                            return accumulated_usage;
+                                            // Don't return here - let the stream naturally exhaust
+                                            // This prevents dropping the sender prematurely
                                         }
                                         "error" => {
                                             if let Some(error) = event.error {
@@ -468,7 +477,7 @@ impl AnthropicProvider {
                                                 let _ = tx
                                                     .send(Err(anyhow!("Anthropic API error: {:?}", error)))
                                                     .await;
-                                                return accumulated_usage;
+                                                break; // Break to let stream exhaust naturally
                                             }
                                         }
                                         _ => {
@@ -487,7 +496,10 @@ impl AnthropicProvider {
                 Err(e) => {
                     error!("Stream error: {}", e);
                     let _ = tx.send(Err(anyhow!("Stream error: {}", e))).await;
-                    return accumulated_usage;
+                    // Don't return here either - let the stream exhaust naturally
+                    // The error has been sent to the receiver, so it will handle it
+                    // Breaking here ensures we clean up properly
+                    break;
                 }
             }
         }

@@ -2675,7 +2675,13 @@ Template:
                             ));
 
                             // Display tool execution result with proper indentation
-                            if tool_call.tool != "final_output" {
+                            if tool_call.tool == "final_output" {
+                                // For final_output, display the summary without truncation
+                                for line in tool_result.lines() {
+                                    self.ui_writer.update_tool_output_line(line);
+                                }
+                                self.ui_writer.println("");
+                            } else {
                                 let output_lines: Vec<&str> = tool_result.lines().collect();
 
                                 // Check if UI wants full output (machine mode) or truncated (human mode)
@@ -2723,8 +2729,9 @@ Template:
 
                             // Check if this was a final_output tool call
                             if tool_call.tool == "final_output" {
-                                // Don't return anything - the summary was already displayed during streaming
-                                // Returning it again would cause duplication
+                                // The summary was displayed above when we printed the tool result
+                                // Add it to full_response so it's included in the TaskResult
+                                full_response.push_str(&tool_result);
                                 self.ui_writer.println("");
                                 let _ttft =
                                     first_token_time.unwrap_or_else(|| stream_start.elapsed());
