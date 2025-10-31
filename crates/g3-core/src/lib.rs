@@ -786,7 +786,6 @@ impl<W: UiWriter> Agent<W> {
         // Register embedded provider if configured AND it's the default provider
         if let Some(embedded_config) = &config.providers.embedded {
             if providers_to_register.contains(&"embedded".to_string()) {
-                info!("Initializing embedded provider");
                 let embedded_provider = g3_providers::EmbeddedProvider::new(
                     embedded_config.model_path.clone(),
                     embedded_config.model_type.clone(),
@@ -797,15 +796,12 @@ impl<W: UiWriter> Agent<W> {
                     embedded_config.threads,
                 )?;
                 providers.register(embedded_provider);
-            } else {
-                info!("Embedded provider configured but not needed, skipping initialization");
             }
         }
 
         // Register OpenAI provider if configured AND it's the default provider
         if let Some(openai_config) = &config.providers.openai {
             if providers_to_register.contains(&"openai".to_string()) {
-                info!("Initializing OpenAI provider");
                 let openai_provider = g3_providers::OpenAIProvider::new(
                     openai_config.api_key.clone(),
                     Some(openai_config.model.clone()),
@@ -814,15 +810,12 @@ impl<W: UiWriter> Agent<W> {
                     openai_config.temperature,
                 )?;
                 providers.register(openai_provider);
-            } else {
-                info!("OpenAI provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Anthropic provider if configured AND it's the default provider
         if let Some(anthropic_config) = &config.providers.anthropic {
             if providers_to_register.contains(&"anthropic".to_string()) {
-                info!("Initializing Anthropic provider");
                 let anthropic_provider = g3_providers::AnthropicProvider::new(
                     anthropic_config.api_key.clone(),
                     Some(anthropic_config.model.clone()),
@@ -830,15 +823,12 @@ impl<W: UiWriter> Agent<W> {
                     anthropic_config.temperature,
                 )?;
                 providers.register(anthropic_provider);
-            } else {
-                info!("Anthropic provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Databricks provider if configured AND it's the default provider
         if let Some(databricks_config) = &config.providers.databricks {
             if providers_to_register.contains(&"databricks".to_string()) {
-                info!("Initializing Databricks provider");
 
                 let databricks_provider = if let Some(token) = &databricks_config.token {
                     // Use token-based authentication
@@ -861,8 +851,6 @@ impl<W: UiWriter> Agent<W> {
                 };
 
                 providers.register(databricks_provider);
-            } else {
-                info!("Databricks provider configured but not needed, skipping initialization");
             }
         }
 
@@ -885,16 +873,12 @@ impl<W: UiWriter> Agent<W> {
                 content: readme,
             };
             context_window.add_message(readme_message);
-            info!("Added project README to context window");
         }
 
         // Initialize computer controller if enabled
         let computer_controller = if config.computer_control.enabled {
             match g3_computer_control::create_controller() {
-                Ok(controller) => {
-                    info!("Computer control enabled");
-                    Some(controller)
-                }
+                Ok(controller) => Some(controller),
                 Err(e) => {
                     warn!("Failed to initialize computer control: {}", e);
                     None
@@ -2991,7 +2975,8 @@ Template:
                                             "Using filtered parser text as last resort: {} chars",
                                             filtered_text.len()
                                         );
-                                        current_response = filtered_text;
+                                        // Note: This assignment is currently unused but kept for potential future use
+                                        let _ = filtered_text;
                                     }
                                 }
 

@@ -286,10 +286,6 @@ pub async fn run() -> Result<()> {
         tracing_subscriber::registry().with(filter).init();
     }
 
-    if !cli.machine {
-        info!("Starting G3 AI Coding Agent");
-    }
-
     // Set up workspace directory
     let workspace_dir = if let Some(ws) = &cli.workspace {
         ws.clone()
@@ -325,10 +321,6 @@ pub async fn run() -> Result<()> {
     project.ensure_workspace_exists()?;
     project.enter_workspace()?;
 
-    if !cli.machine {
-        info!("Using workspace: {}", project.workspace().display());
-    }
-
     // Load configuration with CLI overrides
     let mut config = Config::load_with_overrides(
         cli.config.as_deref(),
@@ -339,9 +331,6 @@ pub async fn run() -> Result<()> {
     // Apply macax flag override
     if cli.macax {
         config.macax.enabled = true;
-        if !cli.machine {
-            info!("macOS Accessibility API tools enabled");
-        }
     }
 
     // Apply webdriver flag override
@@ -766,9 +755,6 @@ async fn run_with_console_mode(
     // Execute task, autonomous mode, or start interactive mode
     if cli.autonomous {
         // Autonomous mode with coach-player feedback loop
-        if !cli.machine {
-            info!("Starting autonomous mode");
-        }
         run_autonomous(
             agent,
             project,
@@ -780,9 +766,6 @@ async fn run_with_console_mode(
         .await?;
     } else if let Some(task) = cli.task {
         // Single-shot mode
-        if !cli.machine {
-            info!("Executing task: {}", task);
-        }
         let output = SimpleOutput::new();
         let result = agent
             .execute_task_with_timing(&task, None, false, cli.show_prompt, cli.show_code, true)
@@ -790,9 +773,6 @@ async fn run_with_console_mode(
         output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
-        if !cli.machine {
-            info!("Starting interactive mode");
-        }
         println!("📁 Workspace: {}", project.workspace().display());
         run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
     }
@@ -841,7 +821,6 @@ fn read_agents_config(workspace_dir: &Path) -> Option<String> {
         match std::fs::read_to_string(&agents_path) {
             Ok(content) => {
                 // Return the content with a note about which file was read
-                info!("Loaded AGENTS.md from {}", agents_path.display());
                 Some(format!(
                     "🤖 Agent Configuration (from AGENTS.md):\n\n{}",
                     content
@@ -859,7 +838,6 @@ fn read_agents_config(workspace_dir: &Path) -> Option<String> {
         if alt_path.exists() {
             match std::fs::read_to_string(&alt_path) {
                 Ok(content) => {
-                    info!("Loaded agents.md from {}", alt_path.display());
                     Some(format!("🤖 Agent Configuration (from agents.md):\n\n{}", content))
                 }
                 Err(e) => {

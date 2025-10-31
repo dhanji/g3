@@ -1,8 +1,14 @@
+//! Tests for JSON tool call filtering.
+//!
+//! These tests verify that the filter correctly identifies and removes JSON tool calls
+//! from LLM output streams while preserving all other content.
+
 #[cfg(test)]
 mod fixed_filter_tests {
     use crate::fixed_filter_json::{fixed_filter_json_tool_calls, reset_fixed_json_tool_state};
     use regex::Regex;
 
+    /// Test that regular text without tool calls passes through unchanged.
     #[test]
     fn test_no_tool_call_passthrough() {
         reset_fixed_json_tool_state();
@@ -11,6 +17,7 @@ mod fixed_filter_tests {
         assert_eq!(result, input);
     }
 
+    /// Test detection and removal of a complete tool call in a single chunk.
     #[test]
     fn test_simple_tool_call_detection() {
         reset_fixed_json_tool_state();
@@ -23,6 +30,7 @@ Some text after"#;
         assert_eq!(result, expected);
     }
 
+    /// Test handling of tool calls that arrive across multiple streaming chunks.
     #[test]
     fn test_streaming_chunks() {
         reset_fixed_json_tool_state();
@@ -48,6 +56,7 @@ Some text after"#;
         assert_eq!(final_result, expected);
     }
 
+    /// Test correct handling of nested braces within JSON strings.
     #[test]
     fn test_nested_braces_in_tool_call() {
         reset_fixed_json_tool_state();
@@ -61,6 +70,7 @@ Text after"#;
         assert_eq!(result, expected);
     }
 
+    /// Verify the regex pattern matches the specification with flexible whitespace.
     #[test]
     fn test_regex_pattern_specification() {
         // Test the corrected regex pattern that's more flexible with whitespace
@@ -84,11 +94,6 @@ Text after"#;
             ), // Space after { DOES match with \s*
             (
                 r#"line
-abc{"tool":"#,
-                true,
-            ),
-            (
-                r#"line
 {"tool123":"#,
                 false,
             ), // "tool123" is not exactly "tool"
@@ -109,6 +114,7 @@ abc{"tool":"#,
         }
     }
 
+    /// Test that tool calls must appear at the start of a line (after newline).
     #[test]
     fn test_newline_requirement() {
         reset_fixed_json_tool_state();
@@ -122,13 +128,14 @@ abc{"tool":"#,
         reset_fixed_json_tool_state();
         let result2 = fixed_filter_json_tool_calls(input_without_newline);
 
-        // Both cases currently trigger suppression due to regex pattern
-        // TODO: Fix regex to only match after actual newlines
+        // With the new aggressive filtering, only the newline case should trigger suppression
+        // The pattern requires { to be at the start of a line (after ^)
         assert_eq!(result1, "Text\n");
-        // This currently fails because our regex matches both cases
-        assert_eq!(result2, "Text ");
+        // Without newline before {, it should pass through unchanged
+        assert_eq!(result2, input_without_newline);
     }
 
+    /// Test handling of escaped quotes within JSON strings.
     #[test]
     fn test_json_with_escaped_quotes() {
         reset_fixed_json_tool_state();
@@ -142,6 +149,7 @@ More text"#;
         assert_eq!(result, expected);
     }
 
+    /// Test graceful handling of incomplete/malformed JSON.
     #[test]
     fn test_edge_case_malformed_json() {
         reset_fixed_json_tool_state();
@@ -157,6 +165,7 @@ More text"#;
         assert_eq!(result, expected);
     }
 
+    /// Test processing multiple independent tool calls sequentially.
     #[test]
     fn test_multiple_tool_calls_sequential() {
         reset_fixed_json_tool_state();
@@ -179,6 +188,7 @@ Final text"#;
         assert_eq!(result2, expected2);
     }
 
+    /// Test tool calls with complex multi-line arguments.
     #[test]
     fn test_tool_call_with_complex_args() {
         reset_fixed_json_tool_state();
@@ -192,6 +202,7 @@ After"#;
         assert_eq!(result, expected);
     }
 
+    /// Test input containing only a tool call with no surrounding text.
     #[test]
     fn test_tool_call_only() {
         reset_fixed_json_tool_state();
@@ -204,6 +215,7 @@ After"#;
         assert_eq!(result, expected);
     }
 
+    /// Test accurate brace counting with deeply nested structures.
     #[test]
     fn test_brace_counting_accuracy() {
         reset_fixed_json_tool_state();
@@ -218,6 +230,7 @@ End"#;
         assert_eq!(result, expected);
     }
 
+    /// Test that braces within strings don't affect brace counting.
     #[test]
     fn test_string_escaping_in_json() {
         reset_fixed_json_tool_state();
@@ -232,6 +245,7 @@ More"#;
         assert_eq!(result, expected);
     }
 
+    /// Verify compliance with the exact specification requirements.
     #[test]
     fn test_specification_compliance() {
         reset_fixed_json_tool_state();
@@ -248,6 +262,7 @@ More"#;
         assert_eq!(result, expected);
     }
 
+    /// Test that non-tool JSON objects are not filtered.
     #[test]
     fn test_no_false_positives() {
         reset_fixed_json_tool_state();
@@ -261,6 +276,7 @@ More text"#;
         assert_eq!(result, input);
     }
 
+    /// Test patterns that look similar to tool calls but aren't exact matches.
     #[test]
     fn test_partial_tool_patterns() {
         reset_fixed_json_tool_state();
@@ -280,6 +296,7 @@ More text"#;
         }
     }
 
+    /// Test streaming with very small chunks (character-by-character).
     #[test]
     fn test_streaming_edge_cases() {
         reset_fixed_json_tool_state();
@@ -296,12 +313,13 @@ More text"#;
         }
 
         let final_result: String = results.join("");
-        // This test currently fails because the JSON is incomplete across chunks
-        // The function doesn't handle this edge case properly yet
-        let expected = "Text\n{\"tool\": \nAfter";
+        // With the new aggressive filtering, the JSON should be completely filtered out
+        // even when it arrives in very small chunks
+        let expected = "Text\n\nAfter";
         assert_eq!(final_result, expected);
     }
 
+    /// Debug test with detailed logging for streaming behavior.
     #[test]
     fn test_streaming_debug() {
         reset_fixed_json_tool_state();
