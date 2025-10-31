@@ -214,9 +214,9 @@ pub struct Cli {
     #[arg(long, value_name = "TEXT")]
     pub requirements: Option<String>,
 
-    /// Enable traditional chat mode (disables accumulative autonomous mode)
+    /// Enable accumulative autonomous mode (default is chat mode)
     #[arg(long)]
-    pub chat: bool,
+    pub auto: bool,
 
     /// Enable machine-friendly output mode with JSON markers and stats
     #[arg(long)]
@@ -401,12 +401,12 @@ pub async fn run() -> Result<()> {
     } else {
         // Normal mode - use ConsoleUiWriter
         
-        // NEW DEFAULT: Accumulative mode for interactive sessions
+        // DEFAULT: Chat mode for interactive sessions
         // It runs when:
         // 1. No task is provided (not single-shot)
         // 2. Not in autonomous mode
-        // 3. Not explicitly disabled with --chat flag
-        let use_accumulative = cli.task.is_none() && !cli.autonomous && !cli.chat;
+        // 3. Not explicitly enabled with --auto flag
+        let use_accumulative = cli.task.is_none() && !cli.autonomous && cli.auto;
         
         if use_accumulative {
             // Run accumulative mode and return early
