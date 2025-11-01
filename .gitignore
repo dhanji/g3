@@ -26,3 +26,6 @@ target
 # Session logs directory
 logs/
 *.json
+
+# G3 project requirements directory
+.g3/

@@ -136,6 +136,11 @@ G3 is designed for:
 
 The default interactive mode now uses **accumulative autonomous mode**, which combines the best of interactive and autonomous workflows:
 
+**Requirements Persistence**: All requirements are automatically saved to `.g3/requirements.md` in your workspace, allowing you to:
+- Resume work across sessions
+- Review what you've asked G3 to build
+- Share requirements with team members
+
 ```bash
 # Simply run g3 in any directory
 g3
@@ -151,6 +156,9 @@ requirement> create a simple web server in Python with Flask
 # ... autonomous mode runs and implements it ...
 requirement> add a /health endpoint that returns JSON
 # ... autonomous mode runs again with both requirements ...
+
+# Requirements are saved to .g3/requirements.md
+# Use /requirements command to view them
 ```
 
 ### Other Modes

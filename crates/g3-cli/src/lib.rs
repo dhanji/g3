@@ -441,6 +441,51 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Ensure .g3 directory exists in the workspace
+fn ensure_g3_dir(workspace_dir: &Path) -> Result<PathBuf> {
+    let g3_dir = workspace_dir.join(".g3");
+    if !g3_dir.exists() {
+        std::fs::create_dir_all(&g3_dir)?;
+    }
+    Ok(g3_dir)
+}
+
+/// Load existing requirements from .g3/requirements.md if it exists
+fn load_existing_requirements(workspace_dir: &Path) -> Result<Vec<String>> {
+    let g3_dir = workspace_dir.join(".g3");
+    let requirements_file = g3_dir.join("requirements.md");
+    
+    if !requirements_file.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&requirements_file)?;
+    
+    // Parse the requirements from the markdown file
+    let mut requirements = Vec::new();
+    for line in content.lines() {
+        // Look for numbered requirements (e.g., "1. requirement text")
+        if let Some(stripped) = line.strip_prefix(|c: char| c.is_ascii_digit()) {
+            if let Some(req) = stripped.strip_prefix(". ") {
+                // Reconstruct the numbered format
+                let num = line.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+                requirements.push(format!("{}. {}", num, req));
+            }
+        }
+    }
+    
+    Ok(requirements)
+}
+
+/// Save accumulated requirements to .g3/requirements.md
+fn save_requirements(workspace_dir: &Path, requirements: &[String]) -> Result<()> {
+    let g3_dir = ensure_g3_dir(workspace_dir)?;
+    let requirements_file = g3_dir.join("requirements.md");
+    let content = format!("# Project Requirements\n\n{}\n", requirements.join("\n"));
+    std::fs::write(&requirements_file, content)?;
+    Ok(())
+}
+
 /// Accumulative autonomous mode: accumulates requirements from user input
 /// and runs autonomous mode after each input
 async fn run_accumulative_mode(
@@ -474,9 +519,25 @@ async fn run_accumulative_mode(
         let _ = rl.load_history(history_path);
     }
     
-    // Accumulated requirements stored in memory
-    let mut accumulated_requirements = Vec::new();
-    let mut turn_number = 0;
+    // Load existing requirements from .g3/requirements.md if it exists
+    let mut accumulated_requirements = match load_existing_requirements(&workspace_dir) {
+        Ok(reqs) if !reqs.is_empty() => {
+            output.print("");
+            output.print(&format!("📂 Loaded {} existing requirement(s) from .g3/requirements.md", reqs.len()));
+            output.print("");
+            for req in &reqs {
+                output.print(&format!("   {}", req));
+            }
+            output.print("");
+            reqs
+        }
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            output.print(&format!("⚠️  Warning: Could not load existing requirements: {}", e));
+            Vec::new()
+        }
+    };
+    let mut turn_number = accumulated_requirements.len();
     
     loop {
         output.print(&format!("\n{}", "=".repeat(60)));
@@ -519,7 +580,8 @@ async fn run_accumulative_mode(
                             if accumulated_requirements.is_empty() {
                                 output.print("📋 No requirements accumulated yet");
                             } else {
-                                output.print("📋 Accumulated Requirements:");
+                                let req_file = workspace_dir.join(".g3/requirements.md");
+                                output.print(&format!("📋 Accumulated Requirements (saved to {}):", req_file.display()));
                                 output.print("");
                                 for req in &accumulated_requirements {
                                     output.print(&format!("   {}", req));
@@ -599,6 +661,13 @@ async fn run_accumulative_mode(
                 // Add this requirement to accumulated list
                 turn_number += 1;
                 accumulated_requirements.push(format!("{}. {}", turn_number, input));
+                
+                // Save requirements to .g3/requirements.md
+                if let Err(e) = save_requirements(&workspace_dir, &accumulated_requirements) {
+                    output.print(&format!("⚠️  Warning: Could not save requirements to .g3/requirements.md: {}", e));
+                } else {
+                    output.print(&format!("💾 Saved to .g3/requirements.md"));
+                }
                 
                 // Build the complete requirements document
                 let requirements_doc = format!(
