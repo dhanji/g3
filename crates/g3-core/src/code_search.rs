@@ -169,7 +169,7 @@ pub async fn execute_code_search(request: CodeSearchRequest) -> Result<CodeSearc
     
     // Execute searches concurrently
     let mut tasks = Vec::new();
-    
+
     for search in request.searches {
         let sem = semaphore.clone();
         let task = tokio::spawn(async move {
@@ -268,7 +268,7 @@ async fn execute_single_search(search: SearchSpec, max_matches: usize) -> Search
     };
     
     debug!("Executing ast-grep command: {:?}", cmd_args);
-    
+
     // Execute with timeout
     let timeout_duration = Duration::from_secs(timeout_secs);
     

@@ -1154,6 +1154,8 @@ The tool will execute immediately and you'll receive the result (success or erro
 
 # Available Tools
 
+Short description for providers without native calling specs:
+
 - **shell**: Execute shell commands
   - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}
   - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}
@@ -1182,12 +1184,24 @@ The tool will execute immediately and you'll receive the result (success or erro
   - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
   - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
 
+- **code_search**: Batch syntax-aware searches via ast-grep. Supports up to 20 pattern or YAML-rule searches in parallel.
+  - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"search_label\", \"mode\": \"pattern|yaml\", ...}], \"max_concurrency\": 4, \"max_matches_per_search\": 500}}
+  - Example for pattern mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME($$$ARGS) { $$$ }\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Example for YAML mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"mode\": \"yaml\", \"rule_yaml\": \"id: async-fn\nlanguage: Rust\nrule:\n  pattern: async fn $NAME($$$) { $$$ }\"}]}}
+  - Example for multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME\", \"language\": \"rust\"}, {\"name\": \"structs\", \"mode\": \"pattern\", \"pattern\": \"struct $NAME\", \"language\": \"rust\"}]}}
+  - Example for passing optional args like \"context\": {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"context\": 3, \"pattern\": \"fn $NAME\", \"language\": \"rust\"}]}
+  - Common optional args for searches:
+       - \"context\": 3 (show surrounding lines),
+       - \"json_style\": \"stream\" (for large results)
+
 # Instructions
 
 1. Analyze the request and break down into smaller tasks if appropriate
 2. Execute ONE tool at a time. An exception exists for when you're writing files. See below.
 3. STOP when the original request was satisfied
 4. Call the final_output tool when done
+
+For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
 
 Exception to using ONE tool at a time:
 If all you’re doing is WRITING files, and you don’t need to do anything else between each step.
