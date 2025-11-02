@@ -2,6 +2,7 @@ pub mod error_handling;
 pub mod project;
 pub mod task_result;
 pub mod ui_writer;
+pub mod code_search;
 pub use task_result::TaskResult;
 
 #[cfg(test)]
@@ -1104,6 +1105,18 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
+For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
+
+Additional examples for the 'code_search' tool:
+  - Example for pattern mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME($$$ARGS) { $$$ }\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Example for YAML mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"mode\": \"yaml\", \"rule_yaml\": \"id: async-fn\nlanguage: Rust\nrule:\n  pattern: async fn $NAME($$$) { $$$ }\"}]}}
+  - Example for multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME\", \"language\": \"rust\"}, {\"name\": \"structs\", \"mode\": \"pattern\", \"pattern\": \"struct $NAME\", \"language\": \"rust\"}]}}
+  - Example for passing optional args like \"context\": {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"context\": 3, \"pattern\": \"fn $NAME\", \"language\": \"rust\"}]}
+  - Common optional args for searches:
+       - \"context\": 3 (show surrounding lines),
+       - \"json_style\": \"stream\" (for large results)
+
+
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
 
 When taking screenshots of specific windows (like \"my Safari window\" or \"my terminal\"), ALWAYS use list_windows first to identify the correct window ID, then use take_screenshot with the window_id parameter.
@@ -1153,6 +1166,8 @@ The tool will execute immediately and you'll receive the result (success or erro
 
 # Available Tools
 
+Short description for providers without native calling specs:
+
 - **shell**: Execute shell commands
   - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}
   - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}
@@ -1181,12 +1196,40 @@ The tool will execute immediately and you'll receive the result (success or erro
   - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
   - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
 
+- **code_search**: Batch syntax-aware searches via ast-grep. Supports up to 20 pattern or YAML-rule searches in parallel.
+  - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"search_label\", \"mode\": \"pattern|yaml\", ...}], \"max_concurrency\": 4, \"max_matches_per_search\": 500}}
+  - Example for pattern mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME($$$ARGS) { $$$ }\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Example for YAML mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"mode\": \"yaml\", \"rule_yaml\": \"id: async-fn\nlanguage: Rust\nrule:\n  pattern: async fn $NAME($$$) { $$$ }\"}]}}
+  - Example for multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME\", \"language\": \"rust\"}, {\"name\": \"structs\", \"mode\": \"pattern\", \"pattern\": \"struct $NAME\", \"language\": \"rust\"}]}}
+  - Example for passing optional args like \"context\": {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"context\": 3, \"pattern\": \"fn $NAME\", \"language\": \"rust\"}]}
+  - Common optional args for searches:
+       - \"context\": 3 (show surrounding lines),
+       - \"json_style\": \"stream\" (for large results)
+
 # Instructions
 
 1. Analyze the request and break down into smaller tasks if appropriate
-2. Execute ONE tool at a time
+2. Execute ONE tool at a time. An exception exists for when you're writing files. See below.
 3. STOP when the original request was satisfied
 4. Call the final_output tool when done
+
+For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
+
+Exception to using ONE tool at a time:
+If all you’re doing is WRITING files, and you don’t need to do anything else between each step.
+You can issue MULTIPLE write_file tool calls in a request, however you may ONLY make a SINGLE write_file call for any file in that request.
+For example you may call:
+[START OF REQUEST]
+write_file(\"helper.rs\", \"...\")
+write_file(\"file2.txt\", \"...\")
+[DONE]
+
+But NOT:
+[START OF REQUEST]
+write_file(\"helper.rs\", \"...\")
+write_file(\"file2.txt\", \"...\")
+write_file(\"helper.rs\", \"...\")
+[DONE]
 
 # Task Management
 
@@ -1860,6 +1903,64 @@ Template:
                 }),
             },
         ];
+        
+        // Add code_search tool
+        tools.push(Tool {
+            name: "code_search".to_string(),
+            description: "Batch syntax-aware searches via ast-grep. Supports up to 20 pattern or YAML-rule searches in parallel; returns JSON matches (stream-collated).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "searches": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Label for this search." },
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["pattern", "yaml"],
+                                    "description": "`pattern` uses `ast-grep run`; `yaml` uses `ast-grep scan --inline-rules`."
+                                },
+                                // pattern mode (fast one-off)
+                                "pattern": { "type": "string", "description": "ast-grep pattern code (e.g., \"async fn $NAME($$$ARGS) { $$$ }\")"},
+                                "language": { "type": "string", "description": "Optional language for pattern mode; ast-grep may infer from file extensions if omitted." },
+                                // yaml mode (full rule object)
+                                "rule_yaml": { "type": "string", "description": "A full YAML rule object text. Must include `id`, `language`, and `rule`." },
+                                // targeting
+                                "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths/dirs to search. Defaults to current dir if empty." },
+                                "globs": { "type": "array", "items": { "type": "string" }, "description": "Optional include/exclude globs for CLI --globs." },
+                                // result formatting & performance knobs
+                                "json_style": { "type": "string", "enum": ["pretty","stream","compact"], "default": "stream", "description": "Use stream for large codebases." },
+                                "context": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "CLI -C context lines in text output; also affects JSON `lines` field." },
+                                "threads": { "type": "integer", "minimum": 1, "description": "Optional override for ast-grep -j (per process)." },
+                                "include_metadata": { "type": "boolean", "default": false, "description": "If yaml mode and rule has metadata, add --include-metadata." },
+                                // robustness
+                                "no_ignore": {
+                                    "type": "array",
+                                    "items": { "type": "string", "enum": ["hidden","dot","exclude","global","parent","vcs"] },
+                                    "description": "Forwarded to --no-ignore to bypass ignore files/hidden."
+                                },
+                                // severity overrides for yaml mode
+                                "severity": {
+                                    "type": "object",
+                                    "additionalProperties": { "type": "string", "enum": ["error","warning","info","hint","off"] },
+                                    "description": "Optional map<ruleId, severity> -> passed via --error/--warning/--info/--hint/--off."
+                                },
+                                // per-search timeout seconds (default 60)
+                                "timeout_secs": { "type": "integer", "minimum": 1, "default": 60 }
+                            },
+                            "required": ["name","mode"]
+                        }
+                    },
+                    // global concurrency & truncation
+                    "max_concurrency": { "type": "integer", "minimum": 1, "default": 4 },
+                    "max_matches_per_search": { "type": "integer", "minimum": 1, "default": 500 }
+                },
+                "required": ["searches"]
+            }),
+        });
 
         // Add WebDriver tools if enabled
         if enable_webdriver {
@@ -4435,6 +4536,41 @@ Template:
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "code_search" => {
+                debug!("Processing code_search tool call");
+                
+                // Parse the request
+                let request: crate::code_search::CodeSearchRequest = match serde_json::from_value(tool_call.args.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        return Ok(format!("❌ Invalid code_search arguments: {}", e));
+                    }
+                };
+                
+                // Execute the code search
+                match crate::code_search::execute_code_search(request).await {
+                    Ok(response) => {
+                        // Serialize the response to JSON
+                        match serde_json::to_string_pretty(&response) {
+                            Ok(json_output) => {
+                                Ok(format!("✅ Code search completed\n{}", json_output))
+                            }
+                            Err(e) => {
+                                Ok(format!("❌ Failed to serialize response: {}", e))
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Check if it's an ast-grep not found error and provide helpful message
+                        let error_msg = e.to_string();
+                        if error_msg.contains("ast-grep not found") {
+                            Ok(format!("❌ {}", error_msg))
+                        } else {
+                            Ok(format!("❌ Code search failed: {}", error_msg))
+                        }
+                    }
                 }
             }
             _ => {
