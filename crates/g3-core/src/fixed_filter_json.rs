@@ -106,6 +106,40 @@ pub fn fixed_filter_json_tool_calls(content: &str) -> String {
                     _ => {}
                 }
             }
+            
+            // CRITICAL FIX: After counting braces, if still in suppression mode,
+            // check if a new tool call pattern appears. This handles truncated JSON
+            // followed by complete JSON.
+            if state.suppression_mode {
+                let current_json_start = state.json_start_in_buffer.unwrap();
+                // Don't require newline - the new JSON might be concatenated directly
+                let tool_call_regex = Regex::new(r#"\{\s*"tool"\s*:\s*""#).unwrap();
+                
+                // Look for new tool call patterns after the current one
+                if let Some(captures) = tool_call_regex.find(&state.buffer[current_json_start + 1..]) {
+                    let new_json_start = current_json_start + 1 + captures.start() + captures.as_str().find('{').unwrap();
+                    
+                    debug!("Detected new tool call at position {} while processing incomplete one at {} - discarding old", new_json_start, current_json_start);
+                    
+                    // The previous JSON was incomplete/malformed
+                    // Return content before the old JSON (if any)
+                    let content_before_old_json = if current_json_start > state.content_returned_up_to {
+                        state.buffer[state.content_returned_up_to..current_json_start].to_string()
+                    } else {
+                        String::new()
+                    };
+                    
+                    // Update state to skip the incomplete JSON and position at the new one
+                    // We'll process the new JSON on the next call
+                    state.content_returned_up_to = new_json_start;
+                    state.suppression_mode = false;
+                    state.json_start_in_buffer = None;
+                    state.brace_depth = 0;
+                    
+                    return content_before_old_json;
+                }
+            }
+            
             // Still in suppression mode, return empty string (content is being accumulated)
             return String::new();
         }

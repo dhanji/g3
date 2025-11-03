@@ -347,4 +347,38 @@ More text"#;
         let expected = "Some text before\n\nText after";
         assert_eq!(final_result, expected);
     }
+
+    /// Test handling of truncated JSON followed by complete JSON (the json_err pattern)
+    #[test]
+    fn test_truncated_then_complete_json() {
+        reset_fixed_json_tool_state();
+
+        // Simulate the pattern from json_err trace:
+        // 1. Incomplete/truncated JSON appears
+        // 2. Then the same complete JSON appears
+        let chunks = vec![
+            "Some text\n",
+            r#"{"tool": "str_replace", "args": {"diff":"...","file_path":"./crates/g3-cli"#,  // Truncated
+            r#"{"tool": "str_replace", "args": {"diff":"...","file_path":"./crates/g3-cli/src/lib.rs"}}"#,  // Complete
+            "\nMore text",
+        ];
+
+        let mut results = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let result = fixed_filter_json_tool_calls(chunk);
+            println!("Chunk {}: {:?} -> {:?}", i, chunk, result);
+            results.push(result);
+        }
+
+        let final_result: String = results.join("");
+        println!("Final result: {:?}", final_result);
+
+        // The truncated JSON should be discarded when the complete one appears
+        // Both JSONs should be filtered out, leaving only the text
+        let expected = "Some text\n\nMore text";
+        assert_eq!(
+            final_result, expected,
+            "Failed to handle truncated JSON followed by complete JSON"
+        );
+    }
 }
