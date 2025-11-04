@@ -3135,17 +3135,33 @@ Template:
                     }
                     Err(e) => {
                         // Capture detailed streaming error information
-                        let error_details =
-                            format!("Streaming error at chunk {}: {}", chunks_received + 1, e);
-                        error!("{}", error_details);
+                        let error_msg = e.to_string();
+                        let error_details = format!("Streaming error at chunk {}: {}", chunks_received + 1, error_msg);
+                        
                         error!("Error type: {}", std::any::type_name_of_val(&e));
                         error!("Parser state at error: text_buffer_len={}, native_tool_calls={}, message_stopped={}",
                             parser.text_buffer_len(), parser.native_tool_calls.len(), parser.is_message_stopped());
 
                         // Store the error for potential logging later
-                        _last_error = Some(error_details);
+                        _last_error = Some(error_details.clone());
+                        
+                        // Check if this is a recoverable connection error
+                        let is_connection_error = error_msg.contains("unexpected EOF") 
+                            || error_msg.contains("connection") 
+                            || error_msg.contains("chunk size line")
+                            || error_msg.contains("body error");
+                        
+                        if is_connection_error {
+                            warn!("Connection error at chunk {}, treating as end of stream", chunks_received + 1);
+                            // If we have any content or tool calls, treat this as a graceful end
+                            if chunks_received > 0 && (!parser.get_text_content().is_empty() || parser.native_tool_calls.len() > 0) {
+                                warn!("Stream terminated unexpectedly but we have content, continuing");
+                                break; // Break to process what we have
+                            }
+                        }
 
                         if tool_executed {
+                            error!("{}", error_details);
                             warn!("Stream error after tool execution, attempting to continue");
                             break; // Break to outer loop to start new stream
                         } else {
