@@ -184,6 +184,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// Enable manual control of context compaction (disables auto-compact at 90%)
+    #[arg(long = "manual-compact")]
+    pub manual_compact: bool,
+
     /// Show the system prompt being sent to the LLM
     #[arg(long)]
     pub show_prompt: bool,
@@ -336,6 +340,11 @@ pub async fn run() -> Result<()> {
     // Apply webdriver flag override
     if cli.webdriver {
         config.webdriver.enabled = true;
+    }
+
+    // Apply no-auto-compact flag override
+    if cli.manual_compact {
+        config.agent.auto_compact = false;
     }
 
     // Validate provider if specified
@@ -558,6 +567,11 @@ async fn run_accumulative_mode(
                                 config.webdriver.enabled = true;
                             }
                             
+                            // Apply no-auto-compact flag override
+                            if cli.manual_compact {
+                                config.agent.auto_compact = false;
+                            }
+                            
                             // Create agent for interactive mode with requirements context
                             let ui_writer = ConsoleUiWriter::new();
                             let agent = Agent::new_with_readme_and_quiet(
@@ -633,6 +647,11 @@ async fn run_accumulative_mode(
                 // Apply webdriver flag override
                 if cli.webdriver {
                     config.webdriver.enabled = true;
+                }
+                
+                // Apply no-auto-compact flag override
+                if cli.manual_compact {
+                    config.agent.auto_compact = false;
                 }
                 
                 // Create agent for this autonomous run

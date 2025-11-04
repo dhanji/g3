@@ -65,6 +65,7 @@ pub struct AgentConfig {
     pub max_context_length: usize,
     pub enable_streaming: bool,
     pub timeout_seconds: u64,
+    pub auto_compact: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,7 @@ impl Default for Config {
                 max_context_length: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,
+                auto_compact: true,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
@@ -250,6 +252,7 @@ impl Config {
                 max_context_length: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,
+                auto_compact: true,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),

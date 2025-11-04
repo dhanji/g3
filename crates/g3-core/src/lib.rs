@@ -681,6 +681,8 @@ pub struct Agent<W: UiWriter> {
     providers: ProviderRegistry,
     context_window: ContextWindow,
     thinning_events: Vec<usize>, // chars saved per thinning event
+    pending_90_summarization: bool, // flag to trigger summarization at 90%
+    auto_compact: bool, // whether to auto-compact at 90% before tool calls
     summarization_events: Vec<usize>, // chars saved per summarization event
     first_token_times: Vec<Duration>, // time to first token for each completion
     config: Config,
@@ -894,6 +896,8 @@ impl<W: UiWriter> Agent<W> {
         Ok(Self {
             providers,
             context_window,
+            auto_compact: config.agent.auto_compact,
+            pending_90_summarization: false,
             thinning_events: Vec::new(),
             summarization_events: Vec::new(),
             first_token_times: Vec::new(),
@@ -1338,6 +1342,19 @@ Template:
 
         // Save context window at the end of successful interaction
         self.save_context_window("completed");
+
+        // Check if we need to do 90% auto-compaction
+        if self.pending_90_summarization {
+            self.ui_writer.print_context_status(
+                "\n⚡ Context window reached 90% - auto-compacting...\n"
+            );
+            if let Err(e) = self.force_summarize().await {
+                warn!("Failed to auto-compact at 90%: {}", e);
+            } else {
+                self.ui_writer.println("");
+            }
+            self.pending_90_summarization = false;
+        }
 
         // Return the task result which already includes timing if needed
         Ok(task_result)
@@ -2635,6 +2652,14 @@ Template:
                         if let Some(tool_call) = completed_tools.into_iter().next() {
                             debug!("Processing completed tool call: {:?}", tool_call);
                             
+                            // Check if we should auto-compact at 90% BEFORE executing the tool
+                            // We need to do this before any borrows of self
+                            if self.auto_compact && self.context_window.percentage_used() >= 90.0 {
+                                // Set flag to trigger summarization after this turn completes
+                                // We can't do it now due to borrow checker constraints
+                                self.pending_90_summarization = true;
+                            }
+                            
                             // Check if we should thin the context BEFORE executing the tool
                             if self.context_window.should_thin() {
                                 let (thin_summary, chars_saved) = self.context_window.thin_context();
@@ -2642,6 +2667,7 @@ Template:
                                 // Print the thinning summary to the user
                                 self.ui_writer.print_context_thinning(&thin_summary);
                             }
+
 
                             // Track what we've already displayed before getting new text
                             // This prevents re-displaying old content after tool execution
