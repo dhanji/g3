@@ -18,6 +18,9 @@ use_oauth = true
 fallback_default_max_tokens = 8192
 enable_streaming = true
 timeout_seconds = 60
+# Retry configuration for recoverable errors (timeouts, rate limits, etc.)
+max_retry_attempts = 3              # Default mode retry attempts
+autonomous_max_retry_attempts = 6   # Autonomous mode retry attempts (higher for long-running tasks)
 
 [computer_control]
 enabled = false  # Set to true to enable computer control (requires OS permissions)

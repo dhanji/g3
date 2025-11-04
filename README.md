@@ -182,6 +182,37 @@ cp target/release/libVisionBridge.dylib ~/.local/bin/  # macOS only
 g3 "implement a function to calculate fibonacci numbers"
 ```
 
+## Configuration
+
+G3 uses a TOML configuration file for settings. The config file is automatically created at `~/.config/g3/config.toml` on first run with sensible defaults.
+
+### Retry Configuration
+
+G3 includes configurable retry logic for handling recoverable errors (timeouts, rate limits, network issues, server errors):
+
+```toml
+[agent]
+max_context_length = 8192
+enable_streaming = true
+timeout_seconds = 60
+
+# Retry configuration for recoverable errors
+max_retry_attempts = 3              # Default mode retry attempts
+autonomous_max_retry_attempts = 6   # Autonomous mode retry attempts
+```
+
+**Retry Behavior:**
+- **Default Mode** (`max_retry_attempts`): Used for interactive chat and single-shot tasks. Default: 3 attempts.
+- **Autonomous Mode** (`autonomous_max_retry_attempts`): Used for long-running autonomous tasks. Default: 6 attempts.
+- Retries use exponential backoff with jitter to avoid overwhelming services
+- Autonomous mode spreads retries over ~10 minutes to handle extended outages
+- Only recoverable errors are retried (timeouts, rate limits, 5xx errors, network issues)
+- Non-recoverable errors (auth failures, invalid requests) fail immediately
+
+**Example:** To increase timeout resilience in autonomous mode, set `autonomous_max_retry_attempts = 10` in your config.
+
+See `config.example.toml` for a complete configuration example.
+
 ## WebDriver Browser Automation
 
 G3 includes WebDriver support for browser automation tasks using Safari.

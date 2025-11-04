@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>G3 Console</title>
+    <link rel="stylesheet" href="/styles/app.css">
+    <!-- Marked.js for Markdown rendering -->
+    <script src="/js/marked.min.js"></script>
+    <!-- Highlight.js for syntax highlighting -->
+    <link rel="stylesheet" href="/css/highlight-dark.min.css">
+    <script src="/js/highlight.min.js"></script>
+</head>
+<body class="dark">
+    <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="header-title">G3 Console</h1>
+                <div class="header-actions">
+                    <button id="new-run-btn" class="btn btn-primary">+ New Run</button>
+                    <button id="theme-toggle" class="btn btn-secondary">🌙</button>
+                </div>
+            </div>
+        </header>
+        <main class="main-content">
+            <div id="page-container"></div>
+        </main>
+    </div>
+
+    <!-- New Run Modal -->
+    <div id="new-run-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Launch New G3 Instance</h2>
+                <button id="modal-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="launch-form">
+                    <div class="form-group">
+                        <label for="prompt">Initial Prompt *</label>
+                        <textarea id="prompt" name="prompt" rows="4" required 
+                            placeholder="Describe what you want g3 to build..."></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="workspace">Workspace Directory *</label>
+                        <div class="input-with-button">
+                            <input type="text" id="workspace" name="workspace" required />
+                            <button type="button" id="browse-workspace" class="btn btn-secondary">Browse</button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="g3-binary-path">G3 Binary Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="g3-binary-path" name="g3_binary_path" placeholder="g3 (default)" />
+                            <button type="button" id="browse-binary" class="btn btn-secondary">Browse</button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="provider">Provider</label>
+                            <select id="provider" name="provider">
+                                <option value="databricks">Databricks</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="local">Local</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="model">Model</label>
+                            <select id="model" name="model">
+                                <option value="databricks-claude-sonnet-4-5">databricks-claude-sonnet-4-5</option>
+                                <option value="databricks-meta-llama-3-1-405b-instruct">databricks-meta-llama-3-1-405b-instruct</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Execution Mode</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="mode" value="single" checked />
+                                <span>Single-shot</span>
+                                <small>Execute once and complete</small>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="mode" value="ensemble" />
+                                <span>Coach+Player Ensemble</span>
+                                <small>Autonomous mode with coach and player agents</small>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-footer">
+                        <button type="button" id="cancel-launch" class="btn btn-secondary">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Start Instance</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/state.js"></script>
+    <script src="/js/components.js"></script>
+    <script src="/js/router.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

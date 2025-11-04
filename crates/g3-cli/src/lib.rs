@@ -1721,7 +1721,7 @@ async fn run_autonomous(
             output.print(""); // Empty line for readability
 
             // Execute player task with retry on error
-            let mut player_retry_count = 0;
+            let mut _player_retry_count = 0;
             const MAX_PLAYER_RETRIES: u32 = 3;
             let mut player_failed = false;
 
@@ -1744,8 +1744,38 @@ async fn run_autonomous(
                         break;
                     }
                     Err(e) => {
-                        // Check if this is a panic (unrecoverable)
-                        if e.to_string().contains("panic") {
+                        // Check if this is a context length exceeded error
+                        use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
+                        let error_type = classify_error(&e);
+                        
+                        if matches!(error_type, ErrorType::Recoverable(RecoverableError::ContextLengthExceeded)) {
+                            output.print(&format!("⚠️ Context length exceeded in player turn: {}", e));
+                            output.print("📝 Logging error to session and ending current turn...");
+                            
+                            // Build forensic context
+                            let forensic_context = format!(
+                                "Turn: {}\n\
+                                 Role: Player\n\
+                                 Context tokens: {}\n\
+                                 Total available: {}\n\
+                                 Percentage used: {:.1}%\n\
+                                 Prompt length: {} chars\n\
+                                 Error occurred at: {}",
+                                turn,
+                                agent.get_context_window().used_tokens,
+                                agent.get_context_window().total_tokens,
+                                agent.get_context_window().percentage_used(),
+                                player_prompt.len(),
+                                chrono::Utc::now().to_rfc3339()
+                            );
+                            
+                            // Log to session JSON
+                            agent.log_error_to_session(&e, "assistant", Some(forensic_context));
+                            
+                            // Mark turn as failed and continue to next turn
+                            player_failed = true;
+                            break;
+                        } else if e.to_string().contains("panic") {
                             output.print(&format!("💥 Player panic detected: {}", e));
 
                             // Generate final report even for panic
@@ -1787,13 +1817,13 @@ async fn run_autonomous(
                             return Err(e);
                         }
 
-                        player_retry_count += 1;
+                        _player_retry_count += 1;
                         output.print(&format!(
                             "⚠️ Player error (attempt {}/{}): {}",
-                            player_retry_count, MAX_PLAYER_RETRIES, e
+                            _player_retry_count, MAX_PLAYER_RETRIES, e
                         ));
 
-                        if player_retry_count >= MAX_PLAYER_RETRIES {
+                        if _player_retry_count >= MAX_PLAYER_RETRIES {
                             output.print(
                                 "🔄 Max retries reached for player, marking turn as failed...",
                             );
@@ -1906,8 +1936,39 @@ Remember: Be clear in your review and concise in your feedback. APPROVE iff the 
                     break;
                 }
                 Err(e) => {
-                    // Check if this is a panic (unrecoverable)
-                    if e.to_string().contains("panic") {
+                    // Check if this is a context length exceeded error
+                    use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
+                    let error_type = classify_error(&e);
+                    
+                    if matches!(error_type, ErrorType::Recoverable(RecoverableError::ContextLengthExceeded)) {
+                        output.print(&format!("⚠️ Context length exceeded in coach turn: {}", e));
+                        output.print("📝 Logging error to session and ending current turn...");
+                        
+                        // Build forensic context
+                        let forensic_context = format!(
+                            "Turn: {}\n\
+                             Role: Coach\n\
+                             Context tokens: {}\n\
+                             Total available: {}\n\
+                             Percentage used: {:.1}%\n\
+                             Prompt length: {} chars\n\
+                             Error occurred at: {}",
+                            turn,
+                            coach_agent.get_context_window().used_tokens,
+                            coach_agent.get_context_window().total_tokens,
+                            coach_agent.get_context_window().percentage_used(),
+                            coach_prompt.len(),
+                            chrono::Utc::now().to_rfc3339()
+                        );
+                        
+                        // Log to coach's session JSON
+                        coach_agent.log_error_to_session(&e, "assistant", Some(forensic_context));
+                        
+                        // Mark turn as failed and continue to next turn
+                        coach_result_opt = None;
+                        coach_failed = true;
+                        break;
+                    } else if e.to_string().contains("panic") {
                         output.print(&format!("💥 Coach panic detected: {}", e));
 
                         // Generate final report even for panic

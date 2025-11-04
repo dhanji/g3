@@ -1620,6 +1620,72 @@ If you can complete it with 1-2 tool calls, skip TODO.
         &self.context_window
     }
 
+    /// Log an error message to the session JSON file as the last message
+    /// This is used in autonomous mode to record context length exceeded errors
+    pub fn log_error_to_session(&self, error: &anyhow::Error, role: &str, forensic_context: Option<String>) {
+        // Skip if quiet mode is enabled
+        if self.quiet {
+            return;
+        }
+
+        // Only log if we have a session ID
+        let session_id = match &self.session_id {
+            Some(id) => id,
+            None => {
+                error!("Cannot log error to session: no session ID");
+                return;
+            }
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let filename = format!("logs/g3_session_{}.json", session_id);
+
+        // Read existing session log
+        let mut session_data: serde_json::Value = if std::path::Path::new(&filename).exists() {
+            match std::fs::read_to_string(&filename) {
+                Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
+                Err(_) => serde_json::json!({}),
+            }
+        } else {
+            serde_json::json!({})
+        };
+
+        // Build error message with forensic context
+        let error_message = if let Some(context) = forensic_context {
+            format!(
+                "ERROR: {}\n\nForensic Context:\n{}",
+                error,
+                context
+            )
+        } else {
+            format!("ERROR: {}", error)
+        };
+
+        // Create error message entry
+        let error_entry = serde_json::json!({
+            "role": role,
+            "content": error_message,
+            "timestamp": timestamp,
+            "error_type": "context_length_exceeded"
+        });
+
+        // Append to conversation history
+        if let Some(history) = session_data.get_mut("context_window").and_then(|cw| cw.get_mut("conversation_history")) {
+            if let Some(history_array) = history.as_array_mut() {
+                history_array.push(error_entry);
+            }
+        }
+
+        // Write back to file
+        if let Ok(json_content) = serde_json::to_string_pretty(&session_data) {
+            let _ = std::fs::write(&filename, json_content);
+        }
+    }
+
     /// Manually trigger context summarization regardless of context window size
     /// Returns Ok(true) if summarization was successful, Ok(false) if it failed
     pub async fn force_summarize(&mut self) -> Result<bool> {
@@ -2485,7 +2551,11 @@ If you can complete it with 1-2 tool calls, skip TODO.
         use crate::error_handling::{calculate_retry_delay, classify_error, ErrorType};
 
         let mut attempt = 0;
-        let max_attempts = if self.is_autonomous { 6 } else { 3 };
+        let max_attempts = if self.is_autonomous {
+            self.config.agent.autonomous_max_retry_attempts
+        } else {
+            self.config.agent.max_retry_attempts
+        };
 
         loop {
             attempt += 1;

@@ -66,6 +66,8 @@ pub struct AgentConfig {
     pub enable_streaming: bool,
     pub timeout_seconds: u64,
     pub auto_compact: bool,
+    pub max_retry_attempts: u32,
+    pub autonomous_max_retry_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +139,8 @@ impl Default for Config {
                 enable_streaming: true,
                 timeout_seconds: 60,
                 auto_compact: true,
+                max_retry_attempts: 3,
+                autonomous_max_retry_attempts: 6,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
@@ -253,6 +257,8 @@ impl Config {
                 enable_streaming: true,
                 timeout_seconds: 60,
                 auto_compact: true,
+                max_retry_attempts: 3,
+                autonomous_max_retry_attempts: 6,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
