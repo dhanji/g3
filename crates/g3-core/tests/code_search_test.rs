@@ -549,3 +549,28 @@ async fn test_cpp_search() {
         .collect();
     assert!(names.contains(&"Person"));
 }
+
+#[tokio::test]
+async fn test_kotlin_search() {
+    let request = CodeSearchRequest {
+        searches: vec![SearchSpec {
+            name: "kotlin_classes".to_string(),
+            query: "(class_declaration (type_identifier) @name)".to_string(),
+            language: "kotlin".to_string(),
+            paths: vec!["examples/test_code".to_string()],
+            context_lines: 0,
+        }],
+        max_concurrency: 4,
+        max_matches_per_search: 500,
+    };
+
+    let response = execute_code_search(request).await.unwrap();
+    assert_eq!(response.searches.len(), 1);
+    assert!(response.searches[0].matches.len() > 0);
+    
+    // Should find Person class
+    let names: Vec<&str> = response.searches[0].matches.iter()
+        .filter_map(|m| m.captures.get("name").map(|s| s.as_str()))
+        .collect();
+    assert!(names.contains(&"Person"));
+}

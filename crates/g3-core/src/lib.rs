@@ -1908,7 +1908,7 @@ Template:
         // Add code_search tool
         tools.push(Tool {
             name: "code_search".to_string(),
-            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, TypeScript, Go, Java, C, and C++. Uses tree-sitter query syntax (S-expressions).".to_string(),
+            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, and Kotlin. Uses tree-sitter query syntax (S-expressions).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1920,7 +1920,7 @@ Template:
                             "properties": {
                                 "name": { "type": "string", "description": "Label for this search." },
                                 "query": { "type": "string", "description": "tree-sitter query in S-expression format (e.g., \"(function_item name: (identifier) @name)\")"},
-                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "go", "java", "c", "cpp"], "description": "Programming language to search." },
+                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "go", "java", "c", "cpp", "kotlin"], "description": "Programming language to search." },
                                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths/dirs to search. Defaults to current dir if empty." },
                                 "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "Lines of context to include around each match." }
                             },

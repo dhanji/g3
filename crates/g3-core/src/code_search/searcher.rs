@@ -118,6 +118,17 @@ impl TreeSitterSearcher {
             languages.insert("cpp".to_string(), language);
         }
 
+        // Initialize Kotlin
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_kotlin::language().into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set Kotlin language: {}", e))?;
+            parsers.insert("kotlin".to_string(), parser);
+            languages.insert("kotlin".to_string(), language);
+        }
+
         if parsers.is_empty() {
             return Err(anyhow!(
                 "No language parsers available. Enable at least one language feature."
@@ -299,6 +310,7 @@ impl TreeSitterSearcher {
             ("java", Some("java")) => true,
             ("c", Some("c" | "h")) => true,
             ("cpp", Some("cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h")) => true,
+            ("kotlin", Some("kt" | "kts")) => true,
             _ => false,
         }
     }
