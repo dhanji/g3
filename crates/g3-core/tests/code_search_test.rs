@@ -413,12 +413,20 @@ class MyClass {
 
 #[tokio::test]
 async fn test_go_search() {
+    // Get the workspace root (where Cargo.toml is)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap();
+    let test_code_path = workspace_root.join("examples/test_code");
+    
     let request = CodeSearchRequest {
         searches: vec![SearchSpec {
             name: "go_functions".to_string(),
             query: "(function_declaration name: (identifier) @name)".to_string(),
             language: "go".to_string(),
-            paths: vec!["examples/test_code".to_string()],
+            paths: vec![test_code_path.to_string_lossy().to_string()],
             context_lines: 0,
         }],
         max_concurrency: 4,
@@ -427,7 +435,11 @@ async fn test_go_search() {
 
     let response = execute_code_search(request).await.unwrap();
     assert_eq!(response.searches.len(), 1);
-    assert!(response.searches[0].matches.len() > 0);
+    
+    eprintln!("Go search result: {:?}", response.searches[0]);
+    eprintln!("Match count: {}", response.searches[0].matches.len());
+    eprintln!("Error: {:?}", response.searches[0].error);
+    assert!(response.searches[0].matches.len() > 0, "No matches found for Go search");
     
     // Should find main and greet functions
     let names: Vec<&str> = response.searches[0].matches.iter()
@@ -439,12 +451,20 @@ async fn test_go_search() {
 
 #[tokio::test]
 async fn test_java_search() {
+    // Get the workspace root (where Cargo.toml is)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap();
+    let test_code_path = workspace_root.join("examples/test_code");
+    
     let request = CodeSearchRequest {
         searches: vec![SearchSpec {
             name: "java_classes".to_string(),
             query: "(class_declaration name: (identifier) @name)".to_string(),
             language: "java".to_string(),
-            paths: vec!["examples/test_code".to_string()],
+            paths: vec![test_code_path.to_string_lossy().to_string()],
             context_lines: 0,
         }],
         max_concurrency: 4,
@@ -464,12 +484,20 @@ async fn test_java_search() {
 
 #[tokio::test]
 async fn test_c_search() {
+    // Get the workspace root (where Cargo.toml is)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap();
+    let test_code_path = workspace_root.join("examples/test_code");
+    
     let request = CodeSearchRequest {
         searches: vec![SearchSpec {
             name: "c_functions".to_string(),
             query: "(function_definition declarator: (function_declarator declarator: (identifier) @name))".to_string(),
             language: "c".to_string(),
-            paths: vec!["examples/test_code".to_string()],
+            paths: vec![test_code_path.to_string_lossy().to_string()],
             context_lines: 0,
         }],
         max_concurrency: 4,
@@ -491,12 +519,20 @@ async fn test_c_search() {
 
 #[tokio::test]
 async fn test_cpp_search() {
+    // Get the workspace root (where Cargo.toml is)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap();
+    let test_code_path = workspace_root.join("examples/test_code");
+    
     let request = CodeSearchRequest {
         searches: vec![SearchSpec {
             name: "cpp_classes".to_string(),
             query: "(class_specifier name: (type_identifier) @name)".to_string(),
             language: "cpp".to_string(),
-            paths: vec!["examples/test_code".to_string()],
+            paths: vec![test_code_path.to_string_lossy().to_string()],
             context_lines: 0,
         }],
         max_concurrency: 4,
