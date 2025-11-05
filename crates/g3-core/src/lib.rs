@@ -1096,11 +1096,11 @@ If you create temporary files for verification, place these in a subdir named 't
 For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
 
 Additional examples for the 'code_search' tool:
-  - Example for pattern mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME($$$ARGS) { $$$ }\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
-  - Example for YAML mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"mode\": \"yaml\", \"rule_yaml\": \"id: async-fn\nlanguage: Rust\nrule:\n  pattern: async fn $NAME($$$) { $$$ }\"}]}}
-  - Example for multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME\", \"language\": \"rust\"}, {\"name\": \"structs\", \"mode\": \"pattern\", \"pattern\": \"struct $NAME\", \"language\": \"rust\"}]}}
-  - Example for passing optional args like \"context\": {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"context\": 3, \"pattern\": \"fn $NAME\", \"language\": \"rust\"}]}
-  - Common optional args for searches:
+  - Find functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Find async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Find structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - With context lines: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
        - \"context\": 3 (show surrounding lines),
        - \"json_style\": \"stream\" (for large results)
 
@@ -1184,13 +1184,13 @@ Short description for providers without native calling specs:
   - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
   - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
 
-- **code_search**: Batch syntax-aware searches via ast-grep. Supports up to 20 pattern or YAML-rule searches in parallel.
-  - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"search_label\", \"mode\": \"pattern|yaml\", ...}], \"max_concurrency\": 4, \"max_matches_per_search\": 500}}
-  - Example for pattern mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME($$$ARGS) { $$$ }\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
-  - Example for YAML mode: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"mode\": \"yaml\", \"rule_yaml\": \"id: async-fn\nlanguage: Rust\nrule:\n  pattern: async fn $NAME($$$) { $$$ }\"}]}}
-  - Example for multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"pattern\": \"fn $NAME\", \"language\": \"rust\"}, {\"name\": \"structs\", \"mode\": \"pattern\", \"pattern\": \"struct $NAME\", \"language\": \"rust\"}]}}
-  - Example for passing optional args like \"context\": {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"mode\": \"pattern\", \"context\": 3, \"pattern\": \"fn $NAME\", \"language\": \"rust\"}]}
-  - Common optional args for searches:
+- **code_search**: Syntax-aware code search using tree-sitter. Supports Rust, Python, JavaScript, TypeScript.
+  - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"label\", \"query\": \"tree-sitter query\", \"language\": \"rust|python|javascript|typescript\", \"paths\": [\"src/\"], \"context_lines\": 0}]}}
+  - Find functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Find async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Find structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - With context lines: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
        - \"context\": 3 (show surrounding lines),
        - \"json_style\": \"stream\" (for large results)
 
@@ -1908,7 +1908,7 @@ Template:
         // Add code_search tool
         tools.push(Tool {
             name: "code_search".to_string(),
-            description: "Batch syntax-aware searches via ast-grep. Supports up to 20 pattern or YAML-rule searches in parallel; returns JSON matches (stream-collated).".to_string(),
+            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, and TypeScript. Uses tree-sitter query syntax (S-expressions).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1919,43 +1919,14 @@ Template:
                             "type": "object",
                             "properties": {
                                 "name": { "type": "string", "description": "Label for this search." },
-                                "mode": {
-                                    "type": "string",
-                                    "enum": ["pattern", "yaml"],
-                                    "description": "`pattern` uses `ast-grep run`; `yaml` uses `ast-grep scan --inline-rules`."
-                                },
-                                // pattern mode (fast one-off)
-                                "pattern": { "type": "string", "description": "ast-grep pattern code (e.g., \"async fn $NAME($$$ARGS) { $$$ }\")"},
-                                "language": { "type": "string", "description": "Optional language for pattern mode; ast-grep may infer from file extensions if omitted." },
-                                // yaml mode (full rule object)
-                                "rule_yaml": { "type": "string", "description": "A full YAML rule object text. Must include `id`, `language`, and `rule`." },
-                                // targeting
+                                "query": { "type": "string", "description": "tree-sitter query in S-expression format (e.g., \"(function_item name: (identifier) @name)\")"},
+                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript"], "description": "Programming language to search." },
                                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths/dirs to search. Defaults to current dir if empty." },
-                                "globs": { "type": "array", "items": { "type": "string" }, "description": "Optional include/exclude globs for CLI --globs." },
-                                // result formatting & performance knobs
-                                "json_style": { "type": "string", "enum": ["pretty","stream","compact"], "default": "stream", "description": "Use stream for large codebases." },
-                                "context": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "CLI -C context lines in text output; also affects JSON `lines` field." },
-                                "threads": { "type": "integer", "minimum": 1, "description": "Optional override for ast-grep -j (per process)." },
-                                "include_metadata": { "type": "boolean", "default": false, "description": "If yaml mode and rule has metadata, add --include-metadata." },
-                                // robustness
-                                "no_ignore": {
-                                    "type": "array",
-                                    "items": { "type": "string", "enum": ["hidden","dot","exclude","global","parent","vcs"] },
-                                    "description": "Forwarded to --no-ignore to bypass ignore files/hidden."
-                                },
-                                // severity overrides for yaml mode
-                                "severity": {
-                                    "type": "object",
-                                    "additionalProperties": { "type": "string", "enum": ["error","warning","info","hint","off"] },
-                                    "description": "Optional map<ruleId, severity> -> passed via --error/--warning/--info/--hint/--off."
-                                },
-                                // per-search timeout seconds (default 60)
-                                "timeout_secs": { "type": "integer", "minimum": 1, "default": 60 }
+                                "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "Lines of context to include around each match." }
                             },
-                            "required": ["name","mode"]
+                            "required": ["name", "query", "language"]
                         }
                     },
-                    // global concurrency & truncation
                     "max_concurrency": { "type": "integer", "minimum": 1, "default": 4 },
                     "max_matches_per_search": { "type": "integer", "minimum": 1, "default": 500 }
                 },
@@ -2395,13 +2366,6 @@ Template:
 
         // Check if we need to summarize before starting
         if self.context_window.should_summarize() {
-            info!(
-                "Context window at {}% ({}/{} tokens), triggering auto-summarization",
-                self.context_window.percentage_used() as u32,
-                self.context_window.used_tokens,
-                self.context_window.total_tokens
-            );
-
             // Notify user about summarization
             self.ui_writer.print_context_status(&format!(
                 "\n🗜️ Context window reaching capacity ({}%). Creating summary...",
@@ -4590,13 +4554,7 @@ Template:
                         }
                     }
                     Err(e) => {
-                        // Check if it's an ast-grep not found error and provide helpful message
-                        let error_msg = e.to_string();
-                        if error_msg.contains("ast-grep not found") {
-                            Ok(format!("❌ {}", error_msg))
-                        } else {
-                            Ok(format!("❌ Code search failed: {}", error_msg))
-                        }
+                        Ok(format!("❌ Code search failed: {}", e))
                     }
                 }
             }
