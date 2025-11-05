@@ -94,7 +94,7 @@ These commands give you fine-grained control over context management, allowing y
   - Screenshot capture and window management
   - OCR text extraction from images and screen regions
   - Window listing and identification
-- **Code Search**: Embedded tree-sitter for syntax-aware code search (Rust, Python, JavaScript, TypeScript) - see [Code Search Guide](docs/CODE_SEARCH.md)
+- **Code Search**: Embedded tree-sitter for syntax-aware code search (Rust, Python, JavaScript, TypeScript, Go, Java, C, C++) - see [Code Search Guide](docs/CODE_SEARCH.md)
 - **Final Output**: Formatted result presentation
 
 ### Provider Flexibility

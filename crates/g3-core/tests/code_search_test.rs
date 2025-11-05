@@ -410,3 +410,106 @@ class MyClass {
     // Cleanup
     fs::remove_dir_all(&test_dir).ok();
 }
+
+#[tokio::test]
+async fn test_go_search() {
+    let request = CodeSearchRequest {
+        searches: vec![SearchSpec {
+            name: "go_functions".to_string(),
+            query: "(function_declaration name: (identifier) @name)".to_string(),
+            language: "go".to_string(),
+            paths: vec!["examples/test_code".to_string()],
+            context_lines: 0,
+        }],
+        max_concurrency: 4,
+        max_matches_per_search: 500,
+    };
+
+    let response = execute_code_search(request).await.unwrap();
+    assert_eq!(response.searches.len(), 1);
+    assert!(response.searches[0].matches.len() > 0);
+    
+    // Should find main and greet functions
+    let names: Vec<&str> = response.searches[0].matches.iter()
+        .filter_map(|m| m.captures.get("name").map(|s| s.as_str()))
+        .collect();
+    assert!(names.contains(&"main"));
+    assert!(names.contains(&"greet"));
+}
+
+#[tokio::test]
+async fn test_java_search() {
+    let request = CodeSearchRequest {
+        searches: vec![SearchSpec {
+            name: "java_classes".to_string(),
+            query: "(class_declaration name: (identifier) @name)".to_string(),
+            language: "java".to_string(),
+            paths: vec!["examples/test_code".to_string()],
+            context_lines: 0,
+        }],
+        max_concurrency: 4,
+        max_matches_per_search: 500,
+    };
+
+    let response = execute_code_search(request).await.unwrap();
+    assert_eq!(response.searches.len(), 1);
+    assert!(response.searches[0].matches.len() > 0);
+    
+    // Should find Example class
+    let names: Vec<&str> = response.searches[0].matches.iter()
+        .filter_map(|m| m.captures.get("name").map(|s| s.as_str()))
+        .collect();
+    assert!(names.contains(&"Example"));
+}
+
+#[tokio::test]
+async fn test_c_search() {
+    let request = CodeSearchRequest {
+        searches: vec![SearchSpec {
+            name: "c_functions".to_string(),
+            query: "(function_definition declarator: (function_declarator declarator: (identifier) @name))".to_string(),
+            language: "c".to_string(),
+            paths: vec!["examples/test_code".to_string()],
+            context_lines: 0,
+        }],
+        max_concurrency: 4,
+        max_matches_per_search: 500,
+    };
+
+    let response = execute_code_search(request).await.unwrap();
+    assert_eq!(response.searches.len(), 1);
+    assert!(response.searches[0].matches.len() > 0);
+    
+    // Should find greet, add, and main functions
+    let names: Vec<&str> = response.searches[0].matches.iter()
+        .filter_map(|m| m.captures.get("name").map(|s| s.as_str()))
+        .collect();
+    assert!(names.contains(&"greet"));
+    assert!(names.contains(&"add"));
+    assert!(names.contains(&"main"));
+}
+
+#[tokio::test]
+async fn test_cpp_search() {
+    let request = CodeSearchRequest {
+        searches: vec![SearchSpec {
+            name: "cpp_classes".to_string(),
+            query: "(class_specifier name: (type_identifier) @name)".to_string(),
+            language: "cpp".to_string(),
+            paths: vec!["examples/test_code".to_string()],
+            context_lines: 0,
+        }],
+        max_concurrency: 4,
+        max_matches_per_search: 500,
+    };
+
+    let response = execute_code_search(request).await.unwrap();
+    assert_eq!(response.searches.len(), 1);
+    assert!(response.searches[0].matches.len() > 0);
+    
+    // Should find Person class
+    let names: Vec<&str> = response.searches[0].matches.iter()
+        .filter_map(|m| m.captures.get("name").map(|s| s.as_str()))
+        .collect();
+    assert!(names.contains(&"Person"));
+}

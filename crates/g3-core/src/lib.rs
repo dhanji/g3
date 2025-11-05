@@ -1093,7 +1093,7 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
-For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
+For working with code, prioritize use of code_search tool over read_file, first.
 
 Additional examples for the 'code_search' tool:
   - Find functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
@@ -1113,7 +1113,7 @@ Do not explain what you're going to do - just do it by calling the tools.
 
 # Task Management
 
-Use todo_read and todo_write for tasks with 2+ steps, multiple files/components, or uncertain scope.
+Use todo_read and todo_write for all but the simplest of tasks.
 
 Workflow:
 - Start: read → write checklist
@@ -1908,7 +1908,7 @@ Template:
         // Add code_search tool
         tools.push(Tool {
             name: "code_search".to_string(),
-            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, and TypeScript. Uses tree-sitter query syntax (S-expressions).".to_string(),
+            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, TypeScript, Go, Java, C, and C++. Uses tree-sitter query syntax (S-expressions).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1920,7 +1920,7 @@ Template:
                             "properties": {
                                 "name": { "type": "string", "description": "Label for this search." },
                                 "query": { "type": "string", "description": "tree-sitter query in S-expression format (e.g., \"(function_item name: (identifier) @name)\")"},
-                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript"], "description": "Programming language to search." },
+                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "go", "java", "c", "cpp"], "description": "Programming language to search." },
                                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths/dirs to search. Defaults to current dir if empty." },
                                 "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "Lines of context to include around each match." }
                             },

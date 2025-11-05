@@ -74,6 +74,50 @@ impl TreeSitterSearcher {
             languages.insert("ts".to_string(), language.clone());
         }
 
+        // Initialize Go
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_go::language().into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set Go language: {}", e))?;
+            parsers.insert("go".to_string(), parser);
+            languages.insert("go".to_string(), language);
+        }
+
+        // Initialize Java
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_java::language().into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set Java language: {}", e))?;
+            parsers.insert("java".to_string(), parser);
+            languages.insert("java".to_string(), language);
+        }
+
+        // Initialize C
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_c::language().into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set C language: {}", e))?;
+            parsers.insert("c".to_string(), parser);
+            languages.insert("c".to_string(), language);
+        }
+
+        // Initialize C++
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_cpp::language().into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set C++ language: {}", e))?;
+            parsers.insert("cpp".to_string(), parser);
+            languages.insert("cpp".to_string(), language);
+        }
+
         if parsers.is_empty() {
             return Err(anyhow!(
                 "No language parsers available. Enable at least one language feature."
@@ -251,6 +295,10 @@ impl TreeSitterSearcher {
             ("python", Some("py")) => true,
             ("javascript" | "js", Some("js" | "jsx" | "mjs")) => true,
             ("typescript" | "ts", Some("ts" | "tsx")) => true,
+            ("go", Some("go")) => true,
+            ("java", Some("java")) => true,
+            ("c", Some("c" | "h")) => true,
+            ("cpp", Some("cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h")) => true,
             _ => false,
         }
     }
