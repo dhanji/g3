@@ -856,6 +856,19 @@ impl<W: UiWriter> Agent<W> {
             }
         }
 
+        // Register Ollama provider if configured AND it's the default provider
+        if let Some(ollama_config) = &config.providers.ollama {
+            if providers_to_register.contains(&"ollama".to_string()) {
+                let ollama_provider = g3_providers::OllamaProvider::new(
+                    ollama_config.model.clone(),
+                    ollama_config.base_url.clone(),
+                    ollama_config.max_tokens,
+                    ollama_config.temperature,
+                )?;
+                providers.register(ollama_provider);
+            }
+        }
+
         // Set default provider
         debug!(
             "Setting default provider to: {}",
@@ -960,6 +973,26 @@ impl<W: UiWriter> Agent<W> {
                     32768 // DBRX supports 32k context
                 } else {
                     16384 // Conservative default for other Databricks models
+                }
+            }
+            "ollama" => {
+                // Ollama model context windows based on model name
+                if model_name.contains("qwen") {
+                    32768 // Qwen2.5 supports 32k context
+                } else if model_name.contains("llama3") || model_name.contains("llama-3") {
+                    if model_name.contains("3.2") || model_name.contains("3.1") {
+                        128000 // Llama 3.1/3.2 support 128k context
+                    } else {
+                        8192 // Llama 3.0
+                    }
+                } else if model_name.contains("mistral") || model_name.contains("mixtral") {
+                    32768 // Mistral/Mixtral support 32k
+                } else if model_name.contains("gemma") {
+                    8192 // Gemma 2
+                } else if model_name.contains("phi") {
+                    4096 // Phi-3
+                } else {
+                    8192 // Conservative default for Ollama models
                 }
             }
             _ => config.agent.max_context_length as u32,

@@ -17,6 +17,7 @@ pub struct ProvidersConfig {
     pub anthropic: Option<AnthropicConfig>,
     pub databricks: Option<DatabricksConfig>,
     pub embedded: Option<EmbeddedConfig>,
+    pub ollama: Option<OllamaConfig>,
     pub default_provider: String,
     pub coach: Option<String>,  // Provider to use for coach in autonomous mode
     pub player: Option<String>, // Provider to use for player in autonomous mode
@@ -58,6 +59,14 @@ pub struct EmbeddedConfig {
     pub temperature: Option<f32>,
     pub gpu_layers: Option<u32>, // Number of layers to offload to GPU
     pub threads: Option<u32>,    // Number of CPU threads to use
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaConfig {
+    pub model: String,
+    pub base_url: Option<String>, // Default: http://localhost:11434
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +137,7 @@ impl Default for Config {
                     use_oauth: Some(true),
                 }),
                 embedded: None,
+                ollama: None,
                 default_provider: "databricks".to_string(),
                 coach: None,  // Will use default_provider if not specified
                 player: None, // Will use default_provider if not specified
@@ -244,6 +254,7 @@ impl Config {
                     gpu_layers: Some(32),
                     threads: Some(8),
                 }),
+                ollama: None,
                 default_provider: "embedded".to_string(),
                 coach: None,  // Will use default_provider if not specified
                 player: None, // Will use default_provider if not specified

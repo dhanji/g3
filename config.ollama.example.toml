@@ -1,0 +1,26 @@
+# Example G3 configuration using Ollama provider
+# Copy this to ~/.config/g3/config.toml or ./g3.toml to use it
+
+[providers]
+default_provider = "ollama"
+
+# Ollama configuration (local LLM)
+[providers.ollama]
+model = "llama3.2"  # or qwen2.5, mistral, etc.
+# base_url = "http://localhost:11434"  # Optional, defaults to localhost
+# max_tokens = 2048  # Optional
+# temperature = 0.7  # Optional
+
+# Optional: Specify different providers for coach and player in autonomous mode
+# coach = "ollama"    # Provider for coach (code reviewer)
+# player = "ollama"   # Provider for player (code implementer)
+
+[agent]
+max_context_length = 8192
+enable_streaming = true
+timeout_seconds = 60
+
+[computer_control]
+enabled = false  # Set to true to enable computer control (requires OS permissions)
+require_confirmation = true
+max_actions_per_second = 5

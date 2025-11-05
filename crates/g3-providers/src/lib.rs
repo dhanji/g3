@@ -88,11 +88,13 @@ pub mod anthropic;
 pub mod databricks;
 pub mod embedded;
 pub mod oauth;
+pub mod ollama;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
 pub use databricks::DatabricksProvider;
 pub use embedded::EmbeddedProvider;
+pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;
 
 /// Provider registry for managing multiple LLM providers
