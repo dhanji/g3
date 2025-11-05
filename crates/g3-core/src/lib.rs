@@ -977,7 +977,9 @@ impl<W: UiWriter> Agent<W> {
             }
             "ollama" => {
                 // Ollama model context windows based on model name
-                if model_name.contains("qwen") {
+                if model_name.contains("qwen3-coder") {
+                    262144 // Qwen3-coder supports 256k context
+                } else if model_name.contains("qwen") {
                     32768 // Qwen2.5 supports 32k context
                 } else if model_name.contains("gpt-oss") {
                     131072 // GPT-OSS supports 128k context

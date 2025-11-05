@@ -81,6 +81,9 @@ pub const OLLAMA_KNOWN_MODELS: &[&str] = &[
     "qwen2.5:7b",
     "qwen2.5:14b",
     "qwen2.5:32b",
+    "qwen2.5-coder",
+    "qwen2.5-coder:7b",
+    "qwen3-coder",
     "phi3",
     "gemma2",
 ];
