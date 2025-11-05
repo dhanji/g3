@@ -133,7 +133,7 @@ impl AnthropicProvider {
         temperature: Option<f32>,
     ) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))
             .build()
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 

@@ -1093,16 +1093,44 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
-For working with code, prioritize use of code_search tool over read_file, first.
+# Code Search Guidelines
 
-Additional examples for the 'code_search' tool:
-  - Find functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
-  - Find async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
-  - Find structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+IMPORTANT: When searching for code constructs (functions, classes, methods, structs, etc.), ALWAYS use `code_search` instead of shell grep/rg. 
+It's syntax-aware and finds actual code, not comments or strings. Only use shell grep for:
+  - Searching non-code files (logs, markdown, text)
+  - Simple string searches across all file types
+  - When you need regex for text content (not code structure)
+
+Common code_search query patterns:
+
+**Rust:**
+  - All functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"async_fns\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Enums: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"enums\", \"query\": \"(enum_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Impl blocks: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"impls\", \"query\": \"(impl_item type: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+
+**Python:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_definition name: (identifier) @name)\", \"language\": \"python\"}]}}
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_definition name: (identifier) @name)\", \"language\": \"python\"}]}}
+
+**JavaScript/TypeScript:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_declaration name: (identifier) @name)\", \"language\": \"javascript\"}]}}
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_declaration name: (identifier) @name)\", \"language\": \"javascript\"}]}}
+  - Arrow functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"arrow_fns\", \"query\": \"(arrow_function) @fn\", \"language\": \"javascript\"}]}}
+
+**Go:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_declaration name: (identifier) @name)\", \"language\": \"go\"}]}}
+  - Methods: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"methods\", \"query\": \"(method_declaration name: (field_identifier) @name)\", \"language\": \"go\"}]}}
+
+**Java/C++:**
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_declaration name: (identifier) @name)\", \"language\": \"java\"}]}}
+  - Methods: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"methods\", \"query\": \"(method_declaration name: (identifier) @name)\", \"language\": \"java\"}]}}
+
+**Advanced features:**
   - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
-  - With context lines: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
-       - \"context\": 3 (show surrounding lines),
-       - \"json_style\": \"stream\" (for large results)
+  - With context: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
+  - Specific paths: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/core\"]}]}}
 
 
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
@@ -1908,7 +1936,7 @@ Template:
         // Add code_search tool
         tools.push(Tool {
             name: "code_search".to_string(),
-            description: "Batch syntax-aware code searches using embedded tree-sitter. Supports up to 20 searches in parallel for Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, and Kotlin. Uses tree-sitter query syntax (S-expressions).".to_string(),
+            description: "Syntax-aware code search that understands code structure, not just text. Finds actual functions, classes, methods, and other code constructs - ignores matches in comments and strings. Much more accurate than grep for code searches. Supports batch searches (up to 20 parallel) with structured results and context lines. Languages: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Kotlin. Uses tree-sitter query syntax.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
