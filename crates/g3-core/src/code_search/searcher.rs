@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
+use streaming_iterator::StreamingIterator;
 use walkdir::WalkDir;
 
 pub struct TreeSitterSearcher {
@@ -19,7 +20,7 @@ impl TreeSitterSearcher {
         // Initialize Rust
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_rust::language().into();
+            let language: Language = tree_sitter_rust::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set Rust language: {}", e))?;
@@ -30,7 +31,7 @@ impl TreeSitterSearcher {
         // Initialize Python
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_python::language().into();
+            let language: Language = tree_sitter_python::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set Python language: {}", e))?;
@@ -41,7 +42,7 @@ impl TreeSitterSearcher {
         // Initialize JavaScript
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_javascript::language().into();
+            let language: Language = tree_sitter_javascript::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set JavaScript language: {}", e))?;
@@ -59,7 +60,7 @@ impl TreeSitterSearcher {
         // Initialize TypeScript
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_typescript::language_typescript().into();
+            let language: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set TypeScript language: {}", e))?;
@@ -77,7 +78,7 @@ impl TreeSitterSearcher {
         // Initialize Go
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_go::language().into();
+            let language: Language = tree_sitter_go::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set Go language: {}", e))?;
@@ -88,7 +89,7 @@ impl TreeSitterSearcher {
         // Initialize Java
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_java::language().into();
+            let language: Language = tree_sitter_java::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set Java language: {}", e))?;
@@ -99,7 +100,7 @@ impl TreeSitterSearcher {
         // Initialize C
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_c::language().into();
+            let language: Language = tree_sitter_c::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set C language: {}", e))?;
@@ -110,7 +111,7 @@ impl TreeSitterSearcher {
         // Initialize C++
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_cpp::language().into();
+            let language: Language = tree_sitter_cpp::LANGUAGE.into();
             parser
                 .set_language(&language)
                 .map_err(|e| anyhow!("Failed to set C++ language: {}", e))?;
@@ -118,15 +119,37 @@ impl TreeSitterSearcher {
             languages.insert("cpp".to_string(), language);
         }
 
-        // Initialize Kotlin
+        // // Initialize Kotlin - Temporarily disabled due to tree-sitter version incompatibility
+        // {
+        //     let mut parser = Parser::new();
+        //     let language: Language = tree_sitter_kotlin::language();
+        //     parser
+        //         .set_language(&language)
+        //         .map_err(|e| anyhow!("Failed to set Kotlin language: {}", e))?;
+        //     parsers.insert("kotlin".to_string(), parser);
+        //     languages.insert("kotlin".to_string(), language);
+        // }
+
+        // Initialize Haskell
         {
             let mut parser = Parser::new();
-            let language: Language = tree_sitter_kotlin::language().into();
+            let language: Language = tree_sitter_haskell::LANGUAGE.into();
             parser
                 .set_language(&language)
-                .map_err(|e| anyhow!("Failed to set Kotlin language: {}", e))?;
-            parsers.insert("kotlin".to_string(), parser);
-            languages.insert("kotlin".to_string(), language);
+                .map_err(|e| anyhow!("Failed to set Haskell language: {}", e))?;
+            parsers.insert("haskell".to_string(), parser);
+            languages.insert("haskell".to_string(), language);
+        }
+
+        // Initialize Scheme
+        {
+            let mut parser = Parser::new();
+            let language: Language = tree_sitter_scheme::LANGUAGE.into();
+            parser
+                .set_language(&language)
+                .map_err(|e| anyhow!("Failed to set Scheme language: {}", e))?;
+            parsers.insert("scheme".to_string(), parser);
+            languages.insert("scheme".to_string(), language);
         }
 
         if parsers.is_empty() {
@@ -232,13 +255,14 @@ impl TreeSitterSearcher {
                 if let Ok(source_code) = fs::read_to_string(path) {
                     if let Some(tree) = parser.parse(&source_code, None) {
                         let mut cursor = QueryCursor::new();
-                        let query_matches = cursor.matches(
+                        let mut query_matches = cursor.matches(
                             &query,
                             tree.root_node(),
                             source_code.as_bytes(),
                         );
 
-                        for query_match in query_matches {
+                        query_matches.advance();
+                        while let Some(query_match) = query_matches.get() {
                             if matches.len() >= max_matches {
                                 break;
                             }
@@ -284,6 +308,8 @@ impl TreeSitterSearcher {
                                 captures: captures_map,
                                 context,
                             });
+                            
+                            query_matches.advance();
                         }
                     }
                 }
@@ -311,6 +337,8 @@ impl TreeSitterSearcher {
             ("c", Some("c" | "h")) => true,
             ("cpp", Some("cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h")) => true,
             ("kotlin", Some("kt" | "kts")) => true,
+            ("haskell", Some("hs" | "lhs")) => true,
+            ("scheme", Some("scm" | "ss" | "sld" | "sls")) => true,
             _ => false,
         }
     }
