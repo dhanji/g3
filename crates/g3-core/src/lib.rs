@@ -1093,6 +1093,81 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
+# Task Management with TODO Tools
+
+**REQUIRED for multi-step tasks.** Use TODO tools when your task involves ANY of:
+- Multiple files to create/modify (2+)
+- Multiple distinct steps (3+)
+- Dependencies between steps
+- Testing or verification needed
+- Uncertainty about approach
+
+## Workflow
+
+Every multi-step task follows this pattern:
+1. **Start**: Call todo_read, then todo_write to create your plan
+2. **During**: Execute steps, then todo_read and todo_write to mark progress
+3. **End**: Call todo_read to verify all items complete
+
+Note: todo_write replaces the entire list, so always read first to preserve content.
+
+## Examples
+
+**Example 1: Feature Implementation**
+User asks: \"Add user authentication with tests\"
+
+First action:
+{\"tool\": \"todo_read\", \"args\": {}}
+
+Then create plan:
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [ ] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+After completing User struct:
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [x] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+**Example 2: Bug Fix**
+User asks: \"Fix the memory leak in cache module\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Fix memory leak\\n  - [ ] Review cache.rs\\n  - [ ] Check for unclosed resources\\n  - [ ] Add drop implementation\\n  - [ ] Write test to verify fix\"}}
+
+**Example 3: Refactoring**
+User asks: \"Refactor database layer to use async/await\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Refactor to async\\n  - [ ] Update function signatures\\n  - [ ] Replace blocking calls\\n  - [ ] Update all callers\\n  - [ ] Update tests\"}}
+
+## Format
+
+Use markdown checkboxes:
+- \"- [ ]\" for incomplete tasks
+- \"- [x]\" for completed tasks
+- Indent with 2 spaces for subtasks
+
+Keep items short, specific, and action-oriented.
+
+## Benefits
+
+✓ Prevents missed steps
+✓ Makes progress visible
+✓ Helps recover from interruptions
+✓ Creates better summaries
+
+## When NOT to Use
+
+Skip TODO tools for simple single-step tasks:
+- \"List files\" → just use shell
+- \"Read config.json\" → just use read_file
+- \"Search for functions\" → just use code_search
+
+If you can complete it with 1-2 tool calls, skip TODO.
+
+# Code Search Guidelines
+
+IMPORTANT: When searching for code constructs (functions, classes, methods, structs, etc.), ALWAYS use `code_search` instead of shell grep/rg.
+If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
+
 # Code Search Guidelines
 
 IMPORTANT: When searching for code constructs (functions, classes, methods, structs, etc.), ALWAYS use `code_search` instead of shell grep/rg. 
@@ -1138,27 +1213,6 @@ IMPORTANT: If the user asks you to just respond with text (like \"just say hello
 When taking screenshots of specific windows (like \"my Safari window\" or \"my terminal\"), ALWAYS use list_windows first to identify the correct window ID, then use take_screenshot with the window_id parameter.
 
 Do not explain what you're going to do - just do it by calling the tools.
-
-# Task Management
-
-Use todo_read and todo_write for all but the simplest of tasks.
-
-Workflow:
-- Start: read → write checklist
-- During: read → update progress
-- End: verify all complete
-
-Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
-
-Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
-
-Template:
-- [ ] Implement feature X
-  - [ ] Update API
-  - [ ] Write tests
-  - [ ] Run tests
-  - [ ] Run lint
-- [ ] Blocked: waiting on credentials
 
 
 # Response Guidelines
@@ -1247,23 +1301,76 @@ write_file(\"file2.txt\", \"...\")
 write_file(\"helper.rs\", \"...\")
 [DONE]
 
-# Task Management
+# Task Management with TODO Tools
 
-Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+**REQUIRED for multi-step tasks.** Use TODO tools when your task involves ANY of:
+- Multiple files to create/modify (2+)
+- Multiple distinct steps (3+)
+- Dependencies between steps
+- Testing or verification needed
+- Uncertainty about approach
 
-Workflow:
-- Start: read → write checklist
-- During: read → update progress
-- End: verify all complete
+## Workflow
 
-Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+Every multi-step task follows this pattern:
+1. **Start**: Call todo_read, then todo_write to create your plan
+2. **During**: Execute steps, then todo_read and todo_write to mark progress
+3. **End**: Call todo_read to verify all items complete
 
-Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+Note: todo_write replaces the entire list, so always read first to preserve content.
 
-Template:
-- [ ] Implement feature X
-  - [ ] Update API
-  - [ ] Write tests
+## Examples
+
+**Example 1: Feature Implementation**
+User asks: \"Add user authentication with tests\"
+
+First action:
+{\"tool\": \"todo_read\", \"args\": {}}
+
+Then create plan:
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [ ] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+After completing User struct:
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [x] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+**Example 2: Bug Fix**
+User asks: \"Fix the memory leak in cache module\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Fix memory leak\\n  - [ ] Review cache.rs\\n  - [ ] Check for unclosed resources\\n  - [ ] Add drop implementation\\n  - [ ] Write test to verify fix\"}}
+
+**Example 3: Refactoring**
+User asks: \"Refactor database layer to use async/await\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Refactor to async\\n  - [ ] Update function signatures\\n  - [ ] Replace blocking calls\\n  - [ ] Update all callers\\n  - [ ] Update tests\"}}
+
+## Format
+
+Use markdown checkboxes:
+- \"- [ ]\" for incomplete tasks
+- \"- [x]\" for completed tasks
+- Indent with 2 spaces for subtasks
+
+Keep items short, specific, and action-oriented.
+
+## Benefits
+
+✓ Prevents missed steps
+✓ Makes progress visible
+✓ Helps recover from interruptions
+✓ Creates better summaries
+
+## When NOT to Use
+
+Skip TODO tools for simple single-step tasks:
+- \"List files\" → just use shell
+- \"Read config.json\" → just use read_file
+- \"Search for functions\" → just use code_search
+
+If you can complete it with 1-2 tool calls, skip TODO.
+
 
 # Response Guidelines
 
@@ -1910,7 +2017,7 @@ Template:
             },
             Tool {
                 name: "todo_read".to_string(),
-                description: "Read the entire TODO list content. Use this to view current tasks, notes, and any other information stored in the TODO list.".to_string(),
+                description: "Read your current TODO list to see what tasks are planned and their status. Call this at the start of multi-step tasks to check for existing plans, and during execution to review progress before updating.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -1919,7 +2026,7 @@ Template:
             },
             Tool {
                 name: "todo_write".to_string(),
-                description: "Write or overwrite the entire TODO list content. This tool replaces the complete TODO list with the provided string. Use this to update tasks, add new items, or reorganize the TODO list. WARNING: This operation completely replaces the TODO list content. Make sure to include all content you want to keep, not just the changes.".to_string(),
+                description: "Create or update your TODO list with a complete task plan. Use markdown checkboxes: - [ ] for pending, - [x] for complete. This tool replaces the entire list, so always call todo_read first to preserve existing content. Essential for multi-step tasks.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
