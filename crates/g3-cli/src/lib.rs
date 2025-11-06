@@ -449,7 +449,7 @@ async fn run_accumulative_mode(
     let output = SimpleOutput::new();
     
     output.print("");
-    output.print("g3 AI Coding Agent - Autonomous Mode");
+    output.print("g3 programming agent - autonomous mode");
     output.print("      >> describe what you want, I'll build it iteratively");
     output.print("");
     output.print(&format!("workspace: {}", workspace_dir.display()));
@@ -974,7 +974,7 @@ async fn run_interactive<W: UiWriter>(
     let output = SimpleOutput::new();
 
     output.print("");
-    output.print("G3 AI Coding Agent");
+    output.print("g3 programming agent");
     output.print("      >> what shall we build today?");
     output.print("");
 
@@ -1546,7 +1546,7 @@ async fn run_autonomous(
     let output = SimpleOutput::new();
     let mut turn_metrics: Vec<TurnMetrics> = Vec::new();
 
-    output.print("🤖 G3 AI Coding Agent - Autonomous Mode");
+    output.print("g3 programming agent - autonomous mode");
     output.print(&format!(
         "📁 Using workspace: {}",
         project.workspace().display()
