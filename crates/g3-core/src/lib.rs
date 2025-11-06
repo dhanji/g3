@@ -965,7 +965,7 @@ impl<W: UiWriter> Agent<W> {
             _ => config.agent.max_context_length as u32,
         };
 
-        info!(
+        debug!(
             "Using context length: {} tokens for provider: {} (model: {})",
             context_length, provider_name, model_name
         );

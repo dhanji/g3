@@ -139,7 +139,7 @@ impl AnthropicProvider {
 
         let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
         
-        info!("Initialized Anthropic provider with model: {}", model);
+        debug!("Initialized Anthropic provider with model: {}", model);
 
         Ok(Self {
             client,

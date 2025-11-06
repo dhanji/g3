@@ -449,10 +449,10 @@ async fn run_accumulative_mode(
     let output = SimpleOutput::new();
     
     output.print("");
-    output.print("🪿 G3 AI Coding Agent - Autonomous Mode");
+    output.print("g3 AI Coding Agent - Autonomous Mode");
     output.print("      >> describe what you want, I'll build it iteratively");
     output.print("");
-    output.print(&format!("📁 Workspace: {}", workspace_dir.display()));
+    output.print(&format!("workspace: {}", workspace_dir.display()));
     output.print("");
     output.print("💡 Each input you provide will be added to requirements");
     output.print("   and I'll automatically work on implementing them. You can");
@@ -792,7 +792,7 @@ async fn run_with_console_mode(
         output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
-        println!("📁 Workspace: {}", project.workspace().display());
+        println!("workspace: {}", project.workspace().display());
         run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
     }
 
@@ -974,14 +974,17 @@ async fn run_interactive<W: UiWriter>(
     let output = SimpleOutput::new();
 
     output.print("");
-    output.print("🪿 G3 AI Coding Agent");
+    output.print("G3 AI Coding Agent");
     output.print("      >> what shall we build today?");
     output.print("");
 
     // Display provider and model information
     match agent.get_provider_info() {
         Ok((provider, model)) => {
-            output.print(&format!("🔧 {} | {}", provider, model));
+            print!("🔧 {}{}{} | {}{}{}\n", 
+                SetForegroundColor(Color::Cyan), provider, ResetColor,
+                SetForegroundColor(Color::Yellow), model, ResetColor
+            );
         }
         Err(e) => {
             error!("Failed to get provider info: {}", e);
