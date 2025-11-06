@@ -479,13 +479,25 @@ Format this as a detailed but concise summary that can be used to resume the con
         
         // Scan the first third of messages
         for i in 0..first_third_end {
+            // Check if the previous message was a TODO tool call (before getting mutable reference)
+            let is_todo_result = if i > 0 {
+                if let Some(prev_message) = self.conversation_history.get(i - 1) {
+                    if matches!(prev_message.role, MessageRole::Assistant) {
+                        prev_message.content.contains(r#""tool":"todo_read""#) ||
+                        prev_message.content.contains(r#""tool":"todo_write""#) ||
+                        prev_message.content.contains(r#""tool": "todo_read""#) ||
+                        prev_message.content.contains(r#""tool": "todo_write""#)
+                    } else { false }
+                } else { false }
+            } else { false };
+            
             if let Some(message) = self.conversation_history.get_mut(i) {
                 // Process User messages that look like tool results
                 if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
                     let content_len = message.content.len();
                     
-                    // Only thin if the content is greater than 500 chars
-                    if content_len > 500 {
+                    // Only thin if the content is greater than 500 chars and not a TODO tool result
+                    if !is_todo_result && content_len > 500 {
                         // Generate a unique filename based on timestamp and index
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2927,9 +2939,15 @@ If you can complete it with 1-2 tool calls, skip TODO.
                                     if !is_todo_tool && !wants_full && idx >= max_lines_to_show {
                                         break;
                                     }
-                                    // Clip line to max width
-                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full);
-                                    self.ui_writer.update_tool_output_line(&clipped_line);
+                                    // Clip line to max width (but not for todo tools)
+                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full && !is_todo_tool);
+                                    
+                                    // Use print_tool_output_line for todo tools to get special formatting
+                                    if is_todo_tool {
+                                        self.ui_writer.print_tool_output_line(&clipped_line);
+                                    } else {
+                                        self.ui_writer.update_tool_output_line(&clipped_line);
+                                    }
                                 }
 
                                 if !is_todo_tool && !wants_full && output_len > MAX_LINES {
