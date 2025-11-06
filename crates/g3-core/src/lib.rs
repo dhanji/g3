@@ -865,7 +865,7 @@ impl<W: UiWriter> Agent<W> {
         debug!("Default provider set successfully");
 
         // Determine context window size based on active provider
-        let context_length = Self::determine_context_length(&config, &providers)?;
+        let context_length = Self::get_configured_context_length(&config, &providers)?;
         let mut context_window = ContextWindow::new(context_length);
 
         // If README content is provided, add it as the first system message
@@ -920,7 +920,7 @@ impl<W: UiWriter> Agent<W> {
         })
     }
 
-    fn determine_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+    fn get_configured_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
         // Get the configured max_tokens for the current provider
         fn get_provider_max_tokens(config: &Config, provider_name: &str) -> Option<u32> {
             match provider_name {
@@ -959,7 +959,7 @@ impl<W: UiWriter> Agent<W> {
                         }
                     })
                 } else {
-                    config.agent.max_context_length as u32
+                    config.agent.fallback_default_max_tokens as u32
                 }
             }
             "openai" => {
@@ -983,7 +983,7 @@ impl<W: UiWriter> Agent<W> {
                     }
                 })
             }
-            _ => config.agent.max_context_length as u32,
+            _ => config.agent.fallback_default_max_tokens as u32,
         };
 
         debug!(
@@ -2415,8 +2415,8 @@ Template:
 
         // Check if we need to summarize before starting
         if self.context_window.should_summarize() {
-            // First try thinning if we haven't reached 90% yet
-            if self.context_window.percentage_used() < 90.0 && self.context_window.should_thin() {
+            // First try thinning if we are at capacity, don't call the LLM for a summary (might fail)
+            if self.context_window.percentage_used() > 90.0 && self.context_window.should_thin() {
                 self.ui_writer.print_context_status(&format!(
                     "\n🥒 Context window at {}%. Trying thinning first...",
                     self.context_window.percentage_used() as u32

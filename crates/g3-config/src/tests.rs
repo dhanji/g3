@@ -31,7 +31,7 @@ model_path = "test.gguf"
 model_type = "llama"
 
 [agent]
-max_context_length = 8192
+fallback_default_max_tokens = 8192
 enable_streaming = true
 timeout_seconds = 60
 "#;
@@ -72,7 +72,7 @@ token = "test-token"
 model = "test-model"
 
 [agent]
-max_context_length = 8192
+fallback_default_max_tokens = 8192
 enable_streaming = true
 timeout_seconds = 60
 "#;
@@ -113,7 +113,7 @@ token = "test-token"
 model = "test-model"
 
 [agent]
-max_context_length = 8192
+fallback_default_max_tokens = 8192
 enable_streaming = true
 timeout_seconds = 60
 "#;
