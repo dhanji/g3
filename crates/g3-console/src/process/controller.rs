@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::path::PathBuf;
 use sysinfo::{Pid, Signal, System, Process};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use crate::models::LaunchParams;
 
 pub struct ProcessController {
@@ -120,8 +120,8 @@ impl ProcessController {
         // We need to scan for it by matching workspace and recent start time
         info!("Scanning for newly launched g3 process in workspace: {}", workspace);
         
-        // Wait a moment for the process to fully start
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Wait even longer for the process to fully start and appear in process list
+        std::thread::sleep(std::time::Duration::from_millis(2500));
         
         // Refresh and scan for the process
         self.system.refresh_processes();
@@ -149,11 +149,11 @@ impl ProcessController {
             });
             
             if has_workspace {
-                // Check if it's recent (started within last 5 seconds)
+                // Check if it's recent (started within last 10 seconds)
                 let now = std::time::SystemTime::now();
                 let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process.start_time());
                 if let Ok(duration) = now.duration_since(start_time) {
-                    if duration.as_secs() < 5 {
+                    if duration.as_secs() < 10 {
                         found_pid = Some(pid.as_u32());
                         break;
                     }
@@ -161,7 +161,42 @@ impl ProcessController {
             }
         }
         
-        let pid = found_pid.unwrap_or(intermediate_pid);
+        let pid = if let Some(found) = found_pid {
+            found
+        } else {
+            // If we couldn't find it, try one more refresh after a longer delay
+            info!("Process not found on first scan, trying again...");
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            self.system.refresh_processes();
+            
+            // Try the scan again with full logic
+            let mut retry_found = None;
+            for (pid, process) in self.system.processes() {
+                let cmd = process.cmd();
+                let cmd_str = cmd.join(" ");
+                
+                let is_g3 = process.name().contains("g3") || cmd_str.contains("g3");
+                if !is_g3 {
+                    continue;
+                }
+                
+                let has_workspace = cmd.iter().any(|arg| {
+                    if let Ok(path) = PathBuf::from(arg).canonicalize() {
+                        if let Ok(ws) = workspace_path.canonicalize() {
+                            return path == ws;
+                        }
+                    }
+                    false
+                });
+                
+                if has_workspace {
+                    retry_found = Some(pid.as_u32());
+                    break;
+                }
+            }
+            
+            retry_found.unwrap_or(intermediate_pid)
+        };
 
         info!("Launched g3 process with PID {}", pid);
         

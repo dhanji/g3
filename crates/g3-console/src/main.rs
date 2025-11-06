@@ -4,8 +4,8 @@ mod models;
 mod process;
 mod launch;
 
-use api::control::{kill_instance, launch_instance, restart_instance, ControllerState};
-use api::instances::{get_instance, list_instances, AppState};
+use api::control::{kill_instance, launch_instance, restart_instance};
+use api::instances::{get_instance, get_file_content, list_instances};
 use api::logs::get_instance_logs;
 use api::state::{get_state, save_state, browse_filesystem};
 use axum::{
@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/instances", get(list_instances))
         .route("/instances/:id", get(get_instance))
         .route("/instances/:id/logs", get(get_instance_logs))
+        .route("/instances/:id/file", get(get_file_content))
         .with_state(detector.clone());
 
     let control_routes = Router::new()

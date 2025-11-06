@@ -98,44 +98,25 @@ const modal = {
     },
     
     browseDirectory(inputId) {
-        // Create a hidden file input with directory picker
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.directory = true;
-        input.multiple = false;
-        
-        input.onchange = (e) => {
-            const files = e.target.files;
-            if (files.length > 0) {
-                // Get the directory path from the first file
-                const path = files[0].webkitRelativePath.split('/')[0];
-                // In browser context, we get relative path, so we need to construct full path
-                // For now, just use the directory name and let user adjust
+        // Use custom file browser
+        fileBrowser.open({
+            mode: 'directory',
+            initialPath: document.getElementById(inputId).value || '/Users',
+            callback: (path) => {
                 document.getElementById(inputId).value = path;
             }
-        };
-        
-        input.click();
+        });
     },
     
     browseFile(inputId) {
-        // Create a hidden file input
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '*';
-        
-        input.onchange = (e) => {
-            const files = e.target.files;
-            if (files.length > 0) {
-                // Get the file name
-                // Note: For security reasons, browsers don't give us the full path
-                // User will need to type the full path manually
-                document.getElementById(inputId).value = files[0].name;
+        // Use custom file browser
+        fileBrowser.open({
+            mode: 'file',
+            initialPath: document.getElementById(inputId).value || '/Users',
+            callback: (path) => {
+                document.getElementById(inputId).value = path;
             }
-        };
-        
-        input.click();
+        });
     },
     
     open() {
@@ -147,9 +128,9 @@ const modal = {
         if (state.g3BinaryPath) {
             form.g3_binary_path.value = state.g3BinaryPath;
         }
-        form.provider.value = state.lastProvider;
-        this.updateModelOptions(state.lastProvider);
-        form.model.value = state.lastModel;
+        form.provider.value = state.lastProvider || 'databricks';
+        this.updateModelOptions(state.lastProvider || 'databricks');
+        form.model.value = state.lastModel || 'databricks-claude-sonnet-4-5';
         
         this.element.classList.remove('hidden');
     },
@@ -196,10 +177,11 @@ const modal = {
             g3_binary_path: formData.get('g3_binary_path') || null
         };
         
+        const submitBtn = form.querySelector('button[type="submit"]');
+        const modalBody = this.element.querySelector('.modal-body');
+        
         try {
             // Show loading state
-            const submitBtn = form.querySelector('button[type="submit"]');
-            const modalBody = this.element.querySelector('.modal-body');
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<span class="spinner" style="width: 1rem; height: 1rem; border-width: 2px; display: inline-block; vertical-align: middle;"></span> Starting g3 instance...';
             
@@ -255,7 +237,6 @@ const modal = {
             // Insert error message at the top of modal body
             modalBody.insertBefore(errorDiv, modalBody.firstChild);
             
-            const submitBtn = form.querySelector('button[type="submit"]');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Start Instance';
         }
@@ -281,9 +262,11 @@ function initTheme() {
 async function init() {
     // Prevent double initialization
     if (window.g3Initialized) {
+        console.log('[App] init() called but already initialized, returning');
         return;
     }
     window.g3Initialized = true;
+    console.log('[App] init() starting...');
     
     // Load state
     await state.load();
@@ -294,13 +277,21 @@ async function init() {
     // Initialize modal
     modal.init();
     
+    // Initialize file browser
+    fileBrowser.init();
+    
+    // Expose modal to window for button access
+    window.modal = modal;
+    
     // New Run button
     document.getElementById('new-run-btn').addEventListener('click', () => {
         modal.open();
     });
     
     // Initialize router
+    console.log('[App] About to call router.init()');
     router.init();
+    console.log('[App] init() complete');
 }
 
 // Simplified initialization - call exactly once when DOM is ready

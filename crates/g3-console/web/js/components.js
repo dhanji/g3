@@ -16,6 +16,12 @@ const components = {
     // Render progress bar
     progressBar(instance, stats) {
         const duration = stats.duration_secs;
+        
+        // Handle zero duration to avoid NaN
+        if (duration === 0) {
+            return this.singleProgressBar(0);
+        }
+        
         const estimated = duration * 1.5; // Simple estimation
         const progress = Math.min((duration / estimated) * 100, 100);
         
@@ -41,16 +47,31 @@ const components = {
             error: '#ef4444'
         };
         
+        if (turns.length === 0) {
+            // Fallback to single progress bar if no turn data
+            return this.singleProgressBar(totalDuration);
+        }
+        
         let segments = '';
         for (const turn of turns) {
-            const percentage = (turn.duration_secs / totalDuration) * 100;
+            // Handle zero total duration to avoid NaN
+            if (totalDuration === 0) {
+                continue;
+            }
+            
+            // Ensure percentage never exceeds 100%
+            const rawPercentage = (turn.duration_secs / totalDuration) * 100;
+            const percentage = Math.min(rawPercentage, 100);
             const color = colors[turn.agent] || colors.player;
             const statusColor = turn.status === 'error' ? colors.error : color;
+            const agentLabel = turn.agent.charAt(0).toUpperCase() + turn.agent.slice(1);
+            const durationMin = Math.round(turn.duration_secs / 60);
+            const tooltip = `${agentLabel}: ${durationMin}m ${Math.round(turn.duration_secs % 60)}s - ${turn.status}`;
             
             segments += `
                 <div class="progress-segment" 
                      style="width: ${percentage}%; background-color: ${statusColor};"
-                     title="${turn.agent}: ${turn.duration_secs}s - ${turn.status}">
+                     title="${tooltip}">
                 </div>
             `;
         }
@@ -62,11 +83,28 @@ const components = {
             </div>
         `;
     },
+    
+    // Single progress bar (fallback)
+    singleProgressBar(duration) {
+        // Handle zero duration
+        if (duration === 0) {
+            return `<div class="progress-bar"><div class="progress-fill" style="width: 0%"></div><span class="progress-text">Starting...</span></div>`;
+        }
+        
+        const estimated = duration * 1.5;
+        const progress = Math.min((duration / estimated) * 100, 100);
+        return `
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${progress}%"></div>
+                <span class="progress-text">${Math.round(duration / 60)}m elapsed</span>
+            </div>
+        `;
+    },
 
     // Render instance panel
     instancePanel(instance, stats, latestMessage) {
         return `
-            <div class="instance-panel" data-id="${instance.id}" onclick="router.navigate('/instance/${instance.id}')">
+            <div class="instance-panel" data-id="${instance.id}" onclick="event.preventDefault(); event.stopPropagation(); window.router.navigate('/instance/${instance.id}')">
                 <div class="panel-header">
                     <div class="panel-title">
                         <h3>${instance.workspace}</h3>
@@ -155,10 +193,19 @@ const components = {
 
     // Render chat message
     chatMessage(message, agent = null) {
-        const agentClass = agent === 'coach' ? 'message-coach' : agent === 'player' ? 'message-player' : '';
+        // Handle agent as string or object
+        let agentStr = null;
+        if (typeof agent === 'string') {
+            agentStr = agent.toLowerCase();
+        } else if (agent && typeof agent === 'object') {
+            agentStr = String(agent).toLowerCase();
+        }
+        
+        const agentClass = agentStr === 'coach' ? 'message-coach' : agentStr === 'player' ? 'message-player' : '';
+        
         return `
             <div class="chat-message ${agentClass}">
-                ${agent ? `<div class="message-agent">${agent}</div>` : ''}
+                ${agentStr ? `<div class="message-agent">${agentStr}</div>` : ''}
                 <div class="message-content">${marked.parse(message)}</div>
             </div>
         `;
@@ -262,10 +309,12 @@ const components = {
                 <div class="project-file">
                     <div class="file-header" onclick="this.parentElement.classList.toggle('expanded')">
                         <span class="file-name">📄 requirements.md</span>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); window.viewFullFile('requirements.md')" style="margin-left: auto; margin-right: 0.5rem;">View Full</button>
                         <span class="file-toggle">▼</span>
                     </div>
                     <div class="file-content">
                         <pre><code>${this.escapeHtml(projectFiles.requirements)}</code></pre>
+                        <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.875rem;">Showing first 10 lines...</p>
                     </div>
                 </div>
             `;
@@ -276,10 +325,12 @@ const components = {
                 <div class="project-file">
                     <div class="file-header" onclick="this.parentElement.classList.toggle('expanded')">
                         <span class="file-name">📄 README.md</span>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); window.viewFullFile('README.md')" style="margin-left: auto; margin-right: 0.5rem;">View Full</button>
                         <span class="file-toggle">▼</span>
                     </div>
                     <div class="file-content">
                         <pre><code>${this.escapeHtml(projectFiles.readme)}</code></pre>
+                        <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.875rem;">Showing first 10 lines...</p>
                     </div>
                 </div>
             `;
@@ -290,10 +341,12 @@ const components = {
                 <div class="project-file">
                     <div class="file-header" onclick="this.parentElement.classList.toggle('expanded')">
                         <span class="file-name">📄 AGENTS.md</span>
+                        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); window.viewFullFile('AGENTS.md')" style="margin-left: auto; margin-right: 0.5rem;">View Full</button>
                         <span class="file-toggle">▼</span>
                     </div>
                     <div class="file-content">
                         <pre><code>${this.escapeHtml(projectFiles.agents)}</code></pre>
+                        <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.875rem;">Showing first 10 lines...</p>
                     </div>
                 </div>
             `;
@@ -309,3 +362,6 @@ const components = {
         return div.innerHTML;
     }
 };
+
+// Expose to window for global access
+window.components = components;

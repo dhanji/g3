@@ -1,5 +1,5 @@
 use crate::models::*;
-use crate::process::{ProcessController, ProcessDetector};
+use crate::process::ProcessController;
 use axum::{extract::State, http::StatusCode, Json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -82,7 +82,14 @@ pub async fn launch_instance(
     
     // Validate binary path if provided
     if let Some(ref binary_path) = request.g3_binary_path {
-        let path = std::path::Path::new(binary_path);
+        // Expand relative paths and resolve to absolute
+        let path = if binary_path.starts_with("./") || binary_path.starts_with("../") {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(binary_path))
+                .unwrap_or_else(|_| std::path::PathBuf::from(binary_path))
+        } else {
+            std::path::PathBuf::from(binary_path)
+        };
         
         // Check if file exists
         if !path.exists() {

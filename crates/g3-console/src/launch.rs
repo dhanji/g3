@@ -57,10 +57,10 @@ impl ConsoleState {
     }
     
     fn config_path() -> PathBuf {
-        // Use explicit ~/.config/g3/console-state.json path as per requirements
+        // Use explicit ~/.config/g3/console.json path as per requirements
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".config")
             .join("g3")
-            .join("console-state.json")
+            .join("console.json")
     }
 }

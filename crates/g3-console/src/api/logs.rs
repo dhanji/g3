@@ -1,5 +1,4 @@
 use crate::logs::LogParser;
-use crate::models::*;
 use crate::process::ProcessDetector;
 use axum::{extract::State, http::StatusCode, Json};
 use std::sync::Arc;

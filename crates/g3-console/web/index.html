@@ -103,10 +103,60 @@
         </div>
     </div>
 
-    <script src="/js/api.js"></script>
-    <script src="/js/state.js"></script>
-    <script src="/js/components.js"></script>
-    <script src="/js/router.js"></script>
-    <script src="/js/app.js"></script>
+    <!-- File Browser Modal -->
+    <div id="file-browser-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="file-browser-title">Select Directory</h2>
+                <button id="file-browser-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="file-browser">
+                    <div class="file-browser-path">
+                        <label>Current Path:</label>
+                        <input type="text" id="file-browser-current-path" readonly />
+                        <button type="button" id="file-browser-parent" class="btn btn-secondary">↑ Parent</button>
+                    </div>
+                    <div class="file-browser-list" id="file-browser-list">
+                        <div class="spinner-container">
+                            <div class="spinner"></div>
+                            <p>Loading...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="file-browser-cancel" class="btn btn-secondary">Cancel</button>
+                <button type="button" id="file-browser-select" class="btn btn-primary">Select</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Full File View Modal -->
+    <div id="full-file-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content" style="max-width: 900px; max-height: 90vh;">
+            <div class="modal-header">
+                <h2 id="full-file-title">File Content</h2>
+                <button id="full-file-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                <div id="full-file-content">
+                    <div class="spinner-container">
+                        <div class="spinner"></div>
+                        <p>Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/api.js?v=6"></script>
+    <script src="/js/state.js?v=6"></script>
+    <script src="/js/components.js?v=6"></script>
+    <script src="/js/file-browser.js?v=6"></script>
+    <script src="/js/router.js?v=6"></script>
+    <script src="/js/app.js?v=6"></script>
 </body>
 </html>

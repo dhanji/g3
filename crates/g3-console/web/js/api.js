@@ -32,12 +32,14 @@ const api = {
         });
         if (!response.ok) {
             // Try to extract error message from response
+            let errorMessage = `Failed to launch instance (${response.status})`;
             try {
                 const errorData = await response.json();
-                throw new Error(errorData.message || errorData.error || 'Failed to launch instance');
+                errorMessage = errorData.message || errorData.error || errorMessage;
             } catch (e) {
-                throw new Error(`Failed to launch instance (${response.status})`);
+                // JSON parsing failed, use default message
             }
+            throw new Error(errorMessage);
         }
         return response.json();
     },
@@ -76,5 +78,26 @@ const api = {
         });
         if (!response.ok) throw new Error('Failed to save state');
         return response.json();
+    },
+
+    // Browse filesystem
+    async browseFilesystem(path, browseType = 'directory') {
+        const response = await fetch(`${API_BASE}/browse`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path, browse_type: browseType })
+        });
+        if (!response.ok) throw new Error('Failed to browse filesystem');
+        return response.json();
+    },
+
+    // Get full file content
+    async getFileContent(instanceId, fileName) {
+        const response = await fetch(`${API_BASE}/instances/${instanceId}/file?name=${encodeURIComponent(fileName)}`);
+        if (!response.ok) throw new Error('Failed to fetch file content');
+        return response.json();
     }
 };
+
+// Expose to window for global access
+window.api = api;

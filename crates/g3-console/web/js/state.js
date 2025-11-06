@@ -49,3 +49,6 @@ const state = {
         this.save();
     }
 };
+
+// Expose to window for global access
+window.state = state;

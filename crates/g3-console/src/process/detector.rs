@@ -1,9 +1,8 @@
 use crate::models::{ExecutionMethod, Instance, InstanceStatus, InstanceType};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
-use std::process::Command;
-use sysinfo::{System, Process, Pid};
+use sysinfo::{System, Pid, Process};
 use tracing::{debug, warn};
 
 pub struct ProcessDetector {
@@ -46,14 +45,26 @@ impl ProcessDetector {
     ) -> Option<Instance> {
         let cmd_str = cmd.join(" ");
         
-        // Check if this is a g3 binary
-        let is_g3_binary = cmd.get(0).map(|s| s.ends_with("g3")).unwrap_or(false);
+        // Check if this is a g3 binary (more comprehensive check)
+        let is_g3_binary = cmd.get(0).map(|s| {
+            s.ends_with("g3") || s.ends_with("/g3") || s.contains("/target/release/g3") || s.contains("/target/debug/g3")
+        }).unwrap_or(false);
         
         // Check if this is cargo run with g3
-        let is_cargo_run = cmd.get(0).map(|s| s.contains("cargo")).unwrap_or(false)
-            && cmd.iter().any(|s| s == "run" || s.contains("g3"));
-
-        if !is_g3_binary && !is_cargo_run {
+        let is_cargo_run = cmd.get(0).map(|s| s.contains("cargo")).unwrap_or(false) && cmd.iter().any(|s| s == "run");
+        
+        // Also check if any part of the command line contains g3-related patterns
+        let has_g3_pattern = cmd_str.contains("g3 ") 
+            || cmd_str.contains("/g3 ")
+            || cmd_str.contains("g3-")
+            || cmd_str.ends_with("g3")
+            || cmd_str.contains("--workspace") // g3-specific flag
+            || cmd_str.contains("--autonomous"); // g3-specific flag
+        
+        // Accept if it's a g3 binary, cargo run with g3 patterns, or has g3-specific flags
+        let is_g3_process = is_g3_binary || (is_cargo_run && has_g3_pattern) || has_g3_pattern;
+        
+        if !is_g3_process {
             return None;
         }
 
@@ -100,7 +111,7 @@ impl ProcessDetector {
         })
     }
 
-    fn extract_workspace(&self, pid: Pid, process: &Process, cmd: &[String]) -> Option<PathBuf> {
+    fn extract_workspace(&self, pid: Pid, _process: &Process, cmd: &[String]) -> Option<PathBuf> {
         // Look for --workspace flag
         for i in 0..cmd.len() {
             if cmd[i] == "--workspace" && i + 1 < cmd.len() {

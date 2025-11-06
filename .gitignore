@@ -26,3 +26,7 @@ target
 # Session logs directory
 logs/
 *.json
+
+# g3 artifacts
+requirements.md
+todo.g3.md

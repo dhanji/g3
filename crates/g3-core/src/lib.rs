@@ -1,8 +1,8 @@
+pub mod code_search;
 pub mod error_handling;
 pub mod project;
 pub mod task_result;
 pub mod ui_writer;
-pub mod code_search;
 pub use task_result::TaskResult;
 
 #[cfg(test)]
@@ -20,9 +20,9 @@ mod tilde_expansion_tests;
 #[cfg(test)]
 mod error_handling_test;
 use anyhow::Result;
+use g3_computer_control::WebDriverController;
 use g3_config::Config;
 use g3_execution::CodeExecutor;
-use g3_computer_control::WebDriverController;
 use g3_providers::{CompletionRequest, Message, MessageRole, ProviderRegistry, Tool};
 #[allow(unused_imports)]
 use regex::Regex;
@@ -406,12 +406,18 @@ Format this as a detailed but concise summary that can be used to resume the con
     }
 
     /// Reset the context window with a summary
-    pub fn reset_with_summary(&mut self, summary: String, latest_user_message: Option<String>) -> usize {
+    pub fn reset_with_summary(
+        &mut self,
+        summary: String,
+        latest_user_message: Option<String>,
+    ) -> usize {
         // Calculate chars saved (old history minus new summary)
-        let old_chars: usize = self.conversation_history.iter()
+        let old_chars: usize = self
+            .conversation_history
+            .iter()
             .map(|m| m.content.len())
             .sum();
-        
+
         // Clear the conversation history
         self.conversation_history.clear();
         self.used_tokens = 0;
@@ -430,8 +436,10 @@ Format this as a detailed but concise summary that can be used to resume the con
                 content: user_msg,
             });
         }
-        
-        let new_chars: usize = self.conversation_history.iter()
+
+        let new_chars: usize = self
+            .conversation_history
+            .iter()
             .map(|m| m.content.len())
             .sum();
         old_chars.saturating_sub(new_chars)
@@ -441,7 +449,7 @@ Format this as a detailed but concise summary that can be used to resume the con
     /// Triggers at 50%, 60%, 70%, and 80% thresholds
     pub fn should_thin(&self) -> bool {
         let current_percentage = self.percentage_used() as u32;
-        
+
         // Check if we've crossed a new 10% threshold starting at 50%
         if current_percentage >= 50 {
             let current_threshold = (current_percentage / 10) * 10; // Round down to nearest 10%
@@ -449,7 +457,7 @@ Format this as a detailed but concise summary that can be used to resume the con
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -458,25 +466,28 @@ Format this as a detailed but concise summary that can be used to resume the con
     pub fn thin_context(&mut self) -> (String, usize) {
         let current_percentage = self.percentage_used() as u32;
         let current_threshold = (current_percentage / 10) * 10;
-        
+
         // Update the last thinning percentage
         self.last_thinning_percentage = current_threshold;
-        
+
         // Calculate the first third of the conversation
         let total_messages = self.conversation_history.len();
         let first_third_end = (total_messages / 3).max(1);
-        
+
         let mut leaned_count = 0;
         let mut tool_call_leaned_count = 0;
         let mut chars_saved = 0;
-        
+
         // Create ~/tmp directory if it doesn't exist
         let tmp_dir = shellexpand::tilde("~/tmp").to_string();
         if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
             warn!("Failed to create ~/tmp directory: {}", e);
-            return ("⚠️  Context thinning failed: could not create ~/tmp directory".to_string(), 0);
+            return (
+                "⚠️  Context thinning failed: could not create ~/tmp directory".to_string(),
+                0,
+            );
         }
-        
+
         // Scan the first third of messages
         for i in 0..first_third_end {
             // Check if the previous message was a TODO tool call (before getting mutable reference)
@@ -493,7 +504,9 @@ Format this as a detailed but concise summary that can be used to resume the con
             
             if let Some(message) = self.conversation_history.get_mut(i) {
                 // Process User messages that look like tool results
-                if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
+                if matches!(message.role, MessageRole::User)
+                    && message.content.starts_with("Tool result:")
+                {
                     let content_len = message.content.len();
                     
                     // Only thin if the content is greater than 500 chars and not a TODO tool result
@@ -505,54 +518,59 @@ Format this as a detailed but concise summary that can be used to resume the con
                             .as_secs();
                         let filename = format!("leaned_tool_result_{}_{}.txt", timestamp, i);
                         let file_path = format!("{}/{}", tmp_dir, filename);
-                        
+
                         // Write the content to file
                         if let Err(e) = std::fs::write(&file_path, &message.content) {
                             warn!("Failed to write thinned content to {}: {}", file_path, e);
                             continue;
                         }
-                        
+
                         // Replace the message content with a note
                         let original_len = message.content.len();
                         message.content = format!("Tool result saved to {}", file_path);
-                        
+
                         leaned_count += 1;
                         chars_saved += original_len - message.content.len();
-                        
-                        debug!("Thinned tool result {} ({} chars) to {}", i, original_len, file_path);
+
+                        debug!(
+                            "Thinned tool result {} ({} chars) to {}",
+                            i, original_len, file_path
+                        );
                     }
                 }
-                
+
                 // Process Assistant messages that contain tool calls with large arguments
                 if matches!(message.role, MessageRole::Assistant) {
                     // Try to parse the message content as JSON to find tool calls
                     let content = &message.content;
-                    
+
                     // Look for JSON tool call patterns
-                    if let Some(tool_call_start) = content.find(r#"{"tool":"#)
+                    if let Some(tool_call_start) = content
+                        .find(r#"{"tool":"#)
                         .or_else(|| content.find(r#"{ "tool":"#))
                         .or_else(|| content.find(r#"{"tool" :"#))
                         .or_else(|| content.find(r#"{ "tool" :"#))
                     {
                         // Try to extract and parse the JSON tool call
                         let json_portion = &content[tool_call_start..];
-                        
+
                         // Find the end of the JSON object
                         if let Some(json_end) = Self::find_json_end(json_portion) {
                             let json_str = &json_portion[..=json_end];
-                            
+
                             // Try to parse as ToolCall
                             if let Ok(mut tool_call) = serde_json::from_str::<ToolCall>(json_str) {
                                 let mut modified = false;
-                                
+
                                 // Handle write_file tool calls
                                 if tool_call.tool == "write_file" {
                                     if let Some(args_obj) = tool_call.args.as_object_mut() {
                                         // Extract content to avoid borrow issues
-                                        let content_info = args_obj.get("content")
+                                        let content_info = args_obj
+                                            .get("content")
                                             .and_then(|v| v.as_str())
                                             .map(|s| (s.to_string(), s.len()));
-                                        
+
                                         if let Some((content_str, content_len)) = content_info {
                                             // Only thin if content is greater than 500 chars
                                             if content_len > 500 {
@@ -560,13 +578,20 @@ Format this as a detailed but concise summary that can be used to resume the con
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
                                                     .as_secs();
-                                                let filename = format!("leaned_write_file_content_{}_{}.txt", timestamp, i);
+                                                let filename = format!(
+                                                    "leaned_write_file_content_{}_{}.txt",
+                                                    timestamp, i
+                                                );
                                                 let file_path = format!("{}/{}", tmp_dir, filename);
-                                                
-                                                if std::fs::write(&file_path, &content_str).is_ok() {
+
+                                                if std::fs::write(&file_path, &content_str).is_ok()
+                                                {
                                                     args_obj.insert(
                                                         "content".to_string(),
-                                                        serde_json::Value::String(format!("<content saved to {}>", file_path))
+                                                        serde_json::Value::String(format!(
+                                                            "<content saved to {}>",
+                                                            file_path
+                                                        )),
                                                     );
                                                     modified = true;
                                                     chars_saved += content_len;
@@ -577,15 +602,16 @@ Format this as a detailed but concise summary that can be used to resume the con
                                         }
                                     }
                                 }
-                                
+
                                 // Handle str_replace tool calls
                                 if tool_call.tool == "str_replace" {
                                     if let Some(args_obj) = tool_call.args.as_object_mut() {
                                         // Extract diff to avoid borrow issues
-                                        let diff_info = args_obj.get("diff")
+                                        let diff_info = args_obj
+                                            .get("diff")
                                             .and_then(|v| v.as_str())
                                             .map(|s| (s.to_string(), s.len()));
-                                        
+
                                         if let Some((diff_str, diff_len)) = diff_info {
                                             // Only thin if diff is greater than 500 chars
                                             if diff_len > 500 {
@@ -593,13 +619,19 @@ Format this as a detailed but concise summary that can be used to resume the con
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
                                                     .as_secs();
-                                                let filename = format!("leaned_str_replace_diff_{}_{}.txt", timestamp, i);
+                                                let filename = format!(
+                                                    "leaned_str_replace_diff_{}_{}.txt",
+                                                    timestamp, i
+                                                );
                                                 let file_path = format!("{}/{}", tmp_dir, filename);
-                                                
+
                                                 if std::fs::write(&file_path, &diff_str).is_ok() {
                                                     args_obj.insert(
                                                         "diff".to_string(),
-                                                        serde_json::Value::String(format!("<diff saved to {}>", file_path))
+                                                        serde_json::Value::String(format!(
+                                                            "<diff saved to {}>",
+                                                            file_path
+                                                        )),
                                                     );
                                                     modified = true;
                                                     chars_saved += diff_len;
@@ -610,15 +642,16 @@ Format this as a detailed but concise summary that can be used to resume the con
                                         }
                                     }
                                 }
-                                
+
                                 // If we modified the tool call, reconstruct the message
                                 if modified {
                                     let prefix = &content[..tool_call_start];
                                     let suffix = &content[tool_call_start + json_str.len()..];
-                                    
+
                                     // Serialize the modified tool call
                                     if let Ok(new_json) = serde_json::to_string(&tool_call) {
-                                        message.content = format!("{}{}{}", prefix, new_json, suffix);
+                                        message.content =
+                                            format!("{}{}{}", prefix, new_json, suffix);
                                     }
                                 }
                             }
@@ -627,27 +660,37 @@ Format this as a detailed but concise summary that can be used to resume the con
                 }
             }
         }
-        
+
         // Recalculate token usage after thinning
         self.recalculate_tokens();
-        
+
         if leaned_count > 0 {
             if tool_call_leaned_count > 0 {
-                (format!("🥒 Context thinned at {}%: {} tool results + {} tool calls, ~{} chars saved", 
+                (format!("🥒 Context thinned at {}%: {} tool results + {} tool calls, ~{} chars saved",
                         current_threshold, leaned_count, tool_call_leaned_count, chars_saved), chars_saved)
             } else {
-                (format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
-                        current_threshold, leaned_count, chars_saved), chars_saved)
+                (
+                    format!(
+                        "🥒 Context thinned at {}%: {} tool results, ~{} chars saved",
+                        current_threshold, leaned_count, chars_saved
+                    ),
+                    chars_saved,
+                )
             }
         } else if tool_call_leaned_count > 0 {
-            (format!("🥒 Context thinned at {}%: {} tool calls, ~{} chars saved", 
-                    current_threshold, tool_call_leaned_count, chars_saved), chars_saved)
+            (
+                format!(
+                    "🥒 Context thinned at {}%: {} tool calls, ~{} chars saved",
+                    current_threshold, tool_call_leaned_count, chars_saved
+                ),
+                chars_saved,
+            )
         } else {
-            (format!("ℹ Context thinning triggered at {}% but no large tool results or tool calls found in first third", 
+            (format!("ℹ Context thinning triggered at {}% but no large tool results or tool calls found in first third",
                     current_threshold), 0)
         }
     }
-    
+
     /// Recalculate token usage based on current conversation history
     fn recalculate_tokens(&mut self) {
         let mut total = 0;
@@ -655,22 +698,22 @@ Format this as a detailed but concise summary that can be used to resume the con
             total += Self::estimate_tokens(&message.content);
         }
         self.used_tokens = total;
-        
+
         debug!("Recalculated tokens after thinning: {} tokens", total);
     }
-    
+
     /// Helper function to find the end of a JSON object
     fn find_json_end(json_str: &str) -> Option<usize> {
         let mut brace_count = 0;
         let mut in_string = false;
         let mut escape_next = false;
-        
+
         for (i, ch) in json_str.char_indices() {
             if escape_next {
                 escape_next = false;
                 continue;
             }
-            
+
             match ch {
                 '\\' => escape_next = true,
                 '"' if !escape_next => in_string = !in_string,
@@ -684,7 +727,7 @@ Format this as a detailed but concise summary that can be used to resume the con
                 _ => {}
             }
         }
-        
+
         None
     }
 }
@@ -705,9 +748,14 @@ pub struct Agent<W: UiWriter> {
     quiet: bool,
     computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
     todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
-    webdriver_session: std::sync::Arc<tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>>>,
+    webdriver_session: std::sync::Arc<
+        tokio::sync::RwLock<
+            Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>,
+        >,
+    >,
     safaridriver_process: std::sync::Arc<tokio::sync::RwLock<Option<tokio::process::Child>>>,
-    macax_controller: std::sync::Arc<tokio::sync::RwLock<Option<g3_computer_control::MacAxController>>>,
+    macax_controller:
+        std::sync::Arc<tokio::sync::RwLock<Option<g3_computer_control::MacAxController>>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -843,7 +891,6 @@ impl<W: UiWriter> Agent<W> {
         // Register Databricks provider if configured AND it's the default provider
         if let Some(databricks_config) = &config.providers.databricks {
             if providers_to_register.contains(&"databricks".to_string()) {
-
                 let databricks_provider = if let Some(token) = &databricks_config.token {
                     // Use token-based authentication
                     g3_providers::DatabricksProvider::from_token(
@@ -935,10 +982,11 @@ impl<W: UiWriter> Agent<W> {
             webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             safaridriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             macax_controller: {
-                std::sync::Arc::new(tokio::sync::RwLock::new(
-                    if macax_enabled { Some(g3_computer_control::MacAxController::new()?) }
-                    else { None }
-                ))
+                std::sync::Arc::new(tokio::sync::RwLock::new(if macax_enabled {
+                    Some(g3_computer_control::MacAxController::new()?)
+                } else {
+                    None
+                }))
             },
         })
     }
@@ -985,9 +1033,7 @@ impl<W: UiWriter> Agent<W> {
                     config.agent.fallback_default_max_tokens as u32
                 }
             }
-            "openai" => {
-                192000
-            }
+            "openai" => 192000,
             "anthropic" => {
                 // Claude models have large context windows
                 // Use configured max_tokens or fall back to default
@@ -1449,7 +1495,11 @@ If you can complete it with 1-2 tool calls, skip TODO.
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled))
+            Some(Self::create_tool_definitions(
+                self.config.webdriver.enabled,
+                self.config.macax.enabled,
+                self.config.computer_control.enabled,
+            ))
         } else {
             None
         };
@@ -1622,7 +1672,12 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
     /// Log an error message to the session JSON file as the last message
     /// This is used in autonomous mode to record context length exceeded errors
-    pub fn log_error_to_session(&self, error: &anyhow::Error, role: &str, forensic_context: Option<String>) {
+    pub fn log_error_to_session(
+        &self,
+        error: &anyhow::Error,
+        role: &str,
+        forensic_context: Option<String>,
+    ) {
         // Skip if quiet mode is enabled
         if self.quiet {
             return;
@@ -1647,7 +1702,9 @@ If you can complete it with 1-2 tool calls, skip TODO.
         // Read existing session log
         let mut session_data: serde_json::Value = if std::path::Path::new(&filename).exists() {
             match std::fs::read_to_string(&filename) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
+                Ok(content) => {
+                    serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+                }
                 Err(_) => serde_json::json!({}),
             }
         } else {
@@ -1656,11 +1713,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
         // Build error message with forensic context
         let error_message = if let Some(context) = forensic_context {
-            format!(
-                "ERROR: {}\n\nForensic Context:\n{}",
-                error,
-                context
-            )
+            format!("ERROR: {}\n\nForensic Context:\n{}", error, context)
         } else {
             format!("ERROR: {}", error)
         };
@@ -1674,7 +1727,10 @@ If you can complete it with 1-2 tool calls, skip TODO.
         });
 
         // Append to conversation history
-        if let Some(history) = session_data.get_mut("context_window").and_then(|cw| cw.get_mut("conversation_history")) {
+        if let Some(history) = session_data
+            .get_mut("context_window")
+            .and_then(|cw| cw.get_mut("conversation_history"))
+        {
             if let Some(history_array) = history.as_array_mut() {
                 history_array.push(error_entry);
             }
@@ -1690,7 +1746,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
     /// Returns Ok(true) if summarization was successful, Ok(false) if it failed
     pub async fn force_summarize(&mut self) -> Result<bool> {
         info!("Manual summarization triggered");
-        
+
         self.ui_writer.print_context_status(&format!(
             "\n🗜️ Manual summarization requested (current usage: {}%)...",
             self.context_window.percentage_used() as u32
@@ -1711,8 +1767,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
         let summary_messages = vec![
             Message {
                 role: MessageRole::System,
-                content: "You are a helpful assistant that creates concise summaries."
-                    .to_string(),
+                content: "You are a helpful assistant that creates concise summaries.".to_string(),
             },
             Message {
                 role: MessageRole::User,
@@ -1765,9 +1820,8 @@ If you can complete it with 1-2 tool calls, skip TODO.
         // Get the summary
         match provider.complete(summary_request).await {
             Ok(summary_response) => {
-                self.ui_writer.print_context_status(
-                    "✅ Context compacted successfully.\n",
-                );
+                self.ui_writer
+                    .print_context_status("✅ Context compacted successfully.\n");
 
                 // Get the latest user message to preserve it
                 let latest_user_msg = self
@@ -1779,7 +1833,8 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     .map(|m| m.content.clone());
 
                 // Reset context with summary
-                let chars_saved = self.context_window
+                let chars_saved = self
+                    .context_window
                     .reset_with_summary(summary_response.content, latest_user_msg);
                 self.summarization_events.push(chars_saved);
 
@@ -1807,37 +1862,40 @@ If you can complete it with 1-2 tool calls, skip TODO.
     /// Returns Ok(true) if README was found and reloaded, Ok(false) if no README was present initially
     pub fn reload_readme(&mut self) -> Result<bool> {
         info!("Manual README reload triggered");
-        
+
         // Check if the first message in conversation history is a system message with README content
         let has_readme = self
             .context_window
             .conversation_history
             .first()
-            .map(|m| matches!(m.role, MessageRole::System) && 
-                    (m.content.contains("Project README") || m.content.contains("Agent Configuration")))
+            .map(|m| {
+                matches!(m.role, MessageRole::System)
+                    && (m.content.contains("Project README")
+                        || m.content.contains("Agent Configuration"))
+            })
             .unwrap_or(false);
-        
+
         if !has_readme {
             return Ok(false);
         }
-        
+
         // Try to load README.md and AGENTS.md
         let mut combined_content = String::new();
         let mut found_any = false;
-        
+
         if let Ok(agents_content) = std::fs::read_to_string("AGENTS.md") {
             combined_content.push_str("# Agent Configuration\n\n");
             combined_content.push_str(&agents_content);
             combined_content.push_str("\n\n");
             found_any = true;
         }
-        
+
         if let Ok(readme_content) = std::fs::read_to_string("README.md") {
             combined_content.push_str("# Project README\n\n");
             combined_content.push_str(&readme_content);
             found_any = true;
         }
-        
+
         if found_any {
             // Replace the first message with the new content
             if let Some(first_msg) = self.context_window.conversation_history.first_mut() {
@@ -1856,69 +1914,94 @@ If you can complete it with 1-2 tool calls, skip TODO.
     pub fn get_stats(&self) -> String {
         let mut stats = String::new();
         use std::time::Duration;
-        
+
         stats.push_str("\n📊 Context Window Statistics\n");
         stats.push_str(&"=".repeat(60));
         stats.push_str("\n\n");
-        
+
         // Context window usage
         stats.push_str("🗂️  Context Window:\n");
-        stats.push_str(&format!("   • Used Tokens:       {:>10} / {}\n", 
-            self.context_window.used_tokens, 
-            self.context_window.total_tokens));
-        stats.push_str(&format!("   • Usage Percentage:  {:>10.1}%\n", 
-            self.context_window.percentage_used()));
-        stats.push_str(&format!("   • Remaining Tokens:  {:>10}\n", 
-            self.context_window.remaining_tokens()));
-        stats.push_str(&format!("   • Cumulative Tokens: {:>10}\n", 
-            self.context_window.cumulative_tokens));
-        stats.push_str(&format!("   • Last Thinning:     {:>10}%\n", 
-            self.context_window.last_thinning_percentage));
+        stats.push_str(&format!(
+            "   • Used Tokens:       {:>10} / {}\n",
+            self.context_window.used_tokens, self.context_window.total_tokens
+        ));
+        stats.push_str(&format!(
+            "   • Usage Percentage:  {:>10.1}%\n",
+            self.context_window.percentage_used()
+        ));
+        stats.push_str(&format!(
+            "   • Remaining Tokens:  {:>10}\n",
+            self.context_window.remaining_tokens()
+        ));
+        stats.push_str(&format!(
+            "   • Cumulative Tokens: {:>10}\n",
+            self.context_window.cumulative_tokens
+        ));
+        stats.push_str(&format!(
+            "   • Last Thinning:     {:>10}%\n",
+            self.context_window.last_thinning_percentage
+        ));
         stats.push('\n');
-        
+
         // Context optimization metrics
         stats.push_str("🗜️  Context Optimization:\n");
-        stats.push_str(&format!("   • Thinning Events:   {:>10}\n", 
-            self.thinning_events.len()));
+        stats.push_str(&format!(
+            "   • Thinning Events:   {:>10}\n",
+            self.thinning_events.len()
+        ));
         if !self.thinning_events.is_empty() {
             let total_thinned: usize = self.thinning_events.iter().sum();
             let avg_thinned = total_thinned / self.thinning_events.len();
             stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_thinned));
             stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_thinned));
         }
-        
-        stats.push_str(&format!("   • Summarizations:    {:>10}\n", 
-            self.summarization_events.len()));
+
+        stats.push_str(&format!(
+            "   • Summarizations:    {:>10}\n",
+            self.summarization_events.len()
+        ));
         if !self.summarization_events.is_empty() {
             let total_summarized: usize = self.summarization_events.iter().sum();
             let avg_summarized = total_summarized / self.summarization_events.len();
-            stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_summarized));
+            stats.push_str(&format!(
+                "   • Total Chars Saved: {:>10}\n",
+                total_summarized
+            ));
             stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_summarized));
         }
         stats.push('\n');
-        
+
         // Performance metrics
         stats.push_str("⚡ Performance:\n");
         if !self.first_token_times.is_empty() {
-            let avg_ttft = self.first_token_times.iter().sum::<Duration>() / self.first_token_times.len() as u32;
+            let avg_ttft = self.first_token_times.iter().sum::<Duration>()
+                / self.first_token_times.len() as u32;
             let mut sorted_times = self.first_token_times.clone();
             sorted_times.sort();
             let median_ttft = sorted_times[sorted_times.len() / 2];
-            stats.push_str(&format!("   • Avg Time to First Token:    {:>6.3}s\n", avg_ttft.as_secs_f64()));
-            stats.push_str(&format!("   • Median Time to First Token: {:>6.3}s\n", median_ttft.as_secs_f64()));
+            stats.push_str(&format!(
+                "   • Avg Time to First Token:    {:>6.3}s\n",
+                avg_ttft.as_secs_f64()
+            ));
+            stats.push_str(&format!(
+                "   • Median Time to First Token: {:>6.3}s\n",
+                median_ttft.as_secs_f64()
+            ));
         }
         stats.push('\n');
-        
+
         // Conversation history
         stats.push_str("💬 Conversation History:\n");
-        stats.push_str(&format!("   • Total Messages:    {:>10}\n", 
-            self.context_window.conversation_history.len()));
-        
+        stats.push_str(&format!(
+            "   • Total Messages:    {:>10}\n",
+            self.context_window.conversation_history.len()
+        ));
+
         // Count messages by role
         let mut system_count = 0;
         let mut user_count = 0;
         let mut assistant_count = 0;
-        
+
         for msg in &self.context_window.conversation_history {
             match msg.role {
                 MessageRole::System => system_count += 1,
@@ -1926,48 +2009,64 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 MessageRole::Assistant => assistant_count += 1,
             }
         }
-        
+
         stats.push_str(&format!("   • System Messages:   {:>10}\n", system_count));
         stats.push_str(&format!("   • User Messages:     {:>10}\n", user_count));
-        stats.push_str(&format!("   • Assistant Messages:{:>10}\n", assistant_count));
+        stats.push_str(&format!(
+            "   • Assistant Messages:{:>10}\n",
+            assistant_count
+        ));
         stats.push('\n');
-        
+
         // Tool call metrics
         stats.push_str("🔧 Tool Call Metrics:\n");
-        stats.push_str(&format!("   • Total Tool Calls:  {:>10}\n", 
-            self.tool_call_metrics.len()));
-        
-        let successful_calls = self.tool_call_metrics.iter()
+        stats.push_str(&format!(
+            "   • Total Tool Calls:  {:>10}\n",
+            self.tool_call_metrics.len()
+        ));
+
+        let successful_calls = self
+            .tool_call_metrics
+            .iter()
             .filter(|(_, _, success)| *success)
             .count();
         let failed_calls = self.tool_call_metrics.len() - successful_calls;
-        
-        stats.push_str(&format!("   • Successful:        {:>10}\n", successful_calls));
+
+        stats.push_str(&format!(
+            "   • Successful:        {:>10}\n",
+            successful_calls
+        ));
         stats.push_str(&format!("   • Failed:            {:>10}\n", failed_calls));
-        
+
         if !self.tool_call_metrics.is_empty() {
-            let total_duration: Duration = self.tool_call_metrics.iter()
+            let total_duration: Duration = self
+                .tool_call_metrics
+                .iter()
                 .map(|(_, duration, _)| *duration)
                 .sum();
             let avg_duration = total_duration / self.tool_call_metrics.len() as u32;
-            
-            stats.push_str(&format!("   • Total Duration:    {:>10.2}s\n", 
-                total_duration.as_secs_f64()));
-            stats.push_str(&format!("   • Average Duration:  {:>10.2}s\n", 
-                avg_duration.as_secs_f64()));
+
+            stats.push_str(&format!(
+                "   • Total Duration:    {:>10.2}s\n",
+                total_duration.as_secs_f64()
+            ));
+            stats.push_str(&format!(
+                "   • Average Duration:  {:>10.2}s\n",
+                avg_duration.as_secs_f64()
+            ));
         }
         stats.push('\n');
-        
+
         // Provider info
         stats.push_str("🔌 Provider:\n");
         if let Ok((provider, model)) = self.get_provider_info() {
             stats.push_str(&format!("   • Provider:          {}\n", provider));
             stats.push_str(&format!("   • Model:             {}\n", model));
         }
-        
+
         stats.push_str(&"=".repeat(60));
         stats.push('\n');
-        
+
         stats
     }
 
@@ -1989,7 +2088,11 @@ If you can complete it with 1-2 tool calls, skip TODO.
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions(enable_webdriver: bool, enable_macax: bool, enable_computer_control: bool) -> Vec<Tool> {
+    fn create_tool_definitions(
+        enable_webdriver: bool,
+        enable_macax: bool,
+        enable_computer_control: bool,
+    ) -> Vec<Tool> {
         let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
@@ -2149,7 +2252,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 }),
             },
         ];
-        
+
         // Add code_search tool
         tools.push(Tool {
             name: "code_search".to_string(),
@@ -2424,7 +2527,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     }),
                 },
             ]);
-            
+
             // Add type_text tool for typing arbitrary text
             tools.push(Tool {
                 name: "macax_type_text".to_string(),
@@ -2444,9 +2547,8 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     "required": ["app_name", "text"]
                 }),
             });
-            
         }
-        
+
         // Add extract_text_with_boxes tool (requires macax flag)
         if enable_macax {
             tools.push(Tool {
@@ -2468,7 +2570,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 }),
             });
         }
-        
+
         // Add vision-guided tools (requires computer control)
         if enable_computer_control {
             // Add vision-guided tools
@@ -2490,7 +2592,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     "required": ["app_name", "text"]
                 }),
             });
-            
+
             tools.push(Tool {
                 name: "vision_click_text".to_string(),
                 description: "Find text in a specific application window and click on it (useful for clicking buttons, links, menu items)".to_string(),
@@ -2509,7 +2611,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     "required": ["app_name", "text"]
                 }),
             });
-            
+
             tools.push(Tool {
                 name: "vision_click_near_text".to_string(),
                 description: "Find text in a specific application window and click near it (useful for clicking text fields next to labels)".to_string(),
@@ -2538,7 +2640,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 }),
             });
         }
-        
+
         tools
     }
 
@@ -2750,9 +2852,8 @@ If you can complete it with 1-2 tool calls, skip TODO.
             // Get the summary
             match provider.complete(summary_request).await {
                 Ok(summary_response) => {
-                    self.ui_writer.print_context_status(
-                        "✅ Context compacted successfully. Continuing...\n",
-                    );
+                    self.ui_writer
+                        .print_context_status("✅ Context compacted successfully. Continuing...\n");
 
                     // Extract the latest user message from the request
                     let latest_user_msg = request
@@ -2763,13 +2864,14 @@ If you can complete it with 1-2 tool calls, skip TODO.
                         .map(|m| m.content.clone());
 
                     // Reset context with summary
-                    let chars_saved = self.context_window
+                    let chars_saved = self
+                        .context_window
                         .reset_with_summary(summary_response.content, latest_user_msg);
                     self.summarization_events.push(chars_saved);
 
                     // Update the request with new context
                     request.messages = self.context_window.conversation_history.clone();
-               }
+                }
                 Err(e) => {
                     error!("Failed to create summary: {}", e);
                     self.ui_writer.print_context_status("⚠️ Unable to create summary. Consider starting a new session if you continue to see errors.\n");
@@ -2927,7 +3029,8 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             
                             // Check if we should thin the context BEFORE executing the tool
                             if self.context_window.should_thin() {
-                                let (thin_summary, chars_saved) = self.context_window.thin_context();
+                                let (thin_summary, chars_saved) =
+                                    self.context_window.thin_context();
                                 self.thinning_events.push(chars_saved);
                                 // Print the thinning summary to the user
                                 self.ui_writer.print_context_thinning(&thin_summary);
@@ -3062,32 +3165,38 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
                                 // Check if UI wants full output (machine mode) or truncated (human mode)
                                 let wants_full = self.ui_writer.wants_full_output();
-                                
+
                                 // Helper function to safely truncate strings at character boundaries
-                                let truncate_line = |line: &str, max_width: usize, truncate: bool| -> String {
-                                    if !truncate {
-                                        // Machine mode - return full line
-                                        line.to_string()
-                                    } else if line.chars().count() <= max_width {
-                                        // Human mode - line fits within limit
-                                        line.to_string()
-                                    } else {
-                                        // Human mode - truncate long line
-                                        let truncated: String = line
-                                            .chars()
-                                            .take(max_width.saturating_sub(3))
-                                            .collect();
-                                        format!("{}...", truncated)
-                                    }
-                                };
+                                let truncate_line =
+                                    |line: &str, max_width: usize, truncate: bool| -> String {
+                                        if !truncate {
+                                            // Machine mode - return full line
+                                            line.to_string()
+                                        } else if line.chars().count() <= max_width {
+                                            // Human mode - line fits within limit
+                                            line.to_string()
+                                        } else {
+                                            // Human mode - truncate long line
+                                            let truncated: String = line
+                                                .chars()
+                                                .take(max_width.saturating_sub(3))
+                                                .collect();
+                                            format!("{}...", truncated)
+                                        }
+                                    };
 
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
                                 let output_len = output_lines.len();
-                                
+
                                 // For todo tools, show all lines without truncation
-                                let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
-                                let max_lines_to_show = if is_todo_tool || wants_full { output_len } else { MAX_LINES };
+                                let is_todo_tool =
+                                    tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
+                                let max_lines_to_show = if is_todo_tool || wants_full {
+                                    output_len
+                                } else {
+                                    MAX_LINES
+                                };
 
                                 for (idx, line) in output_lines.iter().enumerate() {
                                     if !is_todo_tool && !wants_full && idx >= max_lines_to_show {
@@ -3178,7 +3287,11 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled));
+                                request.tools = Some(Self::create_tool_definitions(
+                                    self.config.webdriver.enabled,
+                                    self.config.macax.enabled,
+                                    self.config.computer_control.enabled,
+                                ));
                             }
 
                             // DO NOT add final_display_content to full_response here!
@@ -3187,7 +3300,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             // The only time we should add to full_response is:
                             // 1. For final_output tool (handled separately)
                             // 2. At the end when no tools were executed (handled in the "no tool executed" branch)
-                            
+
                             tool_executed = true;
 
                             // Reset the JSON tool call filter state after each tool execution
@@ -3196,7 +3309,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
                             // Reset parser for next iteration - this clears the text buffer
                             parser.reset();
-                            
+
                             // Clear current_response for next iteration to prevent buffered text
                             // from being incorrectly displayed after tool execution
                             current_response.clear();
@@ -3502,7 +3615,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                         .replace("</s>", "")
                         .replace("[/INST]", "")
                         .replace("<</SYS>>", "");
-                    
+
                     if !raw_clean.trim().is_empty() {
                         let assistant_message = Message {
                             role: MessageRole::Assistant,
@@ -4034,7 +4147,10 @@ If you can complete it with 1-2 tool calls, skip TODO.
                                 .unwrap_or(0) as i32,
                         });
 
-                    match controller.take_screenshot(path, region, Some(window_id)).await {
+                    match controller
+                        .take_screenshot(path, region, Some(window_id))
+                        .await
+                    {
                         Ok(_) => {
                             // Get the actual path where the screenshot was saved
                             let actual_path = if path.starts_with('/') {
@@ -4061,10 +4177,12 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "extract_text" => {
                 if let Some(controller) = &self.computer_controller {
-                    let path = tool_call.args.get("path")
+                    let path = tool_call
+                        .args
+                        .get("path")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
-                    
+
                     // Extract text from image file only
                     match controller.extract_text_from_image(path).await {
                         Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
@@ -4112,7 +4230,10 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             .unwrap_or(50_000);
 
                         if max_chars > 0 && char_count > max_chars {
-                            return Ok(format!("❌ TODO list too large: {} chars (max: {})", char_count, max_chars));
+                            return Ok(format!(
+                                "❌ TODO list too large: {} chars (max: {})",
+                                char_count, max_chars
+                            ));
                         }
 
                         // Write to todo.g3.md file in current workspace directory
@@ -4136,11 +4257,13 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_start" => {
                 debug!("Processing webdriver_start tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 // Check if session already exists
                 let session_guard = self.webdriver_session.read().await;
                 if session_guard.is_some() {
@@ -4148,71 +4271,75 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     return Ok("✅ WebDriver session already active".to_string());
                 }
                 drop(session_guard);
-                
+
                 // Note: Safari Remote Automation must be enabled before using WebDriver.
                 // Run this once: safaridriver --enable
                 // Or enable manually: Safari → Develop → Allow Remote Automation
-                
+
                 // Start safaridriver process
                 let port = self.config.webdriver.safari_port;
-                info!("Starting safaridriver on port {}", port);
-                
+
                 let safaridriver_result = tokio::process::Command::new("safaridriver")
                     .arg("--port")
                     .arg(port.to_string())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
-                
+
                 let mut safaridriver_process = match safaridriver_result {
                     Ok(process) => process,
                     Err(e) => {
                         return Ok(format!("❌ Failed to start safaridriver: {}\n\nMake sure safaridriver is installed.", e));
                     }
                 };
-                
+
                 // Wait for safaridriver to start up
-                info!("Waiting for safaridriver to start...");
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                
+
                 // Connect to SafariDriver
                 match g3_computer_control::SafariDriver::with_port(port).await {
                     Ok(driver) => {
                         let session = std::sync::Arc::new(tokio::sync::Mutex::new(driver));
                         *self.webdriver_session.write().await = Some(session);
-                        
+
                         // Store the process handle
                         *self.safaridriver_process.write().await = Some(safaridriver_process);
-                        
-                        info!("WebDriver session started successfully");
+
                         Ok("✅ WebDriver session started successfully! Safari should open automatically.".to_string())
                     }
                     Err(e) => {
                         // Kill the safaridriver process if connection failed
                         let _ = safaridriver_process.kill().await;
-                        
+
                         Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Safari Remote Automation is not enabled (run: safaridriver --enable)\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTo enable Remote Automation:\n  1. Run: safaridriver --enable (requires password, one-time setup)\n  2. Or manually: Safari → Develop → Allow Remote Automation", e, port))
                     }
                 }
             }
             "webdriver_navigate" => {
                 debug!("Processing webdriver_navigate tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
                 drop(session_guard);
                 let url = match tool_call.args.get("url").and_then(|v| v.as_str()) {
                     Some(u) => u,
                     None => return Ok("❌ Missing url argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.navigate(url).await {
                     Ok(_) => Ok(format!("✅ Navigated to {}", url)),
@@ -4221,17 +4348,24 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_get_url" => {
                 debug!("Processing webdriver_get_url tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.current_url().await {
                     Ok(url) => Ok(format!("Current URL: {}", url)),
@@ -4240,17 +4374,24 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_get_title" => {
                 debug!("Processing webdriver_get_title tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.title().await {
                     Ok(title) => Ok(format!("Page title: {}", title)),
@@ -4259,51 +4400,63 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_find_element" => {
                 debug!("Processing webdriver_find_element tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
-                    Ok(elem) => {
-                        match elem.text().await {
-                            Ok(text) => Ok(format!("Element text: {}", text)),
-                            Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
-                        }
-                    }
+                    Ok(elem) => match elem.text().await {
+                        Ok(text) => Ok(format!("Element text: {}", text)),
+                        Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
+                    },
                     Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
                 }
             }
             "webdriver_find_elements" => {
                 debug!("Processing webdriver_find_elements tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_elements(selector).await {
                     Ok(elements) => {
@@ -4314,67 +4467,85 @@ If you can complete it with 1-2 tool calls, skip TODO.
                                 Err(_) => results.push(format!("[{}]: <error getting text>", i)),
                             }
                         }
-                        Ok(format!("Found {} elements:\n{}", results.len(), results.join("\n")))
+                        Ok(format!(
+                            "Found {} elements:\n{}",
+                            results.len(),
+                            results.join("\n")
+                        ))
                     }
                     Err(e) => Ok(format!("❌ Failed to find elements '{}': {}", selector, e)),
                 }
             }
             "webdriver_click" => {
                 debug!("Processing webdriver_click tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
-                    Ok(mut elem) => {
-                        match elem.click().await {
-                            Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
-                            Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
-                        }
-                    }
+                    Ok(mut elem) => match elem.click().await {
+                        Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
+                        Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
+                    },
                     Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
                 }
             }
             "webdriver_send_keys" => {
                 debug!("Processing webdriver_send_keys tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
                     Some(t) => t,
                     None => return Ok("❌ Missing text argument".to_string()),
                 };
-                
-                let clear_first = tool_call.args.get("clear_first")
+
+                let clear_first = tool_call
+                    .args
+                    .get("clear_first")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
                     Ok(mut elem) => {
@@ -4393,22 +4564,29 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_execute_script" => {
                 debug!("Processing webdriver_execute_script tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let script = match tool_call.args.get("script").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing script argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.execute_script(script, vec![]).await {
                     Ok(result) => Ok(format!("Script result: {:?}", result)),
@@ -4417,23 +4595,34 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_get_page_source" => {
                 debug!("Processing webdriver_get_page_source tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.page_source().await {
                     Ok(source) => {
                         // Truncate if too long
                         if source.len() > 10000 {
-                            Ok(format!("Page source ({} chars, truncated to 10000):\n{}...", source.len(), &source[..10000]))
+                            Ok(format!(
+                                "Page source ({} chars, truncated to 10000):\n{}...",
+                                source.len(),
+                                &source[..10000]
+                            ))
                         } else {
                             Ok(format!("Page source ({} chars):\n{}", source.len(), source))
                         }
@@ -4443,22 +4632,29 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_screenshot" => {
                 debug!("Processing webdriver_screenshot tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let path = match tool_call.args.get("path").and_then(|v| v.as_str()) {
                     Some(p) => p,
                     None => return Ok("❌ Missing path argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.screenshot(path).await {
                     Ok(_) => Ok(format!("✅ Screenshot saved to {}", path)),
@@ -4467,17 +4663,24 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_back" => {
                 debug!("Processing webdriver_back tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.back().await {
                     Ok(_) => Ok("✅ Navigated back".to_string()),
@@ -4486,17 +4689,24 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_forward" => {
                 debug!("Processing webdriver_forward tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.forward().await {
                     Ok(_) => Ok("✅ Navigated forward".to_string()),
@@ -4505,17 +4715,24 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_refresh" => {
                 debug!("Processing webdriver_refresh tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.refresh().await {
                     Ok(_) => Ok("✅ Page refreshed".to_string()),
@@ -4524,17 +4741,19 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "webdriver_quit" => {
                 debug!("Processing webdriver_quit tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 // Take the session
                 let session = match self.webdriver_session.write().await.take() {
                     Some(s) => s.clone(),
                     None => return Ok("❌ No active WebDriver session.".to_string()),
                 };
-                
+
                 // Quit the WebDriver session
                 match std::sync::Arc::try_unwrap(session) {
                     Ok(mutex) => {
@@ -4542,17 +4761,20 @@ If you can complete it with 1-2 tool calls, skip TODO.
                         match driver.quit().await {
                             Ok(_) => {
                                 info!("WebDriver session closed successfully");
-                                
+
                                 // Kill the safaridriver process
-                                if let Some(mut process) = self.safaridriver_process.write().await.take() {
+                                if let Some(mut process) =
+                                    self.safaridriver_process.write().await.take()
+                                {
                                     if let Err(e) = process.kill().await {
                                         warn!("Failed to kill safaridriver process: {}", e);
                                     } else {
                                         info!("Safaridriver process terminated");
                                     }
                                 }
-                                
-                                Ok("✅ WebDriver session closed and safaridriver stopped".to_string())
+
+                                Ok("✅ WebDriver session closed and safaridriver stopped"
+                                    .to_string())
                             }
                             Err(e) => Ok(format!("❌ Failed to quit WebDriver: {}", e)),
                         }
@@ -4562,17 +4784,22 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "macax_list_apps" => {
                 debug!("Processing macax_list_apps tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.list_applications() {
                     Ok(apps) => {
                         let app_list: Vec<String> = apps.iter().map(|a| a.name.clone()).collect();
@@ -4583,17 +4810,22 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "macax_get_frontmost_app" => {
                 debug!("Processing macax_get_frontmost_app tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.get_frontmost_app() {
                     Ok(app) => Ok(format!("Frontmost application: {}", app.name)),
                     Err(e) => Ok(format!("❌ Failed to get frontmost app: {}", e)),
@@ -4601,22 +4833,27 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "macax_activate_app" => {
                 debug!("Processing macax_activate_app tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.activate_app(app_name) {
                     Ok(_) => Ok(format!("✅ Activated application: {}", app_name)),
                     Err(e) => Ok(format!("❌ Failed to activate app: {}", e)),
@@ -4624,34 +4861,39 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "macax_press_key" => {
                 debug!("Processing macax_press_key tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let key = match tool_call.args.get("key").and_then(|v| v.as_str()) {
                     Some(k) => k,
                     None => return Ok("❌ Missing key argument".to_string()),
                 };
-                
-                let modifiers_vec: Vec<&str> = tool_call.args.get("modifiers")
+
+                let modifiers_vec: Vec<&str> = tool_call
+                    .args
+                    .get("modifiers")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.press_key(app_name, key, modifiers_vec.clone()) {
                     Ok(_) => {
                         let modifier_str = if modifiers_vec.is_empty() {
@@ -4666,27 +4908,32 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "macax_type_text" => {
                 debug!("Processing macax_type_text tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
                     Some(t) => t,
                     None => return Ok("❌ Missing text argument".to_string()),
                 };
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.type_text(app_name, text) {
                     Ok(_) => Ok(format!("✅ Typed text into {}", app_name)),
                     Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
@@ -4694,16 +4941,20 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "vision_find_text" => {
                 debug!("Processing vision_find_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             Ok(format!(
@@ -4721,16 +4972,20 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "vision_click_text" => {
                 debug!("Processing vision_click_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Click on center of text
@@ -4739,29 +4994,35 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             // location.y is the TOP edge of the bounding box (highest Y value in NSScreen space)
                             // location.width and location.height are already scaled to screen space
                             // To get center: we need to add half the SCALED width and subtract half the SCALED height
-                            
+
                             if location.width == 0 || location.height == 0 {
-                                return Ok(format!("❌ Invalid bounding box dimensions: width={}, height={}", location.width, location.height));
+                                return Ok(format!(
+                                    "❌ Invalid bounding box dimensions: width={}, height={}",
+                                    location.width, location.height
+                                ));
                             }
-                            
+
                             debug!("[vision_click_text] Location from find_text_in_app: x={}, y={}, width={}, height={}, text='{}'",
                                 location.x, location.y, location.width, location.height, location.text);
-                            
+
                             // Calculate center using the SCALED dimensions
                             // X: Use right edge instead of center (Vision OCR bounding box seems offset)
                             // This gives us: left edge + full width = right edge
                             // Y: top edge - half of scaled height (subtract because Y increases upward)
-                            let click_x = location.x + location.width;  // Right edge
+                            let click_x = location.x + location.width; // Right edge
                             let half_height = location.height / 2;
                             let click_y = location.y - half_height;
-                            
+
                             debug!("[vision_click_text] Click position calculation: x={} + {} = {} (right edge), y={} - {} = {}",
                                 location.x, location.width, click_x, location.y, half_height, click_y);
                             debug!("[vision_click_text] This means: left_edge={}, center={}, right_edge={}",
                                 location.x, click_x, location.x + location.width);
-                            
+
                             match controller.click_at(click_x, click_y, Some(app_name)) {
-                                Ok(_) => Ok(format!("✅ Clicked on '{}' in {} at ({}, {})", text, app_name, click_x, click_y)),
+                                Ok(_) => Ok(format!(
+                                    "✅ Clicked on '{}' in {} at ({}, {})",
+                                    text, app_name, click_x, click_y
+                                )),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
@@ -4774,27 +5035,38 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "extract_text_with_boxes" => {
                 debug!("Processing extract_text_with_boxes tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ extract_text_with_boxes requires --macax flag to be enabled".to_string());
+                    return Ok(
+                        "❌ extract_text_with_boxes requires --macax flag to be enabled"
+                            .to_string(),
+                    );
                 }
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let path = tool_call.args.get("path")
+                    let path = tool_call
+                        .args
+                        .get("path")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?;
-                    
+
                     // Optional: take screenshot of app first
-                    let final_path = if let Some(app_name) = tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                        let temp_path = format!("/tmp/g3_extract_boxes_{}.png", uuid::Uuid::new_v4());
-                        match controller.take_screenshot(&temp_path, None, Some(app_name)).await {
+                    let final_path = if let Some(app_name) =
+                        tool_call.args.get("app_name").and_then(|v| v.as_str())
+                    {
+                        let temp_path =
+                            format!("/tmp/g3_extract_boxes_{}.png", uuid::Uuid::new_v4());
+                        match controller
+                            .take_screenshot(&temp_path, None, Some(app_name))
+                            .await
+                        {
                             Ok(_) => temp_path,
                             Err(e) => return Ok(format!("❌ Failed to take screenshot: {}", e)),
                         }
                     } else {
                         path.to_string()
                     };
-                    
+
                     // Extract text with locations
                     match controller.extract_text_with_locations(&final_path).await {
                         Ok(locations) => {
@@ -4802,10 +5074,14 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             if final_path != path {
                                 let _ = std::fs::remove_file(&final_path);
                             }
-                            
+
                             // Return as JSON
                             match serde_json::to_string_pretty(&locations) {
-                                Ok(json) => Ok(format!("✅ Extracted {} text elements:\n{}", locations.len(), json)),
+                                Ok(json) => Ok(format!(
+                                    "✅ Extracted {} text elements:\n{}",
+                                    locations.len(),
+                                    json
+                                )),
                                 Err(e) => Ok(format!("❌ Failed to serialize results: {}", e)),
                             }
                         }
@@ -4817,37 +5093,61 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "vision_click_near_text" => {
                 debug!("Processing vision_click_near_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
-                    let direction = tool_call.args.get("direction")
+
+                    let direction = tool_call
+                        .args
+                        .get("direction")
                         .and_then(|v| v.as_str())
                         .unwrap_or("right");
-                    
-                    let distance = tool_call.args.get("distance")
+
+                    let distance = tool_call
+                        .args
+                        .get("distance")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(50) as i32;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Calculate click position based on direction
                             // location.x is LEFT edge, location.y is TOP edge (in NSScreen space)
                             let (click_x, click_y) = match direction {
-                                "right" => (location.x + location.width + distance, location.y - (location.height / 2)),
-                                "below" => (location.x + (location.width / 2), location.y - location.height - distance),
-                                "left" => (location.x - distance, location.y - (location.height / 2)),
-                                "above" => (location.x + (location.width / 2), location.y + distance),
-                                _ => (location.x + location.width + distance, location.y - (location.height / 2)),
+                                "right" => (
+                                    location.x + location.width + distance,
+                                    location.y - (location.height / 2),
+                                ),
+                                "below" => (
+                                    location.x + (location.width / 2),
+                                    location.y - location.height - distance,
+                                ),
+                                "left" => {
+                                    (location.x - distance, location.y - (location.height / 2))
+                                }
+                                "above" => {
+                                    (location.x + (location.width / 2), location.y + distance)
+                                }
+                                _ => (
+                                    location.x + location.width + distance,
+                                    location.y - (location.height / 2),
+                                ),
                             };
-                            debug!("[vision_click_near_text] Clicking {} of text at ({}, {})", direction, click_x, click_y);
-                            
+                            debug!(
+                                "[vision_click_near_text] Clicking {} of text at ({}, {})",
+                                direction, click_x, click_y
+                            );
+
                             match controller.click_at(click_x, click_y, Some(app_name)) {
                                 Ok(_) => Ok(format!(
                                     "✅ Clicked {} of '{}' in {} at ({}, {})",
@@ -4865,15 +5165,16 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "code_search" => {
                 debug!("Processing code_search tool call");
-                
+
                 // Parse the request
-                let request: crate::code_search::CodeSearchRequest = match serde_json::from_value(tool_call.args.clone()) {
-                    Ok(req) => req,
-                    Err(e) => {
-                        return Ok(format!("❌ Invalid code_search arguments: {}", e));
-                    }
-                };
-                
+                let request: crate::code_search::CodeSearchRequest =
+                    match serde_json::from_value(tool_call.args.clone()) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            return Ok(format!("❌ Invalid code_search arguments: {}", e));
+                        }
+                    };
+
                 // Execute the code search
                 match crate::code_search::execute_code_search(request).await {
                     Ok(response) => {
@@ -4882,9 +5183,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             Ok(json_output) => {
                                 Ok(format!("✅ Code search completed\n{}", json_output))
                             }
-                            Err(e) => {
-                                Ok(format!("❌ Failed to serialize response: {}", e))
-                            }
+                            Err(e) => Ok(format!("❌ Failed to serialize response: {}", e)),
                         }
                     }
                     Err(e) => {
@@ -5356,7 +5655,7 @@ impl<W: UiWriter> Drop for Agent<W> {
                     .arg("-9")
                     .arg(process.id().unwrap_or(0).to_string())
                     .output();
-                
+
                 debug!("Attempted to clean up safaridriver process on Agent drop");
             }
         }

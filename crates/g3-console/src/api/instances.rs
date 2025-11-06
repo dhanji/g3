@@ -1,7 +1,8 @@
 use crate::logs::{LogParser, StatsAggregator};
 use crate::models::*;
 use crate::process::ProcessDetector;
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::{Query, State}, http::StatusCode, Json};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
@@ -186,4 +187,35 @@ fn read_file_snippet(workspace: &std::path::Path, filename: &str) -> Option<Stri
                 .collect::<Vec<_>>()
                 .join("\n")
         })
+}
+
+#[derive(Deserialize)]
+pub struct FileQuery {
+    name: String,
+}
+
+pub async fn get_file_content(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<FileQuery>,
+    State(detector): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut detector = detector.lock().await;
+    
+    // Find the instance
+    let instances = detector.detect_instances().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let instance = instances.iter().find(|i| i.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    
+    // Read the full file
+    let file_path = instance.workspace.join(&query.name);
+    if !file_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(serde_json::json!({
+        "name": query.name,
+        "content": content,
+    })))
 }

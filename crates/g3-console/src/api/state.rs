@@ -44,7 +44,7 @@ pub struct BrowseResponse {
 pub struct FileEntry {
     pub name: String,
     pub path: String,
-    pub is_directory: bool,
+    pub is_dir: bool,
     pub is_executable: bool,
 }
 
@@ -76,7 +76,7 @@ pub async fn browse_filesystem(
                 entries.push(FileEntry {
                     name: entry.file_name().to_string_lossy().to_string(),
                     path: entry.path().to_string_lossy().to_string(),
-                    is_directory: metadata.is_dir(),
+                    is_dir: metadata.is_dir(),
                     is_executable: metadata.permissions().mode() & 0o111 != 0,
                 });
             }
@@ -84,7 +84,7 @@ pub async fn browse_filesystem(
     }
     
     entries.sort_by(|a, b| {
-        match (a.is_directory, b.is_directory) {
+        match (a.is_dir, b.is_dir) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.name.cmp(&b.name),

@@ -234,15 +234,22 @@ body {
     height: 100%;
     transition: width 0.3s;
     cursor: help;
+    position: relative;
 }
 
 .progress-segment:not(:last-child) {
     border-right: 2px solid var(--bg-primary);
 }
 
+.progress-segment:hover {
+    opacity: 0.8;
+    filter: brightness(1.1);
+}
+
 .progress-bar.ensemble .progress-text {
     position: absolute;
     z-index: 10;
+    pointer-events: none;
 }
 
 .progress-text {
@@ -324,6 +331,7 @@ body {
 
 .modal-content {
     position: relative;
+    z-index: 1001;
     background-color: var(--bg-primary);
     border-radius: 1rem;
     max-width: 600px;
@@ -539,6 +547,11 @@ body {
     color: var(--text-primary);
 }
 
+/* Detail content wrapper */
+.detail-content {
+    margin-top: 2rem;
+}
+
 /* Chat View */
 .chat-view {
     margin-top: 2rem;
@@ -554,6 +567,8 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    max-height: 600px;
+    overflow-y: auto;
 }
 
 .chat-message {
@@ -819,4 +834,89 @@ body {
     font-size: 0.8125rem;
     color: var(--text-secondary);
     font-family: 'Monaco', 'Courier New', monospace;
+}
+
+/* File Browser */
+.file-browser {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 400px;
+}
+
+.file-browser-path {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+}
+
+.file-browser-path label {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.file-browser-path input {
+    flex: 1;
+    padding: 0.5rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+.file-browser-list {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    max-height: 400px;
+}
+
+.file-browser-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.file-browser-item:hover {
+    background: var(--bg-hover);
+}
+
+.file-browser-item.selected {
+    background: var(--primary-color);
+    color: white;
+}
+
+.file-browser-item.directory {
+    font-weight: 500;
+}
+
+.file-browser-item.file {
+    color: var(--text-secondary);
+}
+
+.file-browser-icon {
+    font-size: 1.25rem;
+    width: 1.5rem;
+    text-align: center;
+}
+
+.file-browser-name {
+    flex: 1;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+.file-browser-item:last-child {
+    border-bottom: none;
 }
