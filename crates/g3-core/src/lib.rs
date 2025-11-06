@@ -877,7 +877,7 @@ impl<W: UiWriter> Agent<W> {
         debug!("Default provider set successfully");
 
         // Determine context window size based on active provider
-        let context_length = Self::determine_context_length(&config, &providers)?;
+        let context_length = Self::get_configured_context_length(&config, &providers)?;
         let mut context_window = ContextWindow::new(context_length);
 
         // If README content is provided, add it as the first system message
@@ -943,11 +943,28 @@ impl<W: UiWriter> Agent<W> {
         })
     }
 
-    fn determine_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+    fn get_configured_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+        // Get the configured max_tokens for the current provider
+        fn get_provider_max_tokens(config: &Config, provider_name: &str) -> Option<u32> {
+            match provider_name {
+                "anthropic" => config.providers.anthropic.as_ref()?.max_tokens,
+                "openai" => config.providers.openai.as_ref()?.max_tokens,
+                "databricks" => config.providers.databricks.as_ref()?.max_tokens,
+                "embedded" => config.providers.embedded.as_ref()?.max_tokens,
+                _ => None,
+            }
+        }
+
         // Get the active provider to determine context length
         let provider = providers.get(None)?;
         let provider_name = provider.name();
         let model_name = provider.model();
+
+        // Check if there's a configured context length override first
+        if let Some(max_tokens) = get_provider_max_tokens(config, provider_name) {
+            debug!("Using configured max_tokens for {}: {}", provider_name, max_tokens);
+            return Ok(max_tokens);
+        }
 
         // Use provider-specific context length if available, otherwise fall back to agent config
         let context_length = match provider_name {
@@ -965,7 +982,7 @@ impl<W: UiWriter> Agent<W> {
                         }
                     })
                 } else {
-                    config.agent.max_context_length as u32
+                    config.agent.fallback_default_max_tokens as u32
                 }
             }
             "openai" => {
@@ -973,19 +990,23 @@ impl<W: UiWriter> Agent<W> {
             }
             "anthropic" => {
                 // Claude models have large context windows
-                200000 // Default for Claude models
+                // Use configured max_tokens or fall back to default
+                get_provider_max_tokens(config, "anthropic").unwrap_or(200000)
             }
             "databricks" => {
                 // Databricks models have varying context windows depending on the model
-                if model_name.contains("claude") {
-                    200000 // Claude models on Databricks have large context windows
-                } else if model_name.contains("llama") || model_name.contains("dbrx") {
-                    32768 // DBRX supports 32k context
-                } else {
-                    16384 // Conservative default for other Databricks models
-                }
+                // Use configured max_tokens or fall back to model-specific defaults
+                get_provider_max_tokens(config, "databricks").unwrap_or_else(|| {
+                    if model_name.contains("claude") {
+                        200000 // Claude models on Databricks have large context windows
+                    } else if model_name.contains("llama") || model_name.contains("dbrx") {
+                        32768 // DBRX supports 32k context
+                    } else {
+                        16384 // Conservative default for other Databricks models
+                    }
+                })
             }
-            _ => config.agent.max_context_length as u32,
+            _ => config.agent.fallback_default_max_tokens as u32,
         };
 
         debug!(
@@ -1641,7 +1662,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
         // Dynamically calculate max_tokens for summary based on what's left
         let summary_max_tokens = match provider.name() {
             "databricks" | "anthropic" => {
-                let model_limit = 200_000u32;
+                let model_limit = self.context_window.total_tokens;
                 let current_usage = self.context_window.used_tokens;
                 let available = model_limit
                     .saturating_sub(current_usage)
@@ -2524,6 +2545,28 @@ If you can complete it with 1-2 tool calls, skip TODO.
 
         // Check if we need to summarize before starting
         if self.context_window.should_summarize() {
+            // First try thinning if we are at capacity, don't call the LLM for a summary (might fail)
+            if self.context_window.percentage_used() > 90.0 && self.context_window.should_thin() {
+                self.ui_writer.print_context_status(&format!(
+                    "\n🥒 Context window at {}%. Trying thinning first...",
+                    self.context_window.percentage_used() as u32
+                ));
+                
+                let (thin_summary, chars_saved) = self.context_window.thin_context();
+                self.thinning_events.push(chars_saved);
+                self.ui_writer.print_context_thinning(&thin_summary);
+                
+                // Check if thinning was sufficient
+                if !self.context_window.should_summarize() {
+                    self.ui_writer.print_context_status("✅ Thinning resolved capacity issue. Continuing...\n");
+                    // Continue with the original request without summarization
+                } else {
+                    self.ui_writer.print_context_status("⚠️ Thinning insufficient. Proceeding with summarization...\n");
+                }
+            }
+            
+            // Only proceed with summarization if still needed after thinning
+            if self.context_window.should_summarize() {
             // Notify user about summarization
             self.ui_writer.print_context_status(&format!(
                 "\n🗜️ Context window reaching capacity ({}%). Creating summary...",
@@ -2563,14 +2606,22 @@ If you can complete it with 1-2 tool calls, skip TODO.
             // We need to ensure: used_tokens + max_tokens <= total_context_limit
             let summary_max_tokens = match provider.name() {
                 "databricks" | "anthropic" => {
-                    // Claude models have 200k context
-                    // Calculate how much room we have left
-                    let model_limit = 200_000u32;
+                    // Use the actual configured context window size
+                    let model_limit = self.context_window.total_tokens;
                     let current_usage = self.context_window.used_tokens;
-                    // Leave some buffer (5k tokens) for safety
+                    
+                    // Check if we have enough capacity for summarization
+                    if current_usage >= model_limit.saturating_sub(1000) {
+                        error!("Context window at capacity ({}%), cannot summarize. Current: {}, Limit: {}", 
+                               self.context_window.percentage_used(), current_usage, model_limit);
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify or /compact commands to reduce context size, or start a new session."));
+                    }
+                    
+                    // Leave buffer proportional to model size (min 1k, max 10k)
+                    let buffer = (model_limit / 40).clamp(1000, 10000); // 2.5% buffer
                     let available = model_limit
                         .saturating_sub(current_usage)
-                        .saturating_sub(5000);
+                        .saturating_sub(buffer);
                     // Cap at a reasonable summary size (10k tokens max)
                     Some(available.min(10_000))
                 }
@@ -2578,6 +2629,13 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     // For smaller context models, be more conservative
                     let model_limit = self.context_window.total_tokens;
                     let current_usage = self.context_window.used_tokens;
+                    
+                    // Check capacity for embedded models too
+                    if current_usage >= model_limit.saturating_sub(500) {
+                        error!("Embedded model context window at capacity ({}%)", self.context_window.percentage_used());
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify command to reduce context size, or start a new session."));
+                    }
+                    
                     // Leave 1k buffer
                     let available = model_limit
                         .saturating_sub(current_usage)
@@ -2587,6 +2645,14 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 }
                 _ => {
                     // Default: conservative approach
+                    let model_limit = self.context_window.total_tokens;
+                    let current_usage = self.context_window.used_tokens;
+                    
+                    if current_usage >= model_limit.saturating_sub(1000) {
+                        error!("Context window at capacity ({}%)", self.context_window.percentage_used());
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify or /compact commands, or start a new session."));
+                    }
+                    
                     let available = self.context_window.remaining_tokens().saturating_sub(2000);
                     Some(available.min(5000))
                 }
@@ -2596,6 +2662,12 @@ If you can complete it with 1-2 tool calls, skip TODO.
                 "Requesting summary with max_tokens: {:?} (current usage: {} tokens)",
                 summary_max_tokens, self.context_window.used_tokens
             );
+            
+            // Final safety check
+            if summary_max_tokens.unwrap_or(0) == 0 {
+                error!("No tokens available for summarization");
+                return Err(anyhow::anyhow!("No context window capacity left for summarization. Use /thinnify to reduce context size or start a new session."));
+            }
 
             let summary_request = CompletionRequest {
                 messages: summary_messages,
@@ -2636,6 +2708,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
                     return Err(anyhow::anyhow!("Context window at capacity and summarization failed. Please start a new session."));
                 }
             }
+        }
         }
 
         loop {
