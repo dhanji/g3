@@ -42,3 +42,7 @@ tree-sitter-haskell = { git = "https://github.com/tree-sitter/tree-sitter-haskel
 tree-sitter-scheme = "0.24"
 streaming-iterator = "0.1"
 walkdir = "2.4"
+
+[dev-dependencies]
+tempfile = "3.8"
+serial_test = "3.0"

@@ -917,7 +917,18 @@ impl<W: UiWriter> Agent<W> {
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
-            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
+            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new({
+                // Initialize from TODO.md file if it exists
+                let todo_path = std::env::current_dir()
+                    .ok()
+                    .map(|p| p.join("todo.g3.md"));
+                
+                if let Some(path) = todo_path {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            })),
             is_autonomous,
             quiet,
             computer_controller,
@@ -1121,7 +1132,7 @@ Every multi-step task follows this pattern:
 2. **During**: Execute steps, then todo_read and todo_write to mark progress
 3. **End**: Call todo_read to verify all items complete
 
-Note: todo_write replaces the entire list, so always read first to preserve content.
+Note: todo_write replaces the entire todo.g3.md file, so always read first to preserve content. TODO lists persist across g3 sessions in the workspace directory.
 
 ## Examples
 
@@ -1270,11 +1281,11 @@ Short description for providers without native calling specs:
 - **final_output**: Signal task completion with a detailed summary of work done in markdown format
   - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}
 
-- **todo_read**: Read the entire TODO list content
+- **todo_read**: Read the entire TODO list from todo.g3.md file in workspace directory
   - Format: {\"tool\": \"todo_read\", \"args\": {}}
   - Example: {\"tool\": \"todo_read\", \"args\": {}}
 
-- **todo_write**: Write or overwrite the entire TODO list (WARNING: overwrites completely, always read first)
+- **todo_write**: Write or overwrite the entire todo.g3.md file (WARNING: overwrites completely, always read first)
   - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
   - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
 
@@ -2029,7 +2040,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
             },
             Tool {
                 name: "todo_read".to_string(),
-                description: "Read your current TODO list to see what tasks are planned and their status. Call this at the start of multi-step tasks to check for existing plans, and during execution to review progress before updating.".to_string(),
+                description: "Read your current TODO list from todo.g3.md file in the workspace directory. Shows what tasks are planned and their status. Call this at the start of multi-step tasks to check for existing plans, and during execution to review progress before updating. TODO lists persist across g3 sessions.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -2038,7 +2049,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
             },
             Tool {
                 name: "todo_write".to_string(),
-                description: "Create or update your TODO list with a complete task plan. Use markdown checkboxes: - [ ] for pending, - [x] for complete. This tool replaces the entire list, so always call todo_read first to preserve existing content. Essential for multi-step tasks.".to_string(),
+                description: "Create or update your TODO list in todo.g3.md file with a complete task plan. Use markdown checkboxes: - [ ] for pending, - [x] for complete. This tool replaces the entire file content, so always call todo_read first to preserve existing content. Essential for multi-step tasks. Changes persist across g3 sessions.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -3394,7 +3405,7 @@ If you can complete it with 1-2 tool calls, skip TODO.
         Ok(TaskResult::new(final_response, self.context_window.clone()))
     }
 
-    async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String> {
+    pub async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String> {
         debug!("=== EXECUTING TOOL ===");
         debug!("Tool name: {}", tool_call.tool);
         debug!("Tool args (raw): {:?}", tool_call.args);
@@ -3922,11 +3933,29 @@ If you can complete it with 1-2 tool calls, skip TODO.
             }
             "todo_read" => {
                 debug!("Processing todo_read tool call");
-                let content = self.todo_content.read().await;
-                if content.is_empty() {
-                    Ok("📝 TODO list is empty".to_string())
+                // Read from todo.g3.md file in current workspace directory
+                let todo_path = std::env::current_dir()?.join("todo.g3.md");
+                
+                if !todo_path.exists() {
+                    // Also update in-memory content to stay in sync
+                    let mut todo = self.todo_content.write().await;
+                    *todo = String::new();
+                    Ok("📝 TODO list is empty (no todo.g3.md file found)".to_string())
                 } else {
-                    Ok(format!("📝 TODO list:\n{}", content.as_str()))
+                    match std::fs::read_to_string(&todo_path) {
+                        Ok(content) => {
+                            // Update in-memory content to stay in sync
+                            let mut todo = self.todo_content.write().await;
+                            *todo = content.clone();
+                            
+                            if content.trim().is_empty() {
+                                Ok("📝 TODO list is empty".to_string())
+                            } else {
+                                Ok(format!("📝 TODO list:\n{}", content))
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to read TODO.md: {}", e)),
+                    }
                 }
             }
             "todo_write" => {
@@ -3943,9 +3972,18 @@ If you can complete it with 1-2 tool calls, skip TODO.
                             return Ok(format!("❌ TODO list too large: {} chars (max: {})", char_count, max_chars));
                         }
 
-                        let mut todo = self.todo_content.write().await;
-                        *todo = content_str.to_string();
-                        Ok(format!("✅ TODO list updated ({} chars)", char_count))
+                        // Write to todo.g3.md file in current workspace directory
+                        let todo_path = std::env::current_dir()?.join("todo.g3.md");
+                        
+                        match std::fs::write(&todo_path, content_str) {
+                            Ok(_) => {
+                                // Also update in-memory content to stay in sync
+                                let mut todo = self.todo_content.write().await;
+                                *todo = content_str.to_string();
+                                Ok(format!("✅ TODO list updated ({} chars) and saved to todo.g3.md", char_count))
+                            }
+                            Err(e) => Ok(format!("❌ Failed to write todo.g3.md: {}", e)),
+                        }
                     } else {
                         Ok("❌ Invalid content argument".to_string())
                     }
