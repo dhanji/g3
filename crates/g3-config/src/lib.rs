@@ -62,6 +62,7 @@ pub struct EmbeddedConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
+    pub max_context_length: Option<u32>,
     pub fallback_default_max_tokens: usize,
     pub enable_streaming: bool,
     pub timeout_seconds: u64,
@@ -135,6 +136,7 @@ impl Default for Config {
                 player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
+                max_context_length: None,
                 fallback_default_max_tokens: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,
@@ -253,6 +255,7 @@ impl Config {
                 player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
+                max_context_length: None,
                 fallback_default_max_tokens: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,

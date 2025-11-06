@@ -39,6 +39,7 @@ body {
     background-color: var(--bg-secondary);
     color: var(--text-primary);
     line-height: 1.6;
+    font-size: 75%;
 }
 
 /* Header */

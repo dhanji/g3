@@ -97,6 +97,15 @@ const router = {
                 return;
             }
             
+            // Check if we already have a container for instances
+            let instancesList = container.querySelector('.instances-list');
+            const isInitialLoad = !instancesList;
+            
+            if (isInitialLoad) {
+                instancesList = document.createElement('div');
+                instancesList.className = 'instances-list';
+            }
+            
             if (instances.length === 0) {
                 console.log('[Router] No instances, showing empty state');
                 container.innerHTML = components.emptyState(
@@ -104,15 +113,51 @@ const router = {
                 );
             } else {
                 console.log('[Router] Building HTML for', instances.length, 'instances');
-                let html = '<div class="instances-list">';
-                for (const instance of instances) {
-                    const stats = instance.stats || { total_tokens: 0, tool_calls: 0, errors: 0, duration_secs: 0 };
-                    html += components.instancePanel(instance, stats, instance.latest_message);
-                }
-                html += '</div>';
                 
-                console.log('[Router] Setting innerHTML (', html.length, 'chars)');
-                container.innerHTML = html;
+                // Build a map of existing panels for efficient lookup
+                const existingPanels = new Map();
+                if (!isInitialLoad) {
+                    instancesList.querySelectorAll('.instance-panel').forEach(panel => {
+                        const id = panel.getAttribute('data-id');
+                        if (id) existingPanels.set(id, panel);
+                    });
+                }
+                
+                // Track which IDs we've seen
+                const currentIds = new Set();
+                
+                for (const instance of instances) {
+                    currentIds.add(instance.id);
+                    const stats = instance.stats || { total_tokens: 0, tool_calls: 0, errors: 0, duration_secs: 0 };
+                    const newHtml = components.instancePanel(instance, stats, instance.latest_message);
+                    
+                    const existingPanel = existingPanels.get(instance.id);
+                    if (existingPanel) {
+                        // Update existing panel in-place
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newHtml;
+                        const newPanel = tempDiv.firstElementChild;
+                        existingPanel.replaceWith(newPanel);
+                    } else {
+                        // Add new panel
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newHtml;
+                        instancesList.appendChild(tempDiv.firstElementChild);
+                    }
+                }
+                
+                // Remove panels for instances that no longer exist
+                existingPanels.forEach((panel, id) => {
+                    if (!currentIds.has(id)) {
+                        panel.remove();
+                    }
+                });
+                
+                if (isInitialLoad) {
+                    container.innerHTML = '';
+                    container.appendChild(instancesList);
+                }
+                
                 console.log('[Router] HTML set successfully');
             }
             
@@ -137,7 +182,14 @@ const router = {
         console.log('[Router] renderDetail called for', id);
         
         this.currentInstanceId = id;
-        container.innerHTML = components.spinner('Loading instance details...');
+        
+        // Check if we already have a detail view for this instance
+        let detailView = container.querySelector('.detail-view');
+        const isInitialLoad = !detailView || detailView.getAttribute('data-instance-id') !== id;
+        
+        if (isInitialLoad) {
+            container.innerHTML = components.spinner('Loading instance details...');
+        }
         
         try {
             const instance = await api.getInstance(id);
@@ -149,9 +201,24 @@ const router = {
                 return;
             }
             
+            // If not initial load, update in place
+            if (!isInitialLoad) {
+                detailView = container.querySelector('.detail-view');
+                if (detailView) {
+                    this.updateDetailView(detailView, instance, logs);
+                    // Schedule next refresh
+                    if (this.currentRoute === `/instance/${id}`) {
+                        this.detailRefreshTimeout = setTimeout(() => {
+                            this.renderDetail(container, id);
+                        }, 3000);
+                    }
+                    return;
+                }
+            }
+            
             // Build detail view HTML
             let html = `
-                <div class="detail-view">
+                <div class="detail-view" data-instance-id="${id}">
                     <div class="detail-header">
                         <button class="btn btn-secondary" onclick="window.router.navigate('/')">&larr; Back</button>
                         <h2>${instance.workspace}</h2>
@@ -159,19 +226,19 @@ const router = {
                     </div>
                     
                     <div class="detail-stats">
-                        <div class="stat-card">
+                        <div class="stat-card" data-stat="tokens">
                             <div class="stat-label">Tokens</div>
                             <div class="stat-value">${(instance.stats?.total_tokens || 0).toLocaleString()}</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-stat="tool_calls">
                             <div class="stat-label">Tool Calls</div>
                             <div class="stat-value">${instance.stats?.tool_calls || 0}</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-stat="errors">
                             <div class="stat-label">Errors</div>
                             <div class="stat-value">${instance.stats?.errors || 0}</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-stat="duration">
                             <div class="stat-label">Duration</div>
                             <div class="stat-value">${Math.round((instance.stats?.duration_secs || 0) / 60)}m</div>
                         </div>
@@ -179,17 +246,17 @@ const router = {
                     
                     <div class="detail-section">
                         <h3>Git Status</h3>
-                        ${components.gitStatus(instance.git_status)}
+                        <div class="git-status-container">${components.gitStatus(instance.git_status)}</div>
                     </div>
                     
                     <div class="detail-section">
                         <h3>Project Files</h3>
-                        ${components.projectFiles(instance.project_files)}
+                        <div class="project-files-container">${components.projectFiles(instance.project_files)}</div>
                     </div>
                     
                     <div class="detail-content">
                         <h3>Tool Calls</h3>
-                        <div class="tool-calls-section">
+                        <div class="tool-calls-section" data-section="tool-calls">
             `;
             
             // Render tool calls
@@ -240,6 +307,105 @@ const router = {
         } catch (error) {
             console.error('[Router] Error in renderDetail:', error);
             container.innerHTML = components.error('Failed to load instance: ' + error.message);
+        }
+    },
+    
+    updateDetailView(detailView, instance, logs) {
+        // Update status badge
+        const statusBadge = detailView.querySelector('.detail-header .badge');
+        if (statusBadge) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = components.statusBadge(instance.status);
+            statusBadge.replaceWith(tempDiv.firstElementChild);
+        }
+        
+        // Update stats
+        const tokensStat = detailView.querySelector('[data-stat="tokens"] .stat-value');
+        if (tokensStat) {
+            tokensStat.textContent = (instance.stats?.total_tokens || 0).toLocaleString();
+        }
+        
+        const toolCallsStat = detailView.querySelector('[data-stat="tool_calls"] .stat-value');
+        if (toolCallsStat) {
+            toolCallsStat.textContent = instance.stats?.tool_calls || 0;
+        }
+        
+        const errorsStat = detailView.querySelector('[data-stat="errors"] .stat-value');
+        if (errorsStat) {
+            errorsStat.textContent = instance.stats?.errors || 0;
+        }
+        
+        const durationStat = detailView.querySelector('[data-stat="duration"] .stat-value');
+        if (durationStat) {
+            durationStat.textContent = Math.round((instance.stats?.duration_secs || 0) / 60) + 'm';
+        }
+        
+        // Update git status
+        const gitStatusContainer = detailView.querySelector('.git-status-container');
+        if (gitStatusContainer) {
+            gitStatusContainer.innerHTML = components.gitStatus(instance.git_status);
+        }
+        
+        // Update project files
+        const projectFilesContainer = detailView.querySelector('.project-files-container');
+        if (projectFilesContainer) {
+            projectFilesContainer.innerHTML = components.projectFiles(instance.project_files);
+        }
+        
+        // Update tool calls
+        const toolCallsSection = detailView.querySelector('[data-section="tool-calls"]');
+        if (toolCallsSection && logs && logs.tool_calls) {
+            // Build a map of existing tool calls
+            const existingToolCalls = new Map();
+            toolCallsSection.querySelectorAll('.tool-call').forEach(tc => {
+                const id = tc.getAttribute('data-tool-id');
+                if (id) existingToolCalls.set(id, tc);
+            });
+            
+            // Track which IDs we've seen
+            const currentIds = new Set();
+            
+            if (logs.tool_calls.length > 0) {
+                for (const toolCall of logs.tool_calls) {
+                    currentIds.add(toolCall.id);
+                    const newHtml = components.toolCall(toolCall);
+                    
+                    const existingToolCall = existingToolCalls.get(toolCall.id);
+                    if (existingToolCall) {
+                        // Update existing tool call in-place
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newHtml;
+                        existingToolCall.replaceWith(tempDiv.firstElementChild);
+                    } else {
+                        // Add new tool call
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = newHtml;
+                        toolCallsSection.appendChild(tempDiv.firstElementChild);
+                    }
+                }
+                
+                // Remove tool calls that no longer exist
+                existingToolCalls.forEach((tc, id) => {
+                    if (!currentIds.has(id)) {
+                        tc.remove();
+                    }
+                });
+            }
+        }
+        
+        // Update chat messages
+        const chatMessages = detailView.querySelector('.chat-messages');
+        if (chatMessages && logs && logs.messages && logs.messages.length > 0) {
+            let html = '';
+            for (const msg of logs.messages) {
+                html += components.chatMessage(msg.content, msg.agent);
+            }
+            chatMessages.innerHTML = html;
+        }
+        
+        // Re-apply syntax highlighting to any new code blocks
+        detailView.querySelectorAll('pre code:not(.hljs)').forEach((block) => {
+            hljs.highlightElement(block);
         }
     }
 };

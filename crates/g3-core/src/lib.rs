@@ -992,6 +992,12 @@ impl<W: UiWriter> Agent<W> {
     }
 
     fn get_configured_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+        // First, check if there's a global max_context_length override in agent config
+        if let Some(max_context_length) = config.agent.max_context_length {
+            debug!("Using configured agent.max_context_length: {}", max_context_length);
+            return Ok(max_context_length);
+        }
+
         // Get the configured max_tokens for the current provider
         fn get_provider_max_tokens(config: &Config, provider_name: &str) -> Option<u32> {
             match provider_name {
@@ -1007,12 +1013,6 @@ impl<W: UiWriter> Agent<W> {
         let provider = providers.get(None)?;
         let provider_name = provider.name();
         let model_name = provider.model();
-
-        // Check if there's a configured context length override first
-        if let Some(max_tokens) = get_provider_max_tokens(config, provider_name) {
-            debug!("Using configured max_tokens for {}: {}", provider_name, max_tokens);
-            return Ok(max_tokens);
-        }
 
         // Use provider-specific context length if available, otherwise fall back to agent config
         let context_length = match provider_name {
