@@ -452,7 +452,9 @@ async fn run_accumulative_mode(
     output.print("g3 programming agent - autonomous mode");
     output.print("      >> describe what you want, I'll build it iteratively");
     output.print("");
-    output.print(&format!("workspace: {}", workspace_dir.display()));
+    print!("{}workspace: {}{}\n", 
+        SetForegroundColor(Color::DarkGrey),
+        workspace_dir.display(), ResetColor);
     output.print("");
     output.print("💡 Each input you provide will be added to requirements");
     output.print("   and I'll automatically work on implementing them. You can");
@@ -583,7 +585,7 @@ async fn run_accumulative_mode(
                             .await?;
                             
                             // Run interactive mode
-                            run_interactive(agent, cli.show_prompt, cli.show_code, chat_combined_content).await?;
+                            run_interactive(agent, cli.show_prompt, cli.show_code, chat_combined_content, &workspace_dir).await?;
                             
                             // After returning from interactive mode, exit
                             output.print("\n👋 Goodbye!");
@@ -792,8 +794,7 @@ async fn run_with_console_mode(
         output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
-        println!("workspace: {}", project.workspace().display());
-        run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
+        run_interactive(agent, cli.show_prompt, cli.show_code, combined_content, project.workspace()).await?;
     }
 
     Ok(())
@@ -970,6 +971,7 @@ async fn run_interactive<W: UiWriter>(
     show_prompt: bool,
     show_code: bool,
     combined_content: Option<String>,
+    workspace_path: &Path,
 ) -> Result<()> {
     let output = SimpleOutput::new();
 
@@ -998,7 +1000,8 @@ async fn run_interactive<W: UiWriter>(
         let has_readme = content.contains("Project README");
         
         if has_agents {
-            output.print("🤖 AGENTS.md configuration loaded");
+            print!("{}🤖 AGENTS.md configuration loaded{}\n", 
+                SetForegroundColor(Color::DarkGrey), ResetColor);
         }
         
         if has_readme {
@@ -1006,10 +1009,17 @@ async fn run_interactive<W: UiWriter>(
             let readme_snippet = extract_readme_heading(content)
                 .unwrap_or_else(|| "Project documentation loaded".to_string());
 
-            output.print(&format!("📚 detected: {}", readme_snippet));
+            print!("{}📚 detected: {}{}\n", 
+                SetForegroundColor(Color::DarkGrey),
+                readme_snippet,
+                ResetColor);
         }
     }
 
+    // Display workspace path
+    print!("{}workspace: {}{}\n", 
+        SetForegroundColor(Color::DarkGrey),
+        workspace_path.display(), ResetColor);
     output.print("");
 
     // Initialize rustyline editor with history
