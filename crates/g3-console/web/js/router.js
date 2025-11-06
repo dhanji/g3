@@ -84,8 +84,9 @@ const router = {
         this.renderInProgress = true;
         
         try {
-            console.log('[Router] Showing spinner');
-            container.innerHTML = components.spinner('Loading instances...');
+            // Check if we already have a container for instances
+            let instancesList = container.querySelector('.instances-list');
+            const isInitialLoad = !instancesList;
             
             console.log('[Router] Fetching instances from API');
             const instances = await api.getInstances();
@@ -97,22 +98,22 @@ const router = {
                 return;
             }
             
-            // Check if we already have a container for instances
-            let instancesList = container.querySelector('.instances-list');
-            const isInitialLoad = !instancesList;
-            
-            if (isInitialLoad) {
-                instancesList = document.createElement('div');
-                instancesList.className = 'instances-list';
-            }
             
             if (instances.length === 0) {
                 console.log('[Router] No instances, showing empty state');
-                container.innerHTML = components.emptyState(
-                    'No running instances. Click "+ New Run" to start one.'
-                );
+                // Check if we already have empty state
+                if (!container.querySelector('.empty-state')) {
+                    container.innerHTML = components.emptyState(
+                        'No running instances. Click "+ New Run" to start one.'
+                    );
+                }
             } else {
                 console.log('[Router] Building HTML for', instances.length, 'instances');
+                
+                if (isInitialLoad) {
+                    instancesList = document.createElement('div');
+                    instancesList.className = 'instances-list';
+                }
                 
                 // Build a map of existing panels for efficient lookup
                 const existingPanels = new Map();
@@ -133,7 +134,7 @@ const router = {
                     
                     const existingPanel = existingPanels.get(instance.id);
                     if (existingPanel) {
-                        // Update existing panel in-place
+                        // Update existing panel in-place by replacing inner content
                         const tempDiv = document.createElement('div');
                         tempDiv.innerHTML = newHtml;
                         const newPanel = tempDiv.firstElementChild;
@@ -154,7 +155,10 @@ const router = {
                 });
                 
                 if (isInitialLoad) {
-                    container.innerHTML = '';
+                    // Only clear if container doesn't already have instances-list
+                    if (container.firstChild && container.firstChild !== instancesList) {
+                        container.innerHTML = '';
+                    }
                     container.appendChild(instancesList);
                 }
                 
@@ -171,7 +175,12 @@ const router = {
             }
         } catch (error) {
             console.error('[Router] Error in renderHome:', error);
-            container.innerHTML = components.error('Failed to load instances: ' + error.message);
+            // Don't clear container on error, just show error message
+            if (!container.querySelector('.error-message')) {
+                const errorDiv = document.createElement('div');
+                errorDiv.innerHTML = components.error('Failed to load instances: ' + error.message);
+                container.appendChild(errorDiv.firstElementChild);
+            }
         } finally {
             this.renderInProgress = false;
             console.log('[Router] renderHome complete, renderInProgress reset to false');
@@ -183,15 +192,11 @@ const router = {
         
         this.currentInstanceId = id;
         
-        // Check if we already have a detail view for this instance
-        let detailView = container.querySelector('.detail-view');
-        const isInitialLoad = !detailView || detailView.getAttribute('data-instance-id') !== id;
-        
-        if (isInitialLoad) {
-            container.innerHTML = components.spinner('Loading instance details...');
-        }
-        
         try {
+            // Check if we already have a detail view for this instance
+            let detailView = container.querySelector('.detail-view');
+            const isInitialLoad = !detailView || detailView.getAttribute('data-instance-id') !== id;
+            
             const instance = await api.getInstance(id);
             const logs = await api.getInstanceLogs(id);
             
@@ -306,7 +311,12 @@ const router = {
             }
         } catch (error) {
             console.error('[Router] Error in renderDetail:', error);
-            container.innerHTML = components.error('Failed to load instance: ' + error.message);
+            // Don't clear container on error, just show error message
+            if (!container.querySelector('.error-message')) {
+                const errorDiv = document.createElement('div');
+                errorDiv.innerHTML = components.error('Failed to load instance: ' + error.message);
+                container.appendChild(errorDiv.firstElementChild);
+            }
         }
     },
     
@@ -406,7 +416,7 @@ const router = {
         // Re-apply syntax highlighting to any new code blocks
         detailView.querySelectorAll('pre code:not(.hljs)').forEach((block) => {
             hljs.highlightElement(block);
-        }
+        });
     }
 };
 
