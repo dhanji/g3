@@ -15,6 +15,25 @@ max_tokens = 4096  # Per-request output limit (how many tokens the model can gen
 temperature = 0.1
 use_oauth = true
 
+# Multiple OpenAI-compatible providers can be configured with custom names
+# Each provider gets its own section under [providers.openai_compatible.<name>]
+# [providers.openai_compatible.openrouter]
+# api_key = "your-openrouter-api-key"
+# model = "anthropic/claude-3.5-sonnet"
+# base_url = "https://openrouter.ai/api/v1"
+# max_tokens = 4096
+# temperature = 0.1
+
+# [providers.openai_compatible.groq]
+# api_key = "your-groq-api-key"
+# model = "llama-3.3-70b-versatile"
+# base_url = "https://api.groq.com/openai/v1"
+# max_tokens = 4096
+# temperature = 0.1
+
+# To use one of these providers, set default_provider to the name you chose:
+# default_provider = "openrouter"
+
 [agent]
 fallback_default_max_tokens = 8192
 # max_context_length: Override the context window size for all providers

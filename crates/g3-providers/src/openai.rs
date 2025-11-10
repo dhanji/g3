@@ -22,10 +22,29 @@ pub struct OpenAIProvider {
     base_url: String,
     max_tokens: Option<u32>,
     _temperature: Option<f32>,
+    name: String,
 }
 
 impl OpenAIProvider {
     pub fn new(
+        api_key: String,
+        model: Option<String>,
+        base_url: Option<String>,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+    ) -> Result<Self> {
+        Self::new_with_name(
+            "openai".to_string(),
+            api_key,
+            model,
+            base_url,
+            max_tokens,
+            temperature,
+        )
+    }
+
+    pub fn new_with_name(
+        name: String,
         api_key: String,
         model: Option<String>,
         base_url: Option<String>,
@@ -39,6 +58,7 @@ impl OpenAIProvider {
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
             max_tokens,
             _temperature: temperature,
+            name,
         })
     }
 
@@ -353,7 +373,7 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn name(&self) -> &str {
-        "openai"
+        &self.name
     }
 
     fn model(&self) -> &str {

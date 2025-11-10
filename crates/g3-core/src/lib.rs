@@ -875,6 +875,21 @@ impl<W: UiWriter> Agent<W> {
             }
         }
 
+        // Register OpenAI-compatible providers (e.g., OpenRouter, Groq, etc.)
+        for (name, openai_config) in &config.providers.openai_compatible {
+            if providers_to_register.contains(name) {
+                let openai_provider = g3_providers::OpenAIProvider::new_with_name(
+                    name.clone(),
+                    openai_config.api_key.clone(),
+                    Some(openai_config.model.clone()),
+                    openai_config.base_url.clone(),
+                    openai_config.max_tokens,
+                    openai_config.temperature,
+                )?;
+                providers.register(openai_provider);
+            }
+        }
+
         // Register Anthropic provider if configured AND it's the default provider
         if let Some(anthropic_config) = &config.providers.anthropic {
             if providers_to_register.contains(&"anthropic".to_string()) {
