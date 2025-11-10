@@ -19,6 +19,6 @@ max_tokens = 4096
 temperature = 0.3  # Slightly higher temperature for more creative implementations
 
 [agent]
-max_context_length = 8192
+fallback_default_max_tokens = 8192
 enable_streaming = true
 timeout_seconds = 60

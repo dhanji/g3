@@ -184,6 +184,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// Enable manual control of context compaction (disables auto-compact at 90%)
+    #[arg(long = "manual-compact")]
+    pub manual_compact: bool,
+
     /// Show the system prompt being sent to the LLM
     #[arg(long)]
     pub show_prompt: bool,
@@ -286,10 +290,6 @@ pub async fn run() -> Result<()> {
         tracing_subscriber::registry().with(filter).init();
     }
 
-    if !cli.machine {
-        info!("Starting G3 AI Coding Agent");
-    }
-
     // Set up workspace directory
     let workspace_dir = if let Some(ws) = &cli.workspace {
         ws.clone()
@@ -325,10 +325,6 @@ pub async fn run() -> Result<()> {
     project.ensure_workspace_exists()?;
     project.enter_workspace()?;
 
-    if !cli.machine {
-        info!("Using workspace: {}", project.workspace().display());
-    }
-
     // Load configuration with CLI overrides
     let mut config = Config::load_with_overrides(
         cli.config.as_deref(),
@@ -339,14 +335,16 @@ pub async fn run() -> Result<()> {
     // Apply macax flag override
     if cli.macax {
         config.macax.enabled = true;
-        if !cli.machine {
-            info!("macOS Accessibility API tools enabled");
-        }
     }
 
     // Apply webdriver flag override
     if cli.webdriver {
         config.webdriver.enabled = true;
+    }
+
+    // Apply no-auto-compact flag override
+    if cli.manual_compact {
+        config.agent.auto_compact = false;
     }
 
     // Validate provider if specified
@@ -496,10 +494,12 @@ async fn run_accumulative_mode(
     let output = SimpleOutput::new();
     
     output.print("");
-    output.print("🪿 G3 AI Coding Agent - Autonomous Mode");
+    output.print("g3 programming agent - autonomous mode");
     output.print("      >> describe what you want, I'll build it iteratively");
     output.print("");
-    output.print(&format!("📁 Workspace: {}", workspace_dir.display()));
+    print!("{}workspace: {}{}\n", 
+        SetForegroundColor(Color::DarkGrey),
+        workspace_dir.display(), ResetColor);
     output.print("");
     output.print("💡 Each input you provide will be added to requirements");
     output.print("   and I'll automatically work on implementing them. You can");
@@ -631,6 +631,11 @@ async fn run_accumulative_mode(
                                 config.webdriver.enabled = true;
                             }
                             
+                            // Apply no-auto-compact flag override
+                            if cli.manual_compact {
+                                config.agent.auto_compact = false;
+                            }
+                            
                             // Create agent for interactive mode with requirements context
                             let ui_writer = ConsoleUiWriter::new();
                             let agent = Agent::new_with_readme_and_quiet(
@@ -642,7 +647,7 @@ async fn run_accumulative_mode(
                             .await?;
                             
                             // Run interactive mode
-                            run_interactive(agent, cli.show_prompt, cli.show_code, chat_combined_content).await?;
+                            run_interactive(agent, cli.show_prompt, cli.show_code, chat_combined_content, &workspace_dir).await?;
                             
                             // After returning from interactive mode, exit
                             output.print("\n👋 Goodbye!");
@@ -713,6 +718,11 @@ async fn run_accumulative_mode(
                 // Apply webdriver flag override
                 if cli.webdriver {
                     config.webdriver.enabled = true;
+                }
+                
+                // Apply no-auto-compact flag override
+                if cli.manual_compact {
+                    config.agent.auto_compact = false;
                 }
                 
                 // Create agent for this autonomous run
@@ -835,9 +845,6 @@ async fn run_with_console_mode(
     // Execute task, autonomous mode, or start interactive mode
     if cli.autonomous {
         // Autonomous mode with coach-player feedback loop
-        if !cli.machine {
-            info!("Starting autonomous mode");
-        }
         run_autonomous(
             agent,
             project,
@@ -849,9 +856,6 @@ async fn run_with_console_mode(
         .await?;
     } else if let Some(task) = cli.task {
         // Single-shot mode
-        if !cli.machine {
-            info!("Executing task: {}", task);
-        }
         let output = SimpleOutput::new();
         let result = agent
             .execute_task_with_timing(&task, None, false, cli.show_prompt, cli.show_code, true)
@@ -859,11 +863,7 @@ async fn run_with_console_mode(
         output.print_smart(&result.response);
     } else {
         // Interactive mode (default)
-        if !cli.machine {
-            info!("Starting interactive mode");
-        }
-        println!("📁 Workspace: {}", project.workspace().display());
-        run_interactive(agent, cli.show_prompt, cli.show_code, combined_content).await?;
+        run_interactive(agent, cli.show_prompt, cli.show_code, combined_content, project.workspace()).await?;
     }
 
     Ok(())
@@ -910,7 +910,6 @@ fn read_agents_config(workspace_dir: &Path) -> Option<String> {
         match std::fs::read_to_string(&agents_path) {
             Ok(content) => {
                 // Return the content with a note about which file was read
-                info!("Loaded AGENTS.md from {}", agents_path.display());
                 Some(format!(
                     "🤖 Agent Configuration (from AGENTS.md):\n\n{}",
                     content
@@ -928,7 +927,6 @@ fn read_agents_config(workspace_dir: &Path) -> Option<String> {
         if alt_path.exists() {
             match std::fs::read_to_string(&alt_path) {
                 Ok(content) => {
-                    info!("Loaded agents.md from {}", alt_path.display());
                     Some(format!("🤖 Agent Configuration (from agents.md):\n\n{}", content))
                 }
                 Err(e) => {
@@ -1042,18 +1040,22 @@ async fn run_interactive<W: UiWriter>(
     show_prompt: bool,
     show_code: bool,
     combined_content: Option<String>,
+    workspace_path: &Path,
 ) -> Result<()> {
     let output = SimpleOutput::new();
 
     output.print("");
-    output.print("🪿 G3 AI Coding Agent");
+    output.print("g3 programming agent");
     output.print("      >> what shall we build today?");
     output.print("");
 
     // Display provider and model information
     match agent.get_provider_info() {
         Ok((provider, model)) => {
-            output.print(&format!("🔧 {} | {}", provider, model));
+            print!("🔧 {}{}{} | {}{}{}\n", 
+                SetForegroundColor(Color::Cyan), provider, ResetColor,
+                SetForegroundColor(Color::Yellow), model, ResetColor
+            );
         }
         Err(e) => {
             error!("Failed to get provider info: {}", e);
@@ -1067,7 +1069,8 @@ async fn run_interactive<W: UiWriter>(
         let has_readme = content.contains("Project README");
         
         if has_agents {
-            output.print("🤖 AGENTS.md configuration loaded");
+            print!("{}🤖 AGENTS.md configuration loaded{}\n", 
+                SetForegroundColor(Color::DarkGrey), ResetColor);
         }
         
         if has_readme {
@@ -1075,10 +1078,17 @@ async fn run_interactive<W: UiWriter>(
             let readme_snippet = extract_readme_heading(content)
                 .unwrap_or_else(|| "Project documentation loaded".to_string());
 
-            output.print(&format!("📚 detected: {}", readme_snippet));
+            print!("{}📚 detected: {}{}\n", 
+                SetForegroundColor(Color::DarkGrey),
+                readme_snippet,
+                ResetColor);
         }
     }
 
+    // Display workspace path
+    print!("{}workspace: {}{}\n", 
+        SetForegroundColor(Color::DarkGrey),
+        workspace_path.display(), ResetColor);
     output.print("");
 
     // Initialize rustyline editor with history
@@ -1615,7 +1625,7 @@ async fn run_autonomous(
     let output = SimpleOutput::new();
     let mut turn_metrics: Vec<TurnMetrics> = Vec::new();
 
-    output.print("🤖 G3 AI Coding Agent - Autonomous Mode");
+    output.print("g3 programming agent - autonomous mode");
     output.print(&format!(
         "📁 Using workspace: {}",
         project.workspace().display()
@@ -1780,7 +1790,7 @@ async fn run_autonomous(
             output.print(""); // Empty line for readability
 
             // Execute player task with retry on error
-            let mut player_retry_count = 0;
+            let mut _player_retry_count = 0;
             const MAX_PLAYER_RETRIES: u32 = 3;
             let mut player_failed = false;
 
@@ -1803,8 +1813,38 @@ async fn run_autonomous(
                         break;
                     }
                     Err(e) => {
-                        // Check if this is a panic (unrecoverable)
-                        if e.to_string().contains("panic") {
+                        // Check if this is a context length exceeded error
+                        use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
+                        let error_type = classify_error(&e);
+                        
+                        if matches!(error_type, ErrorType::Recoverable(RecoverableError::ContextLengthExceeded)) {
+                            output.print(&format!("⚠️ Context length exceeded in player turn: {}", e));
+                            output.print("📝 Logging error to session and ending current turn...");
+                            
+                            // Build forensic context
+                            let forensic_context = format!(
+                                "Turn: {}\n\
+                                 Role: Player\n\
+                                 Context tokens: {}\n\
+                                 Total available: {}\n\
+                                 Percentage used: {:.1}%\n\
+                                 Prompt length: {} chars\n\
+                                 Error occurred at: {}",
+                                turn,
+                                agent.get_context_window().used_tokens,
+                                agent.get_context_window().total_tokens,
+                                agent.get_context_window().percentage_used(),
+                                player_prompt.len(),
+                                chrono::Utc::now().to_rfc3339()
+                            );
+                            
+                            // Log to session JSON
+                            agent.log_error_to_session(&e, "assistant", Some(forensic_context));
+                            
+                            // Mark turn as failed and continue to next turn
+                            player_failed = true;
+                            break;
+                        } else if e.to_string().contains("panic") {
                             output.print(&format!("💥 Player panic detected: {}", e));
 
                             // Generate final report even for panic
@@ -1846,13 +1886,13 @@ async fn run_autonomous(
                             return Err(e);
                         }
 
-                        player_retry_count += 1;
+                        _player_retry_count += 1;
                         output.print(&format!(
                             "⚠️ Player error (attempt {}/{}): {}",
-                            player_retry_count, MAX_PLAYER_RETRIES, e
+                            _player_retry_count, MAX_PLAYER_RETRIES, e
                         ));
 
-                        if player_retry_count >= MAX_PLAYER_RETRIES {
+                        if _player_retry_count >= MAX_PLAYER_RETRIES {
                             output.print(
                                 "🔄 Max retries reached for player, marking turn as failed...",
                             );
@@ -1965,8 +2005,39 @@ Remember: Be clear in your review and concise in your feedback. APPROVE iff the 
                     break;
                 }
                 Err(e) => {
-                    // Check if this is a panic (unrecoverable)
-                    if e.to_string().contains("panic") {
+                    // Check if this is a context length exceeded error
+                    use g3_core::error_handling::{classify_error, ErrorType, RecoverableError};
+                    let error_type = classify_error(&e);
+                    
+                    if matches!(error_type, ErrorType::Recoverable(RecoverableError::ContextLengthExceeded)) {
+                        output.print(&format!("⚠️ Context length exceeded in coach turn: {}", e));
+                        output.print("📝 Logging error to session and ending current turn...");
+                        
+                        // Build forensic context
+                        let forensic_context = format!(
+                            "Turn: {}\n\
+                             Role: Coach\n\
+                             Context tokens: {}\n\
+                             Total available: {}\n\
+                             Percentage used: {:.1}%\n\
+                             Prompt length: {} chars\n\
+                             Error occurred at: {}",
+                            turn,
+                            coach_agent.get_context_window().used_tokens,
+                            coach_agent.get_context_window().total_tokens,
+                            coach_agent.get_context_window().percentage_used(),
+                            coach_prompt.len(),
+                            chrono::Utc::now().to_rfc3339()
+                        );
+                        
+                        // Log to coach's session JSON
+                        coach_agent.log_error_to_session(&e, "assistant", Some(forensic_context));
+                        
+                        // Mark turn as failed and continue to next turn
+                        coach_result_opt = None;
+                        coach_failed = true;
+                        break;
+                    } else if e.to_string().contains("panic") {
                         output.print(&format!("💥 Coach panic detected: {}", e));
 
                         // Generate final report even for panic

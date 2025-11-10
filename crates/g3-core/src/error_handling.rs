@@ -11,12 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// Maximum number of retry attempts for recoverable errors (default mode)
-const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 3;
-
-/// Maximum number of retry attempts for autonomous mode
-const AUTONOMOUS_MAX_RETRY_ATTEMPTS: u32 = 6;
-
 /// Base delay for exponential backoff (in milliseconds)
 const BASE_RETRY_DELAY_MS: u64 = 1000;
 
@@ -188,6 +182,8 @@ pub enum RecoverableError {
     Timeout,
     /// Token limit exceeded (might be recoverable with summarization)
     TokenLimit,
+    /// Context length exceeded (prompt too long) - should end current turn in autonomous mode
+    ContextLengthExceeded,
 }
 
 /// Classify an error as recoverable or non-recoverable
@@ -222,6 +218,13 @@ pub fn classify_error(error: &anyhow::Error) -> ErrorType {
        error_str.contains("request or response body error") ||  // Common timeout pattern
        error_str.contains("stream error") && error_str.contains("timed out") {
         return ErrorType::Recoverable(RecoverableError::Timeout);
+    }
+
+    // Check for context length exceeded errors (HTTP 400 with specific messages)
+    if (error_str.contains("400") || error_str.contains("bad request")) &&
+       (error_str.contains("context length") || error_str.contains("prompt is too long") ||
+        error_str.contains("maximum context length") || error_str.contains("context_length_exceeded")) {
+        return ErrorType::Recoverable(RecoverableError::ContextLengthExceeded);
     }
 
     if error_str.contains("token") && (error_str.contains("limit") || error_str.contains("exceeded")) {
@@ -284,6 +287,7 @@ pub async fn retry_with_backoff<F, Fut, T>(
     mut operation: F,
     context: &ErrorContext,
     is_autonomous: bool,
+    max_attempts: u32,
 ) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -307,8 +311,6 @@ where
             }
             Err(error) => {
                 let error_type = classify_error(&error);
-                let max_attempts = if is_autonomous { AUTONOMOUS_MAX_RETRY_ATTEMPTS } else { DEFAULT_MAX_RETRY_ATTEMPTS };
-                
                 match error_type {
                     ErrorType::Recoverable(recoverable_type) => {
                         if attempt >= max_attempts {
@@ -420,6 +422,13 @@ mod tests {
         // Token limit
         let error = anyhow!("Token limit exceeded");
         assert_eq!(classify_error(&error), ErrorType::Recoverable(RecoverableError::TokenLimit));
+        
+        // Context length exceeded
+        let error = anyhow!("HTTP 400 Bad Request: context length exceeded");
+        assert_eq!(classify_error(&error), ErrorType::Recoverable(RecoverableError::ContextLengthExceeded));
+        
+        let error = anyhow!("Error 400: prompt is too long");
+        assert_eq!(classify_error(&error), ErrorType::Recoverable(RecoverableError::ContextLengthExceeded));
         
         // Non-recoverable
         let error = anyhow!("Invalid API key");

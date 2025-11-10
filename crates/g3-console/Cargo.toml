@@ -1,0 +1,57 @@
+[package]
+name = "g3-console"
+version = "0.1.0"
+edition = "2021"
+authors = ["G3 Team"]
+description = "Web console for monitoring and managing g3 instances"
+license = "MIT"
+
+[[bin]]
+name = "g3-console"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Web framework
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Process management
+sysinfo = "0.30"
+
+# Unix process control
+libc = "0.2"
+
+# File watching
+notify = "6.1"
+
+# Utilities
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Regex for parsing tool calls
+regex = "1.10"
+
+# Path handling
+dirs = "5.0"
+
+# Browser opening
+open = "5.0"

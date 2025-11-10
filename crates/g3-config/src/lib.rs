@@ -62,9 +62,13 @@ pub struct EmbeddedConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    pub max_context_length: usize,
+    pub max_context_length: Option<u32>,
+    pub fallback_default_max_tokens: usize,
     pub enable_streaming: bool,
     pub timeout_seconds: u64,
+    pub auto_compact: bool,
+    pub max_retry_attempts: u32,
+    pub autonomous_max_retry_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,9 +136,13 @@ impl Default for Config {
                 player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
-                max_context_length: 8192,
+                max_context_length: None,
+                fallback_default_max_tokens: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,
+                auto_compact: true,
+                max_retry_attempts: 3,
+                autonomous_max_retry_attempts: 6,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
@@ -247,9 +255,13 @@ impl Config {
                 player: None, // Will use default_provider if not specified
             },
             agent: AgentConfig {
-                max_context_length: 8192,
+                max_context_length: None,
+                fallback_default_max_tokens: 8192,
                 enable_streaming: true,
                 timeout_seconds: 60,
+                auto_compact: true,
+                max_retry_attempts: 3,
+                autonomous_max_retry_attempts: 6,
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),

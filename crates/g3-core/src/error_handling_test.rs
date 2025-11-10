@@ -37,6 +37,7 @@ mod tests {
             },
             &context,
             false, // not autonomous mode
+            3,     // max_attempts
         )
         .await;
 
@@ -71,6 +72,7 @@ mod tests {
             },
             &context,
             false, // not autonomous mode
+            3,     // max_attempts
         )
         .await;
 
@@ -104,6 +106,7 @@ mod tests {
             },
             &context,
             false, // not autonomous mode
+            3,     // max_attempts
         )
         .await;
 

@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hero UI inspired styles */
+.hero-card {
+  @apply bg-white dark:bg-gray-800 rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200;
+}
+
+.hero-button {
+  @apply px-4 py-2 rounded-lg font-medium transition-colors duration-200;
+}
+
+.hero-button-primary {
+  @apply bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600;
+}
+
+.hero-button-secondary {
+  @apply bg-gray-200 text-gray-900 hover:bg-gray-300 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600;
+}
+
+.hero-button-danger {
+  @apply bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600;
+}
+
+.hero-badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.hero-badge-success {
+  @apply bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200;
+}
+
+.hero-badge-error {
+  @apply bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200;
+}
+
+.hero-badge-warning {
+  @apply bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200;
+}
+
+.hero-badge-info {
+  @apply bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200;
+}
+
+.hero-input {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white;
+}
+
+.hero-progress {
+  @apply w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700;
+}
+
+.hero-progress-bar {
+  @apply bg-blue-600 h-2.5 rounded-full transition-all duration-300;
+}
+
+/* Code highlighting */
+pre {
+  @apply bg-gray-100 dark:bg-gray-800 rounded-lg p-4 overflow-x-auto;
+}
+
+code {
+  @apply font-mono text-sm;
+}
+
+/* Markdown styles */
+.markdown {
+  @apply prose dark:prose-invert max-w-none;
+}
+
+.markdown h1 {
+  @apply text-2xl font-bold mb-4;
+}
+
+.markdown h2 {
+  @apply text-xl font-bold mb-3;
+}
+
+.markdown h3 {
+  @apply text-lg font-bold mb-2;
+}
+
+.markdown p {
+  @apply mb-4;
+}
+
+.markdown ul {
+  @apply list-disc list-inside mb-4;
+}
+
+.markdown ol {
+  @apply list-decimal list-inside mb-4;
+}
+
+.markdown a {
+  @apply text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300;
+}

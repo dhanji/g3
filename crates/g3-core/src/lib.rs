@@ -1,3 +1,4 @@
+pub mod code_search;
 pub mod error_handling;
 pub mod project;
 pub mod task_result;
@@ -19,9 +20,9 @@ mod tilde_expansion_tests;
 #[cfg(test)]
 mod error_handling_test;
 use anyhow::Result;
+use g3_computer_control::WebDriverController;
 use g3_config::Config;
 use g3_execution::CodeExecutor;
-use g3_computer_control::WebDriverController;
 use g3_providers::{CompletionRequest, Message, MessageRole, ProviderRegistry, Tool};
 #[allow(unused_imports)]
 use regex::Regex;
@@ -405,12 +406,18 @@ Format this as a detailed but concise summary that can be used to resume the con
     }
 
     /// Reset the context window with a summary
-    pub fn reset_with_summary(&mut self, summary: String, latest_user_message: Option<String>) -> usize {
+    pub fn reset_with_summary(
+        &mut self,
+        summary: String,
+        latest_user_message: Option<String>,
+    ) -> usize {
         // Calculate chars saved (old history minus new summary)
-        let old_chars: usize = self.conversation_history.iter()
+        let old_chars: usize = self
+            .conversation_history
+            .iter()
             .map(|m| m.content.len())
             .sum();
-        
+
         // Clear the conversation history
         self.conversation_history.clear();
         self.used_tokens = 0;
@@ -429,8 +436,10 @@ Format this as a detailed but concise summary that can be used to resume the con
                 content: user_msg,
             });
         }
-        
-        let new_chars: usize = self.conversation_history.iter()
+
+        let new_chars: usize = self
+            .conversation_history
+            .iter()
             .map(|m| m.content.len())
             .sum();
         old_chars.saturating_sub(new_chars)
@@ -440,7 +449,7 @@ Format this as a detailed but concise summary that can be used to resume the con
     /// Triggers at 50%, 60%, 70%, and 80% thresholds
     pub fn should_thin(&self) -> bool {
         let current_percentage = self.percentage_used() as u32;
-        
+
         // Check if we've crossed a new 10% threshold starting at 50%
         if current_percentage >= 50 {
             let current_threshold = (current_percentage / 10) * 10; // Round down to nearest 10%
@@ -448,7 +457,7 @@ Format this as a detailed but concise summary that can be used to resume the con
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -457,34 +466,51 @@ Format this as a detailed but concise summary that can be used to resume the con
     pub fn thin_context(&mut self) -> (String, usize) {
         let current_percentage = self.percentage_used() as u32;
         let current_threshold = (current_percentage / 10) * 10;
-        
+
         // Update the last thinning percentage
         self.last_thinning_percentage = current_threshold;
-        
+
         // Calculate the first third of the conversation
         let total_messages = self.conversation_history.len();
         let first_third_end = (total_messages / 3).max(1);
-        
+
         let mut leaned_count = 0;
         let mut tool_call_leaned_count = 0;
         let mut chars_saved = 0;
-        
+
         // Create ~/tmp directory if it doesn't exist
         let tmp_dir = shellexpand::tilde("~/tmp").to_string();
         if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
             warn!("Failed to create ~/tmp directory: {}", e);
-            return ("⚠️  Context thinning failed: could not create ~/tmp directory".to_string(), 0);
+            return (
+                "⚠️  Context thinning failed: could not create ~/tmp directory".to_string(),
+                0,
+            );
         }
-        
+
         // Scan the first third of messages
         for i in 0..first_third_end {
+            // Check if the previous message was a TODO tool call (before getting mutable reference)
+            let is_todo_result = if i > 0 {
+                if let Some(prev_message) = self.conversation_history.get(i - 1) {
+                    if matches!(prev_message.role, MessageRole::Assistant) {
+                        prev_message.content.contains(r#""tool":"todo_read""#) ||
+                        prev_message.content.contains(r#""tool":"todo_write""#) ||
+                        prev_message.content.contains(r#""tool": "todo_read""#) ||
+                        prev_message.content.contains(r#""tool": "todo_write""#)
+                    } else { false }
+                } else { false }
+            } else { false };
+            
             if let Some(message) = self.conversation_history.get_mut(i) {
                 // Process User messages that look like tool results
-                if matches!(message.role, MessageRole::User) && message.content.starts_with("Tool result:") {
+                if matches!(message.role, MessageRole::User)
+                    && message.content.starts_with("Tool result:")
+                {
                     let content_len = message.content.len();
                     
-                    // Only thin if the content is greater than 500 chars
-                    if content_len > 500 {
+                    // Only thin if the content is greater than 500 chars and not a TODO tool result
+                    if !is_todo_result && content_len > 500 {
                         // Generate a unique filename based on timestamp and index
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -492,54 +518,59 @@ Format this as a detailed but concise summary that can be used to resume the con
                             .as_secs();
                         let filename = format!("leaned_tool_result_{}_{}.txt", timestamp, i);
                         let file_path = format!("{}/{}", tmp_dir, filename);
-                        
+
                         // Write the content to file
                         if let Err(e) = std::fs::write(&file_path, &message.content) {
                             warn!("Failed to write thinned content to {}: {}", file_path, e);
                             continue;
                         }
-                        
+
                         // Replace the message content with a note
                         let original_len = message.content.len();
                         message.content = format!("Tool result saved to {}", file_path);
-                        
+
                         leaned_count += 1;
                         chars_saved += original_len - message.content.len();
-                        
-                        debug!("Thinned tool result {} ({} chars) to {}", i, original_len, file_path);
+
+                        debug!(
+                            "Thinned tool result {} ({} chars) to {}",
+                            i, original_len, file_path
+                        );
                     }
                 }
-                
+
                 // Process Assistant messages that contain tool calls with large arguments
                 if matches!(message.role, MessageRole::Assistant) {
                     // Try to parse the message content as JSON to find tool calls
                     let content = &message.content;
-                    
+
                     // Look for JSON tool call patterns
-                    if let Some(tool_call_start) = content.find(r#"{"tool":"#)
+                    if let Some(tool_call_start) = content
+                        .find(r#"{"tool":"#)
                         .or_else(|| content.find(r#"{ "tool":"#))
                         .or_else(|| content.find(r#"{"tool" :"#))
                         .or_else(|| content.find(r#"{ "tool" :"#))
                     {
                         // Try to extract and parse the JSON tool call
                         let json_portion = &content[tool_call_start..];
-                        
+
                         // Find the end of the JSON object
                         if let Some(json_end) = Self::find_json_end(json_portion) {
                             let json_str = &json_portion[..=json_end];
-                            
+
                             // Try to parse as ToolCall
                             if let Ok(mut tool_call) = serde_json::from_str::<ToolCall>(json_str) {
                                 let mut modified = false;
-                                
+
                                 // Handle write_file tool calls
                                 if tool_call.tool == "write_file" {
                                     if let Some(args_obj) = tool_call.args.as_object_mut() {
                                         // Extract content to avoid borrow issues
-                                        let content_info = args_obj.get("content")
+                                        let content_info = args_obj
+                                            .get("content")
                                             .and_then(|v| v.as_str())
                                             .map(|s| (s.to_string(), s.len()));
-                                        
+
                                         if let Some((content_str, content_len)) = content_info {
                                             // Only thin if content is greater than 500 chars
                                             if content_len > 500 {
@@ -547,13 +578,20 @@ Format this as a detailed but concise summary that can be used to resume the con
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
                                                     .as_secs();
-                                                let filename = format!("leaned_write_file_content_{}_{}.txt", timestamp, i);
+                                                let filename = format!(
+                                                    "leaned_write_file_content_{}_{}.txt",
+                                                    timestamp, i
+                                                );
                                                 let file_path = format!("{}/{}", tmp_dir, filename);
-                                                
-                                                if std::fs::write(&file_path, &content_str).is_ok() {
+
+                                                if std::fs::write(&file_path, &content_str).is_ok()
+                                                {
                                                     args_obj.insert(
                                                         "content".to_string(),
-                                                        serde_json::Value::String(format!("<content saved to {}>", file_path))
+                                                        serde_json::Value::String(format!(
+                                                            "<content saved to {}>",
+                                                            file_path
+                                                        )),
                                                     );
                                                     modified = true;
                                                     chars_saved += content_len;
@@ -564,15 +602,16 @@ Format this as a detailed but concise summary that can be used to resume the con
                                         }
                                     }
                                 }
-                                
+
                                 // Handle str_replace tool calls
                                 if tool_call.tool == "str_replace" {
                                     if let Some(args_obj) = tool_call.args.as_object_mut() {
                                         // Extract diff to avoid borrow issues
-                                        let diff_info = args_obj.get("diff")
+                                        let diff_info = args_obj
+                                            .get("diff")
                                             .and_then(|v| v.as_str())
                                             .map(|s| (s.to_string(), s.len()));
-                                        
+
                                         if let Some((diff_str, diff_len)) = diff_info {
                                             // Only thin if diff is greater than 500 chars
                                             if diff_len > 500 {
@@ -580,13 +619,19 @@ Format this as a detailed but concise summary that can be used to resume the con
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap_or_default()
                                                     .as_secs();
-                                                let filename = format!("leaned_str_replace_diff_{}_{}.txt", timestamp, i);
+                                                let filename = format!(
+                                                    "leaned_str_replace_diff_{}_{}.txt",
+                                                    timestamp, i
+                                                );
                                                 let file_path = format!("{}/{}", tmp_dir, filename);
-                                                
+
                                                 if std::fs::write(&file_path, &diff_str).is_ok() {
                                                     args_obj.insert(
                                                         "diff".to_string(),
-                                                        serde_json::Value::String(format!("<diff saved to {}>", file_path))
+                                                        serde_json::Value::String(format!(
+                                                            "<diff saved to {}>",
+                                                            file_path
+                                                        )),
                                                     );
                                                     modified = true;
                                                     chars_saved += diff_len;
@@ -597,15 +642,16 @@ Format this as a detailed but concise summary that can be used to resume the con
                                         }
                                     }
                                 }
-                                
+
                                 // If we modified the tool call, reconstruct the message
                                 if modified {
                                     let prefix = &content[..tool_call_start];
                                     let suffix = &content[tool_call_start + json_str.len()..];
-                                    
+
                                     // Serialize the modified tool call
                                     if let Ok(new_json) = serde_json::to_string(&tool_call) {
-                                        message.content = format!("{}{}{}", prefix, new_json, suffix);
+                                        message.content =
+                                            format!("{}{}{}", prefix, new_json, suffix);
                                     }
                                 }
                             }
@@ -614,27 +660,37 @@ Format this as a detailed but concise summary that can be used to resume the con
                 }
             }
         }
-        
+
         // Recalculate token usage after thinning
         self.recalculate_tokens();
-        
+
         if leaned_count > 0 {
             if tool_call_leaned_count > 0 {
-                (format!("🥒 Context thinned at {}%: {} tool results + {} tool calls, ~{} chars saved", 
+                (format!("🥒 Context thinned at {}%: {} tool results + {} tool calls, ~{} chars saved",
                         current_threshold, leaned_count, tool_call_leaned_count, chars_saved), chars_saved)
             } else {
-                (format!("🥒 Context thinned at {}%: {} tool results, ~{} chars saved", 
-                        current_threshold, leaned_count, chars_saved), chars_saved)
+                (
+                    format!(
+                        "🥒 Context thinned at {}%: {} tool results, ~{} chars saved",
+                        current_threshold, leaned_count, chars_saved
+                    ),
+                    chars_saved,
+                )
             }
         } else if tool_call_leaned_count > 0 {
-            (format!("🥒 Context thinned at {}%: {} tool calls, ~{} chars saved", 
-                    current_threshold, tool_call_leaned_count, chars_saved), chars_saved)
+            (
+                format!(
+                    "🥒 Context thinned at {}%: {} tool calls, ~{} chars saved",
+                    current_threshold, tool_call_leaned_count, chars_saved
+                ),
+                chars_saved,
+            )
         } else {
-            (format!("ℹ Context thinning triggered at {}% but no large tool results or tool calls found in first third", 
+            (format!("ℹ Context thinning triggered at {}% but no large tool results or tool calls found in first third",
                     current_threshold), 0)
         }
     }
-    
+
     /// Recalculate token usage based on current conversation history
     fn recalculate_tokens(&mut self) {
         let mut total = 0;
@@ -642,22 +698,22 @@ Format this as a detailed but concise summary that can be used to resume the con
             total += Self::estimate_tokens(&message.content);
         }
         self.used_tokens = total;
-        
+
         debug!("Recalculated tokens after thinning: {} tokens", total);
     }
-    
+
     /// Helper function to find the end of a JSON object
     fn find_json_end(json_str: &str) -> Option<usize> {
         let mut brace_count = 0;
         let mut in_string = false;
         let mut escape_next = false;
-        
+
         for (i, ch) in json_str.char_indices() {
             if escape_next {
                 escape_next = false;
                 continue;
             }
-            
+
             match ch {
                 '\\' => escape_next = true,
                 '"' if !escape_next => in_string = !in_string,
@@ -671,7 +727,7 @@ Format this as a detailed but concise summary that can be used to resume the con
                 _ => {}
             }
         }
-        
+
         None
     }
 }
@@ -680,6 +736,8 @@ pub struct Agent<W: UiWriter> {
     providers: ProviderRegistry,
     context_window: ContextWindow,
     thinning_events: Vec<usize>, // chars saved per thinning event
+    pending_90_summarization: bool, // flag to trigger summarization at 90%
+    auto_compact: bool, // whether to auto-compact at 90% before tool calls
     summarization_events: Vec<usize>, // chars saved per summarization event
     first_token_times: Vec<Duration>, // time to first token for each completion
     config: Config,
@@ -690,9 +748,14 @@ pub struct Agent<W: UiWriter> {
     quiet: bool,
     computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
     todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
-    webdriver_session: std::sync::Arc<tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>>>,
+    webdriver_session: std::sync::Arc<
+        tokio::sync::RwLock<
+            Option<std::sync::Arc<tokio::sync::Mutex<g3_computer_control::SafariDriver>>>,
+        >,
+    >,
     safaridriver_process: std::sync::Arc<tokio::sync::RwLock<Option<tokio::process::Child>>>,
-    macax_controller: std::sync::Arc<tokio::sync::RwLock<Option<g3_computer_control::MacAxController>>>,
+    macax_controller:
+        std::sync::Arc<tokio::sync::RwLock<Option<g3_computer_control::MacAxController>>>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -785,7 +848,6 @@ impl<W: UiWriter> Agent<W> {
         // Register embedded provider if configured AND it's the default provider
         if let Some(embedded_config) = &config.providers.embedded {
             if providers_to_register.contains(&"embedded".to_string()) {
-                info!("Initializing embedded provider");
                 let embedded_provider = g3_providers::EmbeddedProvider::new(
                     embedded_config.model_path.clone(),
                     embedded_config.model_type.clone(),
@@ -796,15 +858,12 @@ impl<W: UiWriter> Agent<W> {
                     embedded_config.threads,
                 )?;
                 providers.register(embedded_provider);
-            } else {
-                info!("Embedded provider configured but not needed, skipping initialization");
             }
         }
 
         // Register OpenAI provider if configured AND it's the default provider
         if let Some(openai_config) = &config.providers.openai {
             if providers_to_register.contains(&"openai".to_string()) {
-                info!("Initializing OpenAI provider");
                 let openai_provider = g3_providers::OpenAIProvider::new(
                     openai_config.api_key.clone(),
                     Some(openai_config.model.clone()),
@@ -813,15 +872,12 @@ impl<W: UiWriter> Agent<W> {
                     openai_config.temperature,
                 )?;
                 providers.register(openai_provider);
-            } else {
-                info!("OpenAI provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Anthropic provider if configured AND it's the default provider
         if let Some(anthropic_config) = &config.providers.anthropic {
             if providers_to_register.contains(&"anthropic".to_string()) {
-                info!("Initializing Anthropic provider");
                 let anthropic_provider = g3_providers::AnthropicProvider::new(
                     anthropic_config.api_key.clone(),
                     Some(anthropic_config.model.clone()),
@@ -829,16 +885,12 @@ impl<W: UiWriter> Agent<W> {
                     anthropic_config.temperature,
                 )?;
                 providers.register(anthropic_provider);
-            } else {
-                info!("Anthropic provider configured but not needed, skipping initialization");
             }
         }
 
         // Register Databricks provider if configured AND it's the default provider
         if let Some(databricks_config) = &config.providers.databricks {
             if providers_to_register.contains(&"databricks".to_string()) {
-                info!("Initializing Databricks provider");
-
                 let databricks_provider = if let Some(token) = &databricks_config.token {
                     // Use token-based authentication
                     g3_providers::DatabricksProvider::from_token(
@@ -860,8 +912,6 @@ impl<W: UiWriter> Agent<W> {
                 };
 
                 providers.register(databricks_provider);
-            } else {
-                info!("Databricks provider configured but not needed, skipping initialization");
             }
         }
 
@@ -874,7 +924,7 @@ impl<W: UiWriter> Agent<W> {
         debug!("Default provider set successfully");
 
         // Determine context window size based on active provider
-        let context_length = Self::determine_context_length(&config, &providers)?;
+        let context_length = Self::get_configured_context_length(&config, &providers)?;
         let mut context_window = ContextWindow::new(context_length);
 
         // If README content is provided, add it as the first system message
@@ -884,16 +934,12 @@ impl<W: UiWriter> Agent<W> {
                 content: readme,
             };
             context_window.add_message(readme_message);
-            info!("Added project README to context window");
         }
 
         // Initialize computer controller if enabled
         let computer_controller = if config.computer_control.enabled {
             match g3_computer_control::create_controller() {
-                Ok(controller) => {
-                    info!("Computer control enabled");
-                    Some(controller)
-                }
+                Ok(controller) => Some(controller),
                 Err(e) => {
                     warn!("Failed to initialize computer control: {}", e);
                     None
@@ -909,6 +955,8 @@ impl<W: UiWriter> Agent<W> {
         Ok(Self {
             providers,
             context_window,
+            auto_compact: config.agent.auto_compact,
+            pending_90_summarization: false,
             thinning_events: Vec::new(),
             summarization_events: Vec::new(),
             first_token_times: Vec::new(),
@@ -916,22 +964,51 @@ impl<W: UiWriter> Agent<W> {
             session_id: None,
             tool_call_metrics: Vec::new(),
             ui_writer,
-            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
+            todo_content: std::sync::Arc::new(tokio::sync::RwLock::new({
+                // Initialize from TODO.md file if it exists
+                let todo_path = std::env::current_dir()
+                    .ok()
+                    .map(|p| p.join("todo.g3.md"));
+                
+                if let Some(path) = todo_path {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            })),
             is_autonomous,
             quiet,
             computer_controller,
             webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             safaridriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             macax_controller: {
-                std::sync::Arc::new(tokio::sync::RwLock::new(
-                    if macax_enabled { Some(g3_computer_control::MacAxController::new()?) }
-                    else { None }
-                ))
+                std::sync::Arc::new(tokio::sync::RwLock::new(if macax_enabled {
+                    Some(g3_computer_control::MacAxController::new()?)
+                } else {
+                    None
+                }))
             },
         })
     }
 
-    fn determine_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+    fn get_configured_context_length(config: &Config, providers: &ProviderRegistry) -> Result<u32> {
+        // First, check if there's a global max_context_length override in agent config
+        if let Some(max_context_length) = config.agent.max_context_length {
+            debug!("Using configured agent.max_context_length: {}", max_context_length);
+            return Ok(max_context_length);
+        }
+
+        // Get the configured max_tokens for the current provider
+        fn get_provider_max_tokens(config: &Config, provider_name: &str) -> Option<u32> {
+            match provider_name {
+                "anthropic" => config.providers.anthropic.as_ref()?.max_tokens,
+                "openai" => config.providers.openai.as_ref()?.max_tokens,
+                "databricks" => config.providers.databricks.as_ref()?.max_tokens,
+                "embedded" => config.providers.embedded.as_ref()?.max_tokens,
+                _ => None,
+            }
+        }
+
         // Get the active provider to determine context length
         let provider = providers.get(None)?;
         let provider_name = provider.name();
@@ -953,30 +1030,35 @@ impl<W: UiWriter> Agent<W> {
                         }
                     })
                 } else {
-                    config.agent.max_context_length as u32
+                    config.agent.fallback_default_max_tokens as u32
                 }
             }
             "openai" => {
-                192000
+                // gpt-5 has 400k window
+                get_provider_max_tokens(config, "openai").unwrap_or(400000)
             }
             "anthropic" => {
                 // Claude models have large context windows
-                200000 // Default for Claude models
+                // Use configured max_tokens or fall back to default
+                get_provider_max_tokens(config, "anthropic").unwrap_or(200000)
             }
             "databricks" => {
                 // Databricks models have varying context windows depending on the model
-                if model_name.contains("claude") {
-                    200000 // Claude models on Databricks have large context windows
-                } else if model_name.contains("llama") || model_name.contains("dbrx") {
-                    32768 // DBRX supports 32k context
-                } else {
-                    16384 // Conservative default for other Databricks models
-                }
+                // Use configured max_tokens or fall back to model-specific defaults
+                get_provider_max_tokens(config, "databricks").unwrap_or_else(|| {
+                    if model_name.contains("claude") {
+                        200000 // Claude models on Databricks have large context windows
+                    } else if model_name.contains("llama") || model_name.contains("dbrx") {
+                        32768 // DBRX supports 32k context
+                    } else {
+                        16384 // Conservative default for other Databricks models
+                    }
+                })
             }
-            _ => config.agent.max_context_length as u32,
+            _ => config.agent.fallback_default_max_tokens as u32,
         };
 
-        info!(
+        debug!(
             "Using context length: {} tokens for provider: {} (model: {})",
             context_length, provider_name, model_name
         );
@@ -1104,32 +1186,126 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter \"ls\".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
+# Task Management with TODO Tools
+
+**REQUIRED for multi-step tasks.** Use TODO tools when your task involves ANY of:
+- Multiple files to create/modify (2+)
+- Multiple distinct steps (3+)
+- Dependencies between steps
+- Testing or verification needed
+- Uncertainty about approach
+
+## Workflow
+
+Every multi-step task follows this pattern:
+1. **Start**: Call todo_read, then todo_write to create your plan
+2. **During**: Execute steps, then todo_read and todo_write to mark progress
+3. **End**: Call todo_read to verify all items complete
+
+Note: todo_write replaces the entire todo.g3.md file, so always read first to preserve content. TODO lists persist across g3 sessions in the workspace directory.
+
+## Examples
+
+**Example 1: Feature Implementation**
+User asks: \"Add user authentication with tests\"
+
+First action:
+{\"tool\": \"todo_read\", \"args\": {}}
+
+Then create plan:
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [ ] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+After completing User struct:
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [x] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+**Example 2: Bug Fix**
+User asks: \"Fix the memory leak in cache module\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Fix memory leak\\n  - [ ] Review cache.rs\\n  - [ ] Check for unclosed resources\\n  - [ ] Add drop implementation\\n  - [ ] Write test to verify fix\"}}
+
+**Example 3: Refactoring**
+User asks: \"Refactor database layer to use async/await\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Refactor to async\\n  - [ ] Update function signatures\\n  - [ ] Replace blocking calls\\n  - [ ] Update all callers\\n  - [ ] Update tests\"}}
+
+## Format
+
+Use markdown checkboxes:
+- \"- [ ]\" for incomplete tasks
+- \"- [x]\" for completed tasks
+- Indent with 2 spaces for subtasks
+
+Keep items short, specific, and action-oriented.
+
+## Benefits
+
+✓ Prevents missed steps
+✓ Makes progress visible
+✓ Helps recover from interruptions
+✓ Creates better summaries
+
+## When NOT to Use
+
+Skip TODO tools for simple single-step tasks:
+- \"List files\" → just use shell
+- \"Read config.json\" → just use read_file
+- \"Search for functions\" → just use code_search
+
+If you can complete it with 1-2 tool calls, skip TODO.
+
+# Code Search Guidelines
+
+IMPORTANT: When searching for code constructs (functions, classes, methods, structs, etc.), ALWAYS use `code_search` instead of shell grep/rg.
+If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
+
+# Code Search Guidelines
+
+IMPORTANT: When searching for code constructs (functions, classes, methods, structs, etc.), ALWAYS use `code_search` instead of shell grep/rg. 
+It's syntax-aware and finds actual code, not comments or strings. Only use shell grep for:
+  - Searching non-code files (logs, markdown, text)
+  - Simple string searches across all file types
+  - When you need regex for text content (not code structure)
+
+Common code_search query patterns:
+
+**Rust:**
+  - All functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"async_fns\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Enums: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"enums\", \"query\": \"(enum_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Impl blocks: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"impls\", \"query\": \"(impl_item type: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+
+**Python:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_definition name: (identifier) @name)\", \"language\": \"python\"}]}}
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_definition name: (identifier) @name)\", \"language\": \"python\"}]}}
+
+**JavaScript/TypeScript:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_declaration name: (identifier) @name)\", \"language\": \"javascript\"}]}}
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_declaration name: (identifier) @name)\", \"language\": \"javascript\"}]}}
+  - Arrow functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"arrow_fns\", \"query\": \"(arrow_function) @fn\", \"language\": \"javascript\"}]}}
+
+**Go:**
+  - Functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"functions\", \"query\": \"(function_declaration name: (identifier) @name)\", \"language\": \"go\"}]}}
+  - Methods: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"methods\", \"query\": \"(method_declaration name: (field_identifier) @name)\", \"language\": \"go\"}]}}
+
+**Java/C++:**
+  - Classes: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"classes\", \"query\": \"(class_declaration name: (identifier) @name)\", \"language\": \"java\"}]}}
+  - Methods: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"methods\", \"query\": \"(method_declaration name: (identifier) @name)\", \"language\": \"java\"}]}}
+
+**Advanced features:**
+  - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - With context: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
+  - Specific paths: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/core\"]}]}}
+
+
 IMPORTANT: If the user asks you to just respond with text (like \"just say hello\" or \"tell me about X\"), do NOT use tools. Simply respond with the requested text directly. Only use tools when you need to execute commands or complete tasks that require action.
 
 When taking screenshots of specific windows (like \"my Safari window\" or \"my terminal\"), ALWAYS use list_windows first to identify the correct window ID, then use take_screenshot with the window_id parameter.
 
 Do not explain what you're going to do - just do it by calling the tools.
-
-# Task Management
-
-Use todo_read and todo_write for tasks with 2+ steps, multiple files/components, or uncertain scope.
-
-Workflow:
-- Start: read → write checklist
-- During: read → update progress
-- End: verify all complete
-
-Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
-
-Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
-
-Template:
-- [ ] Implement feature X
-  - [ ] Update API
-  - [ ] Write tests
-  - [ ] Run tests
-  - [ ] Run lint
-- [ ] Blocked: waiting on credentials
 
 
 # Response Guidelines
@@ -1153,6 +1329,8 @@ The tool will execute immediately and you'll receive the result (success or erro
 
 # Available Tools
 
+Short description for providers without native calling specs:
+
 - **shell**: Execute shell commands
   - Format: {\"tool\": \"shell\", \"args\": {\"command\": \"your_command_here\"}
   - Example: {\"tool\": \"shell\", \"args\": {\"command\": \"ls ~/Downloads\"}
@@ -1173,38 +1351,119 @@ The tool will execute immediately and you'll receive the result (success or erro
 - **final_output**: Signal task completion with a detailed summary of work done in markdown format
   - Format: {\"tool\": \"final_output\", \"args\": {\"summary\": \"what_was_accomplished\"}
 
-- **todo_read**: Read the entire TODO list content
+- **todo_read**: Read the entire TODO list from todo.g3.md file in workspace directory
   - Format: {\"tool\": \"todo_read\", \"args\": {}}
   - Example: {\"tool\": \"todo_read\", \"args\": {}}
 
-- **todo_write**: Write or overwrite the entire TODO list (WARNING: overwrites completely, always read first)
+- **todo_write**: Write or overwrite the entire todo.g3.md file (WARNING: overwrites completely, always read first)
   - Format: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Task 1\\n- [ ] Task 2\"}}
   - Example: {\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Implement feature\\n  - [ ] Write tests\\n  - [ ] Run tests\"}}
+
+- **code_search**: Syntax-aware code search using tree-sitter. Supports Rust, Python, JavaScript, TypeScript.
+  - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"label\", \"query\": \"tree-sitter query\", \"language\": \"rust|python|javascript|typescript\", \"paths\": [\"src/\"], \"context_lines\": 0}]}}
+  - Find functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_functions\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"paths\": [\"src/\"]}]}}
+  - Find async functions: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"find_async\", \"query\": \"(function_item (function_modifiers) name: (identifier) @name)\", \"language\": \"rust\"}]}}
+  - Find structs: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
+  - With context lines: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
+       - \"context\": 3 (show surrounding lines),
+       - \"json_style\": \"stream\" (for large results)
 
 # Instructions
 
 1. Analyze the request and break down into smaller tasks if appropriate
-2. Execute ONE tool at a time
+2. Execute ONE tool at a time. An exception exists for when you're writing files. See below.
 3. STOP when the original request was satisfied
 4. Call the final_output tool when done
 
-# Task Management
+For reading files, prioritize use of code_search tool use with multiple search requests per call instead of read_file, if it makes sense.
 
-Use todo_read and todo_write for tasks with 3+ steps, multiple files/components, or uncertain scope.
+Exception to using ONE tool at a time:
+If all you’re doing is WRITING files, and you don’t need to do anything else between each step.
+You can issue MULTIPLE write_file tool calls in a request, however you may ONLY make a SINGLE write_file call for any file in that request.
+For example you may call:
+[START OF REQUEST]
+write_file(\"helper.rs\", \"...\")
+write_file(\"file2.txt\", \"...\")
+[DONE]
 
-Workflow:
-- Start: read → write checklist
-- During: read → update progress
-- End: verify all complete
+But NOT:
+[START OF REQUEST]
+write_file(\"helper.rs\", \"...\")
+write_file(\"file2.txt\", \"...\")
+write_file(\"helper.rs\", \"...\")
+[DONE]
 
-Warning: todo_write overwrites entirely; always todo_read first (skipping is an error)
+# Task Management with TODO Tools
 
-Keep items short, specific, action-oriented. Not using the todo tools for complex tasks is an error.
+**REQUIRED for multi-step tasks.** Use TODO tools when your task involves ANY of:
+- Multiple files to create/modify (2+)
+- Multiple distinct steps (3+)
+- Dependencies between steps
+- Testing or verification needed
+- Uncertainty about approach
 
-Template:
-- [ ] Implement feature X
-  - [ ] Update API
-  - [ ] Write tests
+## Workflow
+
+Every multi-step task follows this pattern:
+1. **Start**: Call todo_read, then todo_write to create your plan
+2. **During**: Execute steps, then todo_read and todo_write to mark progress
+3. **End**: Call todo_read to verify all items complete
+
+Note: todo_write replaces the entire list, so always read first to preserve content.
+
+## Examples
+
+**Example 1: Feature Implementation**
+User asks: \"Add user authentication with tests\"
+
+First action:
+{\"tool\": \"todo_read\", \"args\": {}}
+
+Then create plan:
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [ ] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+After completing User struct:
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Add user authentication\\n  - [x] Create User struct\\n  - [ ] Add login endpoint\\n  - [ ] Add password hashing\\n  - [ ] Write unit tests\\n  - [ ] Write integration tests\"}}
+
+**Example 2: Bug Fix**
+User asks: \"Fix the memory leak in cache module\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Fix memory leak\\n  - [ ] Review cache.rs\\n  - [ ] Check for unclosed resources\\n  - [ ] Add drop implementation\\n  - [ ] Write test to verify fix\"}}
+
+**Example 3: Refactoring**
+User asks: \"Refactor database layer to use async/await\"
+
+{\"tool\": \"todo_read\", \"args\": {}}
+{\"tool\": \"todo_write\", \"args\": {\"content\": \"- [ ] Refactor to async\\n  - [ ] Update function signatures\\n  - [ ] Replace blocking calls\\n  - [ ] Update all callers\\n  - [ ] Update tests\"}}
+
+## Format
+
+Use markdown checkboxes:
+- \"- [ ]\" for incomplete tasks
+- \"- [x]\" for completed tasks
+- Indent with 2 spaces for subtasks
+
+Keep items short, specific, and action-oriented.
+
+## Benefits
+
+✓ Prevents missed steps
+✓ Makes progress visible
+✓ Helps recover from interruptions
+✓ Creates better summaries
+
+## When NOT to Use
+
+Skip TODO tools for simple single-step tasks:
+- \"List files\" → just use shell
+- \"Read config.json\" → just use read_file
+- \"Search for functions\" → just use code_search
+
+If you can complete it with 1-2 tool calls, skip TODO.
+
 
 # Response Guidelines
 
@@ -1239,7 +1498,11 @@ Template:
         // Check if provider supports native tool calling and add tools if so
         let provider = self.providers.get(None)?;
         let tools = if provider.has_native_tool_calling() {
-            Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled))
+            Some(Self::create_tool_definitions(
+                self.config.webdriver.enabled,
+                self.config.macax.enabled,
+                self.config.computer_control.enabled,
+            ))
         } else {
             None
         };
@@ -1311,6 +1574,19 @@ Template:
 
         // Save context window at the end of successful interaction
         self.save_context_window("completed");
+
+        // Check if we need to do 90% auto-compaction
+        if self.pending_90_summarization {
+            self.ui_writer.print_context_status(
+                "\n⚡ Context window reached 90% - auto-compacting...\n"
+            );
+            if let Err(e) = self.force_summarize().await {
+                warn!("Failed to auto-compact at 90%: {}", e);
+            } else {
+                self.ui_writer.println("");
+            }
+            self.pending_90_summarization = false;
+        }
 
         // Return the task result which already includes timing if needed
         Ok(task_result)
@@ -1397,11 +1673,83 @@ Template:
         &self.context_window
     }
 
+    /// Log an error message to the session JSON file as the last message
+    /// This is used in autonomous mode to record context length exceeded errors
+    pub fn log_error_to_session(
+        &self,
+        error: &anyhow::Error,
+        role: &str,
+        forensic_context: Option<String>,
+    ) {
+        // Skip if quiet mode is enabled
+        if self.quiet {
+            return;
+        }
+
+        // Only log if we have a session ID
+        let session_id = match &self.session_id {
+            Some(id) => id,
+            None => {
+                error!("Cannot log error to session: no session ID");
+                return;
+            }
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let filename = format!("logs/g3_session_{}.json", session_id);
+
+        // Read existing session log
+        let mut session_data: serde_json::Value = if std::path::Path::new(&filename).exists() {
+            match std::fs::read_to_string(&filename) {
+                Ok(content) => {
+                    serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+                }
+                Err(_) => serde_json::json!({}),
+            }
+        } else {
+            serde_json::json!({})
+        };
+
+        // Build error message with forensic context
+        let error_message = if let Some(context) = forensic_context {
+            format!("ERROR: {}\n\nForensic Context:\n{}", error, context)
+        } else {
+            format!("ERROR: {}", error)
+        };
+
+        // Create error message entry
+        let error_entry = serde_json::json!({
+            "role": role,
+            "content": error_message,
+            "timestamp": timestamp,
+            "error_type": "context_length_exceeded"
+        });
+
+        // Append to conversation history
+        if let Some(history) = session_data
+            .get_mut("context_window")
+            .and_then(|cw| cw.get_mut("conversation_history"))
+        {
+            if let Some(history_array) = history.as_array_mut() {
+                history_array.push(error_entry);
+            }
+        }
+
+        // Write back to file
+        if let Ok(json_content) = serde_json::to_string_pretty(&session_data) {
+            let _ = std::fs::write(&filename, json_content);
+        }
+    }
+
     /// Manually trigger context summarization regardless of context window size
     /// Returns Ok(true) if summarization was successful, Ok(false) if it failed
     pub async fn force_summarize(&mut self) -> Result<bool> {
         info!("Manual summarization triggered");
-        
+
         self.ui_writer.print_context_status(&format!(
             "\n🗜️ Manual summarization requested (current usage: {}%)...",
             self.context_window.percentage_used() as u32
@@ -1422,8 +1770,7 @@ Template:
         let summary_messages = vec![
             Message {
                 role: MessageRole::System,
-                content: "You are a helpful assistant that creates concise summaries."
-                    .to_string(),
+                content: "You are a helpful assistant that creates concise summaries.".to_string(),
             },
             Message {
                 role: MessageRole::User,
@@ -1439,7 +1786,7 @@ Template:
         // Dynamically calculate max_tokens for summary based on what's left
         let summary_max_tokens = match provider.name() {
             "databricks" | "anthropic" => {
-                let model_limit = 200_000u32;
+                let model_limit = self.context_window.total_tokens;
                 let current_usage = self.context_window.used_tokens;
                 let available = model_limit
                     .saturating_sub(current_usage)
@@ -1476,9 +1823,8 @@ Template:
         // Get the summary
         match provider.complete(summary_request).await {
             Ok(summary_response) => {
-                self.ui_writer.print_context_status(
-                    "✅ Context compacted successfully.\n",
-                );
+                self.ui_writer
+                    .print_context_status("✅ Context compacted successfully.\n");
 
                 // Get the latest user message to preserve it
                 let latest_user_msg = self
@@ -1490,7 +1836,8 @@ Template:
                     .map(|m| m.content.clone());
 
                 // Reset context with summary
-                let chars_saved = self.context_window
+                let chars_saved = self
+                    .context_window
                     .reset_with_summary(summary_response.content, latest_user_msg);
                 self.summarization_events.push(chars_saved);
 
@@ -1518,37 +1865,40 @@ Template:
     /// Returns Ok(true) if README was found and reloaded, Ok(false) if no README was present initially
     pub fn reload_readme(&mut self) -> Result<bool> {
         info!("Manual README reload triggered");
-        
+
         // Check if the first message in conversation history is a system message with README content
         let has_readme = self
             .context_window
             .conversation_history
             .first()
-            .map(|m| matches!(m.role, MessageRole::System) && 
-                    (m.content.contains("Project README") || m.content.contains("Agent Configuration")))
+            .map(|m| {
+                matches!(m.role, MessageRole::System)
+                    && (m.content.contains("Project README")
+                        || m.content.contains("Agent Configuration"))
+            })
             .unwrap_or(false);
-        
+
         if !has_readme {
             return Ok(false);
         }
-        
+
         // Try to load README.md and AGENTS.md
         let mut combined_content = String::new();
         let mut found_any = false;
-        
+
         if let Ok(agents_content) = std::fs::read_to_string("AGENTS.md") {
             combined_content.push_str("# Agent Configuration\n\n");
             combined_content.push_str(&agents_content);
             combined_content.push_str("\n\n");
             found_any = true;
         }
-        
+
         if let Ok(readme_content) = std::fs::read_to_string("README.md") {
             combined_content.push_str("# Project README\n\n");
             combined_content.push_str(&readme_content);
             found_any = true;
         }
-        
+
         if found_any {
             // Replace the first message with the new content
             if let Some(first_msg) = self.context_window.conversation_history.first_mut() {
@@ -1567,69 +1917,94 @@ Template:
     pub fn get_stats(&self) -> String {
         let mut stats = String::new();
         use std::time::Duration;
-        
+
         stats.push_str("\n📊 Context Window Statistics\n");
         stats.push_str(&"=".repeat(60));
         stats.push_str("\n\n");
-        
+
         // Context window usage
         stats.push_str("🗂️  Context Window:\n");
-        stats.push_str(&format!("   • Used Tokens:       {:>10} / {}\n", 
-            self.context_window.used_tokens, 
-            self.context_window.total_tokens));
-        stats.push_str(&format!("   • Usage Percentage:  {:>10.1}%\n", 
-            self.context_window.percentage_used()));
-        stats.push_str(&format!("   • Remaining Tokens:  {:>10}\n", 
-            self.context_window.remaining_tokens()));
-        stats.push_str(&format!("   • Cumulative Tokens: {:>10}\n", 
-            self.context_window.cumulative_tokens));
-        stats.push_str(&format!("   • Last Thinning:     {:>10}%\n", 
-            self.context_window.last_thinning_percentage));
+        stats.push_str(&format!(
+            "   • Used Tokens:       {:>10} / {}\n",
+            self.context_window.used_tokens, self.context_window.total_tokens
+        ));
+        stats.push_str(&format!(
+            "   • Usage Percentage:  {:>10.1}%\n",
+            self.context_window.percentage_used()
+        ));
+        stats.push_str(&format!(
+            "   • Remaining Tokens:  {:>10}\n",
+            self.context_window.remaining_tokens()
+        ));
+        stats.push_str(&format!(
+            "   • Cumulative Tokens: {:>10}\n",
+            self.context_window.cumulative_tokens
+        ));
+        stats.push_str(&format!(
+            "   • Last Thinning:     {:>10}%\n",
+            self.context_window.last_thinning_percentage
+        ));
         stats.push('\n');
-        
+
         // Context optimization metrics
         stats.push_str("🗜️  Context Optimization:\n");
-        stats.push_str(&format!("   • Thinning Events:   {:>10}\n", 
-            self.thinning_events.len()));
+        stats.push_str(&format!(
+            "   • Thinning Events:   {:>10}\n",
+            self.thinning_events.len()
+        ));
         if !self.thinning_events.is_empty() {
             let total_thinned: usize = self.thinning_events.iter().sum();
             let avg_thinned = total_thinned / self.thinning_events.len();
             stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_thinned));
             stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_thinned));
         }
-        
-        stats.push_str(&format!("   • Summarizations:    {:>10}\n", 
-            self.summarization_events.len()));
+
+        stats.push_str(&format!(
+            "   • Summarizations:    {:>10}\n",
+            self.summarization_events.len()
+        ));
         if !self.summarization_events.is_empty() {
             let total_summarized: usize = self.summarization_events.iter().sum();
             let avg_summarized = total_summarized / self.summarization_events.len();
-            stats.push_str(&format!("   • Total Chars Saved: {:>10}\n", total_summarized));
+            stats.push_str(&format!(
+                "   • Total Chars Saved: {:>10}\n",
+                total_summarized
+            ));
             stats.push_str(&format!("   • Avg Chars/Event:   {:>10}\n", avg_summarized));
         }
         stats.push('\n');
-        
+
         // Performance metrics
         stats.push_str("⚡ Performance:\n");
         if !self.first_token_times.is_empty() {
-            let avg_ttft = self.first_token_times.iter().sum::<Duration>() / self.first_token_times.len() as u32;
+            let avg_ttft = self.first_token_times.iter().sum::<Duration>()
+                / self.first_token_times.len() as u32;
             let mut sorted_times = self.first_token_times.clone();
             sorted_times.sort();
             let median_ttft = sorted_times[sorted_times.len() / 2];
-            stats.push_str(&format!("   • Avg Time to First Token:    {:>6.3}s\n", avg_ttft.as_secs_f64()));
-            stats.push_str(&format!("   • Median Time to First Token: {:>6.3}s\n", median_ttft.as_secs_f64()));
+            stats.push_str(&format!(
+                "   • Avg Time to First Token:    {:>6.3}s\n",
+                avg_ttft.as_secs_f64()
+            ));
+            stats.push_str(&format!(
+                "   • Median Time to First Token: {:>6.3}s\n",
+                median_ttft.as_secs_f64()
+            ));
         }
         stats.push('\n');
-        
+
         // Conversation history
         stats.push_str("💬 Conversation History:\n");
-        stats.push_str(&format!("   • Total Messages:    {:>10}\n", 
-            self.context_window.conversation_history.len()));
-        
+        stats.push_str(&format!(
+            "   • Total Messages:    {:>10}\n",
+            self.context_window.conversation_history.len()
+        ));
+
         // Count messages by role
         let mut system_count = 0;
         let mut user_count = 0;
         let mut assistant_count = 0;
-        
+
         for msg in &self.context_window.conversation_history {
             match msg.role {
                 MessageRole::System => system_count += 1,
@@ -1637,48 +2012,64 @@ Template:
                 MessageRole::Assistant => assistant_count += 1,
             }
         }
-        
+
         stats.push_str(&format!("   • System Messages:   {:>10}\n", system_count));
         stats.push_str(&format!("   • User Messages:     {:>10}\n", user_count));
-        stats.push_str(&format!("   • Assistant Messages:{:>10}\n", assistant_count));
+        stats.push_str(&format!(
+            "   • Assistant Messages:{:>10}\n",
+            assistant_count
+        ));
         stats.push('\n');
-        
+
         // Tool call metrics
         stats.push_str("🔧 Tool Call Metrics:\n");
-        stats.push_str(&format!("   • Total Tool Calls:  {:>10}\n", 
-            self.tool_call_metrics.len()));
-        
-        let successful_calls = self.tool_call_metrics.iter()
+        stats.push_str(&format!(
+            "   • Total Tool Calls:  {:>10}\n",
+            self.tool_call_metrics.len()
+        ));
+
+        let successful_calls = self
+            .tool_call_metrics
+            .iter()
             .filter(|(_, _, success)| *success)
             .count();
         let failed_calls = self.tool_call_metrics.len() - successful_calls;
-        
-        stats.push_str(&format!("   • Successful:        {:>10}\n", successful_calls));
+
+        stats.push_str(&format!(
+            "   • Successful:        {:>10}\n",
+            successful_calls
+        ));
         stats.push_str(&format!("   • Failed:            {:>10}\n", failed_calls));
-        
+
         if !self.tool_call_metrics.is_empty() {
-            let total_duration: Duration = self.tool_call_metrics.iter()
+            let total_duration: Duration = self
+                .tool_call_metrics
+                .iter()
                 .map(|(_, duration, _)| *duration)
                 .sum();
             let avg_duration = total_duration / self.tool_call_metrics.len() as u32;
-            
-            stats.push_str(&format!("   • Total Duration:    {:>10.2}s\n", 
-                total_duration.as_secs_f64()));
-            stats.push_str(&format!("   • Average Duration:  {:>10.2}s\n", 
-                avg_duration.as_secs_f64()));
+
+            stats.push_str(&format!(
+                "   • Total Duration:    {:>10.2}s\n",
+                total_duration.as_secs_f64()
+            ));
+            stats.push_str(&format!(
+                "   • Average Duration:  {:>10.2}s\n",
+                avg_duration.as_secs_f64()
+            ));
         }
         stats.push('\n');
-        
+
         // Provider info
         stats.push_str("🔌 Provider:\n");
         if let Ok((provider, model)) = self.get_provider_info() {
             stats.push_str(&format!("   • Provider:          {}\n", provider));
             stats.push_str(&format!("   • Model:             {}\n", model));
         }
-        
+
         stats.push_str(&"=".repeat(60));
         stats.push('\n');
-        
+
         stats
     }
 
@@ -1700,7 +2091,11 @@ Template:
     }
 
     /// Create tool definitions for native tool calling providers
-    fn create_tool_definitions(enable_webdriver: bool, enable_macax: bool, enable_computer_control: bool) -> Vec<Tool> {
+    fn create_tool_definitions(
+        enable_webdriver: bool,
+        enable_macax: bool,
+        enable_computer_control: bool,
+    ) -> Vec<Tool> {
         let mut tools = vec![
             Tool {
                 name: "shell".to_string(),
@@ -1838,7 +2233,7 @@ Template:
             },
             Tool {
                 name: "todo_read".to_string(),
-                description: "Read the entire TODO list content. Use this to view current tasks, notes, and any other information stored in the TODO list.".to_string(),
+                description: "Read your current TODO list from todo.g3.md file in the workspace directory. Shows what tasks are planned and their status. Call this at the start of multi-step tasks to check for existing plans, and during execution to review progress before updating. TODO lists persist across g3 sessions.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -1847,7 +2242,7 @@ Template:
             },
             Tool {
                 name: "todo_write".to_string(),
-                description: "Write or overwrite the entire TODO list content. This tool replaces the complete TODO list with the provided string. Use this to update tasks, add new items, or reorganize the TODO list. WARNING: This operation completely replaces the TODO list content. Make sure to include all content you want to keep, not just the changes.".to_string(),
+                description: "Create or update your TODO list in todo.g3.md file with a complete task plan. Use markdown checkboxes: - [ ] for pending, - [x] for complete. This tool replaces the entire file content, so always call todo_read first to preserve existing content. Essential for multi-step tasks. Changes persist across g3 sessions.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1860,6 +2255,35 @@ Template:
                 }),
             },
         ];
+
+        // Add code_search tool
+        tools.push(Tool {
+            name: "code_search".to_string(),
+            description: "Syntax-aware code search that understands code structure, not just text. Finds actual functions, classes, methods, and other code constructs - ignores matches in comments and strings. Much more accurate than grep for code searches. Supports batch searches (up to 20 parallel) with structured results and context lines. Languages: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Kotlin. Uses tree-sitter query syntax.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "searches": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Label for this search." },
+                                "query": { "type": "string", "description": "tree-sitter query in S-expression format (e.g., \"(function_item name: (identifier) @name)\")"},
+                                "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "go", "java", "c", "cpp", "kotlin"], "description": "Programming language to search." },
+                                "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths/dirs to search. Defaults to current dir if empty." },
+                                "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "Lines of context to include around each match." }
+                            },
+                            "required": ["name", "query", "language"]
+                        }
+                    },
+                    "max_concurrency": { "type": "integer", "minimum": 1, "default": 4 },
+                    "max_matches_per_search": { "type": "integer", "minimum": 1, "default": 500 }
+                },
+                "required": ["searches"]
+            }),
+        });
 
         // Add WebDriver tools if enabled
         if enable_webdriver {
@@ -2106,7 +2530,7 @@ Template:
                     }),
                 },
             ]);
-            
+
             // Add type_text tool for typing arbitrary text
             tools.push(Tool {
                 name: "macax_type_text".to_string(),
@@ -2126,9 +2550,8 @@ Template:
                     "required": ["app_name", "text"]
                 }),
             });
-            
         }
-        
+
         // Add extract_text_with_boxes tool (requires macax flag)
         if enable_macax {
             tools.push(Tool {
@@ -2150,7 +2573,7 @@ Template:
                 }),
             });
         }
-        
+
         // Add vision-guided tools (requires computer control)
         if enable_computer_control {
             // Add vision-guided tools
@@ -2172,7 +2595,7 @@ Template:
                     "required": ["app_name", "text"]
                 }),
             });
-            
+
             tools.push(Tool {
                 name: "vision_click_text".to_string(),
                 description: "Find text in a specific application window and click on it (useful for clicking buttons, links, menu items)".to_string(),
@@ -2191,7 +2614,7 @@ Template:
                     "required": ["app_name", "text"]
                 }),
             });
-            
+
             tools.push(Tool {
                 name: "vision_click_near_text".to_string(),
                 description: "Find text in a specific application window and click near it (useful for clicking text fields next to labels)".to_string(),
@@ -2220,7 +2643,7 @@ Template:
                 }),
             });
         }
-        
+
         tools
     }
 
@@ -2233,7 +2656,11 @@ Template:
         use crate::error_handling::{calculate_retry_delay, classify_error, ErrorType};
 
         let mut attempt = 0;
-        let max_attempts = if self.is_autonomous { 6 } else { 3 };
+        let max_attempts = if self.is_autonomous {
+            self.config.agent.autonomous_max_retry_attempts
+        } else {
+            self.config.agent.max_retry_attempts
+        };
 
         loop {
             attempt += 1;
@@ -2293,13 +2720,28 @@ Template:
 
         // Check if we need to summarize before starting
         if self.context_window.should_summarize() {
-            info!(
-                "Context window at {}% ({}/{} tokens), triggering auto-summarization",
-                self.context_window.percentage_used() as u32,
-                self.context_window.used_tokens,
-                self.context_window.total_tokens
-            );
-
+            // First try thinning if we are at capacity, don't call the LLM for a summary (might fail)
+            if self.context_window.percentage_used() > 90.0 && self.context_window.should_thin() {
+                self.ui_writer.print_context_status(&format!(
+                    "\n🥒 Context window at {}%. Trying thinning first...",
+                    self.context_window.percentage_used() as u32
+                ));
+                
+                let (thin_summary, chars_saved) = self.context_window.thin_context();
+                self.thinning_events.push(chars_saved);
+                self.ui_writer.print_context_thinning(&thin_summary);
+                
+                // Check if thinning was sufficient
+                if !self.context_window.should_summarize() {
+                    self.ui_writer.print_context_status("✅ Thinning resolved capacity issue. Continuing...\n");
+                    // Continue with the original request without summarization
+                } else {
+                    self.ui_writer.print_context_status("⚠️ Thinning insufficient. Proceeding with summarization...\n");
+                }
+            }
+            
+            // Only proceed with summarization if still needed after thinning
+            if self.context_window.should_summarize() {
             // Notify user about summarization
             self.ui_writer.print_context_status(&format!(
                 "\n🗜️ Context window reaching capacity ({}%). Creating summary...",
@@ -2339,14 +2781,22 @@ Template:
             // We need to ensure: used_tokens + max_tokens <= total_context_limit
             let summary_max_tokens = match provider.name() {
                 "databricks" | "anthropic" => {
-                    // Claude models have 200k context
-                    // Calculate how much room we have left
-                    let model_limit = 200_000u32;
+                    // Use the actual configured context window size
+                    let model_limit = self.context_window.total_tokens;
                     let current_usage = self.context_window.used_tokens;
-                    // Leave some buffer (5k tokens) for safety
+                    
+                    // Check if we have enough capacity for summarization
+                    if current_usage >= model_limit.saturating_sub(1000) {
+                        error!("Context window at capacity ({}%), cannot summarize. Current: {}, Limit: {}", 
+                               self.context_window.percentage_used(), current_usage, model_limit);
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify or /compact commands to reduce context size, or start a new session."));
+                    }
+                    
+                    // Leave buffer proportional to model size (min 1k, max 10k)
+                    let buffer = (model_limit / 40).clamp(1000, 10000); // 2.5% buffer
                     let available = model_limit
                         .saturating_sub(current_usage)
-                        .saturating_sub(5000);
+                        .saturating_sub(buffer);
                     // Cap at a reasonable summary size (10k tokens max)
                     Some(available.min(10_000))
                 }
@@ -2354,6 +2804,13 @@ Template:
                     // For smaller context models, be more conservative
                     let model_limit = self.context_window.total_tokens;
                     let current_usage = self.context_window.used_tokens;
+                    
+                    // Check capacity for embedded models too
+                    if current_usage >= model_limit.saturating_sub(500) {
+                        error!("Embedded model context window at capacity ({}%)", self.context_window.percentage_used());
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify command to reduce context size, or start a new session."));
+                    }
+                    
                     // Leave 1k buffer
                     let available = model_limit
                         .saturating_sub(current_usage)
@@ -2363,6 +2820,14 @@ Template:
                 }
                 _ => {
                     // Default: conservative approach
+                    let model_limit = self.context_window.total_tokens;
+                    let current_usage = self.context_window.used_tokens;
+                    
+                    if current_usage >= model_limit.saturating_sub(1000) {
+                        error!("Context window at capacity ({}%)", self.context_window.percentage_used());
+                        return Err(anyhow::anyhow!("Context window at capacity. Try using /thinnify or /compact commands, or start a new session."));
+                    }
+                    
                     let available = self.context_window.remaining_tokens().saturating_sub(2000);
                     Some(available.min(5000))
                 }
@@ -2372,6 +2837,12 @@ Template:
                 "Requesting summary with max_tokens: {:?} (current usage: {} tokens)",
                 summary_max_tokens, self.context_window.used_tokens
             );
+            
+            // Final safety check
+            if summary_max_tokens.unwrap_or(0) == 0 {
+                error!("No tokens available for summarization");
+                return Err(anyhow::anyhow!("No context window capacity left for summarization. Use /thinnify to reduce context size or start a new session."));
+            }
 
             let summary_request = CompletionRequest {
                 messages: summary_messages,
@@ -2384,9 +2855,8 @@ Template:
             // Get the summary
             match provider.complete(summary_request).await {
                 Ok(summary_response) => {
-                    self.ui_writer.print_context_status(
-                        "✅ Context compacted successfully. Continuing...\n",
-                    );
+                    self.ui_writer
+                        .print_context_status("✅ Context compacted successfully. Continuing...\n");
 
                     // Extract the latest user message from the request
                     let latest_user_msg = request
@@ -2397,13 +2867,14 @@ Template:
                         .map(|m| m.content.clone());
 
                     // Reset context with summary
-                    let chars_saved = self.context_window
+                    let chars_saved = self
+                        .context_window
                         .reset_with_summary(summary_response.content, latest_user_msg);
                     self.summarization_events.push(chars_saved);
 
                     // Update the request with new context
                     request.messages = self.context_window.conversation_history.clone();
-               }
+                }
                 Err(e) => {
                     error!("Failed to create summary: {}", e);
                     self.ui_writer.print_context_status("⚠️ Unable to create summary. Consider starting a new session if you continue to see errors.\n");
@@ -2412,6 +2883,7 @@ Template:
                     return Err(anyhow::anyhow!("Context window at capacity and summarization failed. Please start a new session."));
                 }
             }
+        }
         }
 
         loop {
@@ -2550,13 +3022,23 @@ Template:
                         if let Some(tool_call) = completed_tools.into_iter().next() {
                             debug!("Processing completed tool call: {:?}", tool_call);
                             
+                            // Check if we should auto-compact at 90% BEFORE executing the tool
+                            // We need to do this before any borrows of self
+                            if self.auto_compact && self.context_window.percentage_used() >= 90.0 {
+                                // Set flag to trigger summarization after this turn completes
+                                // We can't do it now due to borrow checker constraints
+                                self.pending_90_summarization = true;
+                            }
+                            
                             // Check if we should thin the context BEFORE executing the tool
                             if self.context_window.should_thin() {
-                                let (thin_summary, chars_saved) = self.context_window.thin_context();
+                                let (thin_summary, chars_saved) =
+                                    self.context_window.thin_context();
                                 self.thinning_events.push(chars_saved);
                                 // Print the thinning summary to the user
                                 self.ui_writer.print_context_thinning(&thin_summary);
                             }
+
 
                             // Track what we've already displayed before getting new text
                             // This prevents re-displaying old content after tool execution
@@ -2686,40 +3168,52 @@ Template:
 
                                 // Check if UI wants full output (machine mode) or truncated (human mode)
                                 let wants_full = self.ui_writer.wants_full_output();
-                                
+
                                 // Helper function to safely truncate strings at character boundaries
-                                let truncate_line = |line: &str, max_width: usize, truncate: bool| -> String {
-                                    if !truncate {
-                                        // Machine mode - return full line
-                                        line.to_string()
-                                    } else if line.chars().count() <= max_width {
-                                        // Human mode - line fits within limit
-                                        line.to_string()
-                                    } else {
-                                        // Human mode - truncate long line
-                                        let truncated: String = line
-                                            .chars()
-                                            .take(max_width.saturating_sub(3))
-                                            .collect();
-                                        format!("{}...", truncated)
-                                    }
-                                };
+                                let truncate_line =
+                                    |line: &str, max_width: usize, truncate: bool| -> String {
+                                        if !truncate {
+                                            // Machine mode - return full line
+                                            line.to_string()
+                                        } else if line.chars().count() <= max_width {
+                                            // Human mode - line fits within limit
+                                            line.to_string()
+                                        } else {
+                                            // Human mode - truncate long line
+                                            let truncated: String = line
+                                                .chars()
+                                                .take(max_width.saturating_sub(3))
+                                                .collect();
+                                            format!("{}...", truncated)
+                                        }
+                                    };
 
                                 const MAX_LINES: usize = 5;
                                 const MAX_LINE_WIDTH: usize = 80;
                                 let output_len = output_lines.len();
-                                
+
                                 // For todo tools, show all lines without truncation
-                                let is_todo_tool = tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
-                                let max_lines_to_show = if is_todo_tool || wants_full { output_len } else { MAX_LINES };
+                                let is_todo_tool =
+                                    tool_call.tool == "todo_read" || tool_call.tool == "todo_write";
+                                let max_lines_to_show = if is_todo_tool || wants_full {
+                                    output_len
+                                } else {
+                                    MAX_LINES
+                                };
 
                                 for (idx, line) in output_lines.iter().enumerate() {
                                     if !is_todo_tool && !wants_full && idx >= max_lines_to_show {
                                         break;
                                     }
-                                    // Clip line to max width
-                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full);
-                                    self.ui_writer.update_tool_output_line(&clipped_line);
+                                    // Clip line to max width (but not for todo tools)
+                                    let clipped_line = truncate_line(line, MAX_LINE_WIDTH, !wants_full && !is_todo_tool);
+                                    
+                                    // Use print_tool_output_line for todo tools to get special formatting
+                                    if is_todo_tool {
+                                        self.ui_writer.print_tool_output_line(&clipped_line);
+                                    } else {
+                                        self.ui_writer.update_tool_output_line(&clipped_line);
+                                    }
                                 }
 
                                 if !is_todo_tool && !wants_full && output_len > MAX_LINES {
@@ -2796,7 +3290,11 @@ Template:
 
                             // Ensure tools are included for native providers in subsequent iterations
                             if provider.has_native_tool_calling() {
-                                request.tools = Some(Self::create_tool_definitions(self.config.webdriver.enabled, self.config.macax.enabled, self.config.computer_control.enabled));
+                                request.tools = Some(Self::create_tool_definitions(
+                                    self.config.webdriver.enabled,
+                                    self.config.macax.enabled,
+                                    self.config.computer_control.enabled,
+                                ));
                             }
 
                             // DO NOT add final_display_content to full_response here!
@@ -2805,7 +3303,7 @@ Template:
                             // The only time we should add to full_response is:
                             // 1. For final_output tool (handled separately)
                             // 2. At the end when no tools were executed (handled in the "no tool executed" branch)
-                            
+
                             tool_executed = true;
 
                             // Reset the JSON tool call filter state after each tool execution
@@ -2814,7 +3312,7 @@ Template:
 
                             // Reset parser for next iteration - this clears the text buffer
                             parser.reset();
-                            
+
                             // Clear current_response for next iteration to prevent buffered text
                             // from being incorrectly displayed after tool execution
                             current_response.clear();
@@ -2890,7 +3388,8 @@ Template:
                                             "Using filtered parser text as last resort: {} chars",
                                             filtered_text.len()
                                         );
-                                        current_response = filtered_text;
+                                        // Note: This assignment is currently unused but kept for potential future use
+                                        let _ = filtered_text;
                                     }
                                 }
 
@@ -3023,17 +3522,33 @@ Template:
                     }
                     Err(e) => {
                         // Capture detailed streaming error information
-                        let error_details =
-                            format!("Streaming error at chunk {}: {}", chunks_received + 1, e);
-                        error!("{}", error_details);
+                        let error_msg = e.to_string();
+                        let error_details = format!("Streaming error at chunk {}: {}", chunks_received + 1, error_msg);
+                        
                         error!("Error type: {}", std::any::type_name_of_val(&e));
                         error!("Parser state at error: text_buffer_len={}, native_tool_calls={}, message_stopped={}",
                             parser.text_buffer_len(), parser.native_tool_calls.len(), parser.is_message_stopped());
 
                         // Store the error for potential logging later
-                        _last_error = Some(error_details);
+                        _last_error = Some(error_details.clone());
+                        
+                        // Check if this is a recoverable connection error
+                        let is_connection_error = error_msg.contains("unexpected EOF") 
+                            || error_msg.contains("connection") 
+                            || error_msg.contains("chunk size line")
+                            || error_msg.contains("body error");
+                        
+                        if is_connection_error {
+                            warn!("Connection error at chunk {}, treating as end of stream", chunks_received + 1);
+                            // If we have any content or tool calls, treat this as a graceful end
+                            if chunks_received > 0 && (!parser.get_text_content().is_empty() || parser.native_tool_calls.len() > 0) {
+                                warn!("Stream terminated unexpectedly but we have content, continuing");
+                                break; // Break to process what we have
+                            }
+                        }
 
                         if tool_executed {
+                            error!("{}", error_details);
                             warn!("Stream error after tool execution, attempting to continue");
                             break; // Break to outer loop to start new stream
                         } else {
@@ -3103,7 +3618,7 @@ Template:
                         .replace("</s>", "")
                         .replace("[/INST]", "")
                         .replace("<</SYS>>", "");
-                    
+
                     if !raw_clean.trim().is_empty() {
                         let assistant_message = Message {
                             role: MessageRole::Assistant,
@@ -3149,7 +3664,7 @@ Template:
         Ok(TaskResult::new(final_response, self.context_window.clone()))
     }
 
-    async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String> {
+    pub async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String> {
         debug!("=== EXECUTING TOOL ===");
         debug!("Tool name: {}", tool_call.tool);
         debug!("Tool args (raw): {:?}", tool_call.args);
@@ -3635,7 +4150,10 @@ Template:
                                 .unwrap_or(0) as i32,
                         });
 
-                    match controller.take_screenshot(path, region, Some(window_id)).await {
+                    match controller
+                        .take_screenshot(path, region, Some(window_id))
+                        .await
+                    {
                         Ok(_) => {
                             // Get the actual path where the screenshot was saved
                             let actual_path = if path.starts_with('/') {
@@ -3662,10 +4180,12 @@ Template:
             }
             "extract_text" => {
                 if let Some(controller) = &self.computer_controller {
-                    let path = tool_call.args.get("path")
+                    let path = tool_call
+                        .args
+                        .get("path")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
-                    
+
                     // Extract text from image file only
                     match controller.extract_text_from_image(path).await {
                         Ok(text) => Ok(format!("✅ Extracted text:\n{}", text)),
@@ -3677,11 +4197,29 @@ Template:
             }
             "todo_read" => {
                 debug!("Processing todo_read tool call");
-                let content = self.todo_content.read().await;
-                if content.is_empty() {
-                    Ok("📝 TODO list is empty".to_string())
+                // Read from todo.g3.md file in current workspace directory
+                let todo_path = std::env::current_dir()?.join("todo.g3.md");
+                
+                if !todo_path.exists() {
+                    // Also update in-memory content to stay in sync
+                    let mut todo = self.todo_content.write().await;
+                    *todo = String::new();
+                    Ok("📝 TODO list is empty (no todo.g3.md file found)".to_string())
                 } else {
-                    Ok(format!("📝 TODO list:\n{}", content.as_str()))
+                    match std::fs::read_to_string(&todo_path) {
+                        Ok(content) => {
+                            // Update in-memory content to stay in sync
+                            let mut todo = self.todo_content.write().await;
+                            *todo = content.clone();
+                            
+                            if content.trim().is_empty() {
+                                Ok("📝 TODO list is empty".to_string())
+                            } else {
+                                Ok(format!("📝 TODO list:\n{}", content))
+                            }
+                        }
+                        Err(e) => Ok(format!("❌ Failed to read TODO.md: {}", e)),
+                    }
                 }
             }
             "todo_write" => {
@@ -3695,12 +4233,24 @@ Template:
                             .unwrap_or(50_000);
 
                         if max_chars > 0 && char_count > max_chars {
-                            return Ok(format!("❌ TODO list too large: {} chars (max: {})", char_count, max_chars));
+                            return Ok(format!(
+                                "❌ TODO list too large: {} chars (max: {})",
+                                char_count, max_chars
+                            ));
                         }
 
-                        let mut todo = self.todo_content.write().await;
-                        *todo = content_str.to_string();
-                        Ok(format!("✅ TODO list updated ({} chars)", char_count))
+                        // Write to todo.g3.md file in current workspace directory
+                        let todo_path = std::env::current_dir()?.join("todo.g3.md");
+                        
+                        match std::fs::write(&todo_path, content_str) {
+                            Ok(_) => {
+                                // Also update in-memory content to stay in sync
+                                let mut todo = self.todo_content.write().await;
+                                *todo = content_str.to_string();
+                                Ok(format!("✅ TODO list updated ({} chars) and saved to todo.g3.md", char_count))
+                            }
+                            Err(e) => Ok(format!("❌ Failed to write todo.g3.md: {}", e)),
+                        }
                     } else {
                         Ok("❌ Invalid content argument".to_string())
                     }
@@ -3710,11 +4260,13 @@ Template:
             }
             "webdriver_start" => {
                 debug!("Processing webdriver_start tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 // Check if session already exists
                 let session_guard = self.webdriver_session.read().await;
                 if session_guard.is_some() {
@@ -3722,71 +4274,75 @@ Template:
                     return Ok("✅ WebDriver session already active".to_string());
                 }
                 drop(session_guard);
-                
+
                 // Note: Safari Remote Automation must be enabled before using WebDriver.
                 // Run this once: safaridriver --enable
                 // Or enable manually: Safari → Develop → Allow Remote Automation
-                
+
                 // Start safaridriver process
                 let port = self.config.webdriver.safari_port;
-                info!("Starting safaridriver on port {}", port);
-                
+
                 let safaridriver_result = tokio::process::Command::new("safaridriver")
                     .arg("--port")
                     .arg(port.to_string())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
-                
+
                 let mut safaridriver_process = match safaridriver_result {
                     Ok(process) => process,
                     Err(e) => {
                         return Ok(format!("❌ Failed to start safaridriver: {}\n\nMake sure safaridriver is installed.", e));
                     }
                 };
-                
+
                 // Wait for safaridriver to start up
-                info!("Waiting for safaridriver to start...");
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                
+
                 // Connect to SafariDriver
                 match g3_computer_control::SafariDriver::with_port(port).await {
                     Ok(driver) => {
                         let session = std::sync::Arc::new(tokio::sync::Mutex::new(driver));
                         *self.webdriver_session.write().await = Some(session);
-                        
+
                         // Store the process handle
                         *self.safaridriver_process.write().await = Some(safaridriver_process);
-                        
-                        info!("WebDriver session started successfully");
+
                         Ok("✅ WebDriver session started successfully! Safari should open automatically.".to_string())
                     }
                     Err(e) => {
                         // Kill the safaridriver process if connection failed
                         let _ = safaridriver_process.kill().await;
-                        
+
                         Ok(format!("❌ Failed to connect to SafariDriver: {}\n\nThis might be because:\n  - Safari Remote Automation is not enabled (run: safaridriver --enable)\n  - Port {} is already in use\n  - Safari failed to start\n  - Network connectivity issue\n\nTo enable Remote Automation:\n  1. Run: safaridriver --enable (requires password, one-time setup)\n  2. Or manually: Safari → Develop → Allow Remote Automation", e, port))
                     }
                 }
             }
             "webdriver_navigate" => {
                 debug!("Processing webdriver_navigate tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
                 drop(session_guard);
                 let url = match tool_call.args.get("url").and_then(|v| v.as_str()) {
                     Some(u) => u,
                     None => return Ok("❌ Missing url argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.navigate(url).await {
                     Ok(_) => Ok(format!("✅ Navigated to {}", url)),
@@ -3795,17 +4351,24 @@ Template:
             }
             "webdriver_get_url" => {
                 debug!("Processing webdriver_get_url tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.current_url().await {
                     Ok(url) => Ok(format!("Current URL: {}", url)),
@@ -3814,17 +4377,24 @@ Template:
             }
             "webdriver_get_title" => {
                 debug!("Processing webdriver_get_title tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.title().await {
                     Ok(title) => Ok(format!("Page title: {}", title)),
@@ -3833,51 +4403,63 @@ Template:
             }
             "webdriver_find_element" => {
                 debug!("Processing webdriver_find_element tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
-                    Ok(elem) => {
-                        match elem.text().await {
-                            Ok(text) => Ok(format!("Element text: {}", text)),
-                            Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
-                        }
-                    }
+                    Ok(elem) => match elem.text().await {
+                        Ok(text) => Ok(format!("Element text: {}", text)),
+                        Err(e) => Ok(format!("❌ Failed to get element text: {}", e)),
+                    },
                     Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
                 }
             }
             "webdriver_find_elements" => {
                 debug!("Processing webdriver_find_elements tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_elements(selector).await {
                     Ok(elements) => {
@@ -3888,67 +4470,85 @@ Template:
                                 Err(_) => results.push(format!("[{}]: <error getting text>", i)),
                             }
                         }
-                        Ok(format!("Found {} elements:\n{}", results.len(), results.join("\n")))
+                        Ok(format!(
+                            "Found {} elements:\n{}",
+                            results.len(),
+                            results.join("\n")
+                        ))
                     }
                     Err(e) => Ok(format!("❌ Failed to find elements '{}': {}", selector, e)),
                 }
             }
             "webdriver_click" => {
                 debug!("Processing webdriver_click tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
-                    Ok(mut elem) => {
-                        match elem.click().await {
-                            Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
-                            Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
-                        }
-                    }
+                    Ok(mut elem) => match elem.click().await {
+                        Ok(_) => Ok(format!("✅ Clicked element '{}'", selector)),
+                        Err(e) => Ok(format!("❌ Failed to click element: {}", e)),
+                    },
                     Err(e) => Ok(format!("❌ Failed to find element '{}': {}", selector, e)),
                 }
             }
             "webdriver_send_keys" => {
                 debug!("Processing webdriver_send_keys tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let selector = match tool_call.args.get("selector").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing selector argument".to_string()),
                 };
-                
+
                 let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
                     Some(t) => t,
                     None => return Ok("❌ Missing text argument".to_string()),
                 };
-                
-                let clear_first = tool_call.args.get("clear_first")
+
+                let clear_first = tool_call
+                    .args
+                    .get("clear_first")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                
+
                 let mut driver = session.lock().await;
                 match driver.find_element(selector).await {
                     Ok(mut elem) => {
@@ -3967,22 +4567,29 @@ Template:
             }
             "webdriver_execute_script" => {
                 debug!("Processing webdriver_execute_script tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let script = match tool_call.args.get("script").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => return Ok("❌ Missing script argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.execute_script(script, vec![]).await {
                     Ok(result) => Ok(format!("Script result: {:?}", result)),
@@ -3991,23 +4598,34 @@ Template:
             }
             "webdriver_get_page_source" => {
                 debug!("Processing webdriver_get_page_source tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let driver = session.lock().await;
                 match driver.page_source().await {
                     Ok(source) => {
                         // Truncate if too long
                         if source.len() > 10000 {
-                            Ok(format!("Page source ({} chars, truncated to 10000):\n{}...", source.len(), &source[..10000]))
+                            Ok(format!(
+                                "Page source ({} chars, truncated to 10000):\n{}...",
+                                source.len(),
+                                &source[..10000]
+                            ))
                         } else {
                             Ok(format!("Page source ({} chars):\n{}", source.len(), source))
                         }
@@ -4017,22 +4635,29 @@ Template:
             }
             "webdriver_screenshot" => {
                 debug!("Processing webdriver_screenshot tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let path = match tool_call.args.get("path").and_then(|v| v.as_str()) {
                     Some(p) => p,
                     None => return Ok("❌ Missing path argument".to_string()),
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.screenshot(path).await {
                     Ok(_) => Ok(format!("✅ Screenshot saved to {}", path)),
@@ -4041,17 +4666,24 @@ Template:
             }
             "webdriver_back" => {
                 debug!("Processing webdriver_back tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.back().await {
                     Ok(_) => Ok("✅ Navigated back".to_string()),
@@ -4060,17 +4692,24 @@ Template:
             }
             "webdriver_forward" => {
                 debug!("Processing webdriver_forward tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.forward().await {
                     Ok(_) => Ok("✅ Navigated forward".to_string()),
@@ -4079,17 +4718,24 @@ Template:
             }
             "webdriver_refresh" => {
                 debug!("Processing webdriver_refresh tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 let session_guard = self.webdriver_session.read().await;
                 let session = match session_guard.as_ref() {
                     Some(s) => s.clone(),
-                    None => return Ok("❌ No active WebDriver session. Call webdriver_start first.".to_string()),
+                    None => {
+                        return Ok(
+                            "❌ No active WebDriver session. Call webdriver_start first."
+                                .to_string(),
+                        )
+                    }
                 };
-                
+
                 let mut driver = session.lock().await;
                 match driver.refresh().await {
                     Ok(_) => Ok("✅ Page refreshed".to_string()),
@@ -4098,17 +4744,19 @@ Template:
             }
             "webdriver_quit" => {
                 debug!("Processing webdriver_quit tool call");
-                
+
                 if !self.config.webdriver.enabled {
-                    return Ok("❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string());
+                    return Ok(
+                        "❌ WebDriver is not enabled. Use --webdriver flag to enable.".to_string(),
+                    );
                 }
-                
+
                 // Take the session
                 let session = match self.webdriver_session.write().await.take() {
                     Some(s) => s.clone(),
                     None => return Ok("❌ No active WebDriver session.".to_string()),
                 };
-                
+
                 // Quit the WebDriver session
                 match std::sync::Arc::try_unwrap(session) {
                     Ok(mutex) => {
@@ -4116,17 +4764,20 @@ Template:
                         match driver.quit().await {
                             Ok(_) => {
                                 info!("WebDriver session closed successfully");
-                                
+
                                 // Kill the safaridriver process
-                                if let Some(mut process) = self.safaridriver_process.write().await.take() {
+                                if let Some(mut process) =
+                                    self.safaridriver_process.write().await.take()
+                                {
                                     if let Err(e) = process.kill().await {
                                         warn!("Failed to kill safaridriver process: {}", e);
                                     } else {
                                         info!("Safaridriver process terminated");
                                     }
                                 }
-                                
-                                Ok("✅ WebDriver session closed and safaridriver stopped".to_string())
+
+                                Ok("✅ WebDriver session closed and safaridriver stopped"
+                                    .to_string())
                             }
                             Err(e) => Ok(format!("❌ Failed to quit WebDriver: {}", e)),
                         }
@@ -4136,17 +4787,22 @@ Template:
             }
             "macax_list_apps" => {
                 debug!("Processing macax_list_apps tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.list_applications() {
                     Ok(apps) => {
                         let app_list: Vec<String> = apps.iter().map(|a| a.name.clone()).collect();
@@ -4157,17 +4813,22 @@ Template:
             }
             "macax_get_frontmost_app" => {
                 debug!("Processing macax_get_frontmost_app tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.get_frontmost_app() {
                     Ok(app) => Ok(format!("Frontmost application: {}", app.name)),
                     Err(e) => Ok(format!("❌ Failed to get frontmost app: {}", e)),
@@ -4175,22 +4836,27 @@ Template:
             }
             "macax_activate_app" => {
                 debug!("Processing macax_activate_app tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.activate_app(app_name) {
                     Ok(_) => Ok(format!("✅ Activated application: {}", app_name)),
                     Err(e) => Ok(format!("❌ Failed to activate app: {}", e)),
@@ -4198,34 +4864,39 @@ Template:
             }
             "macax_press_key" => {
                 debug!("Processing macax_press_key tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let key = match tool_call.args.get("key").and_then(|v| v.as_str()) {
                     Some(k) => k,
                     None => return Ok("❌ Missing key argument".to_string()),
                 };
-                
-                let modifiers_vec: Vec<&str> = tool_call.args.get("modifiers")
+
+                let modifiers_vec: Vec<&str> = tool_call
+                    .args
+                    .get("modifiers")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.press_key(app_name, key, modifiers_vec.clone()) {
                     Ok(_) => {
                         let modifier_str = if modifiers_vec.is_empty() {
@@ -4240,27 +4911,32 @@ Template:
             }
             "macax_type_text" => {
                 debug!("Processing macax_type_text tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ macOS Accessibility is not enabled. Use --macax flag to enable.".to_string());
+                    return Ok(
+                        "❌ macOS Accessibility is not enabled. Use --macax flag to enable."
+                            .to_string(),
+                    );
                 }
-                
+
                 let app_name = match tool_call.args.get("app_name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => return Ok("❌ Missing app_name argument".to_string()),
                 };
-                
+
                 let text = match tool_call.args.get("text").and_then(|v| v.as_str()) {
                     Some(t) => t,
                     None => return Ok("❌ Missing text argument".to_string()),
                 };
-                
+
                 let controller_guard = self.macax_controller.read().await;
                 let controller = match controller_guard.as_ref() {
                     Some(c) => c,
-                    None => return Ok("❌ macOS Accessibility controller not initialized.".to_string()),
+                    None => {
+                        return Ok("❌ macOS Accessibility controller not initialized.".to_string())
+                    }
                 };
-                
+
                 match controller.type_text(app_name, text) {
                     Ok(_) => Ok(format!("✅ Typed text into {}", app_name)),
                     Err(e) => Ok(format!("❌ Failed to type text: {}", e)),
@@ -4268,16 +4944,20 @@ Template:
             }
             "vision_find_text" => {
                 debug!("Processing vision_find_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             Ok(format!(
@@ -4295,16 +4975,20 @@ Template:
             }
             "vision_click_text" => {
                 debug!("Processing vision_click_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Click on center of text
@@ -4313,29 +4997,35 @@ Template:
                             // location.y is the TOP edge of the bounding box (highest Y value in NSScreen space)
                             // location.width and location.height are already scaled to screen space
                             // To get center: we need to add half the SCALED width and subtract half the SCALED height
-                            
+
                             if location.width == 0 || location.height == 0 {
-                                return Ok(format!("❌ Invalid bounding box dimensions: width={}, height={}", location.width, location.height));
+                                return Ok(format!(
+                                    "❌ Invalid bounding box dimensions: width={}, height={}",
+                                    location.width, location.height
+                                ));
                             }
-                            
+
                             debug!("[vision_click_text] Location from find_text_in_app: x={}, y={}, width={}, height={}, text='{}'",
                                 location.x, location.y, location.width, location.height, location.text);
-                            
+
                             // Calculate center using the SCALED dimensions
                             // X: Use right edge instead of center (Vision OCR bounding box seems offset)
                             // This gives us: left edge + full width = right edge
                             // Y: top edge - half of scaled height (subtract because Y increases upward)
-                            let click_x = location.x + location.width;  // Right edge
+                            let click_x = location.x + location.width; // Right edge
                             let half_height = location.height / 2;
                             let click_y = location.y - half_height;
-                            
+
                             debug!("[vision_click_text] Click position calculation: x={} + {} = {} (right edge), y={} - {} = {}",
                                 location.x, location.width, click_x, location.y, half_height, click_y);
                             debug!("[vision_click_text] This means: left_edge={}, center={}, right_edge={}",
                                 location.x, click_x, location.x + location.width);
-                            
+
                             match controller.click_at(click_x, click_y, Some(app_name)) {
-                                Ok(_) => Ok(format!("✅ Clicked on '{}' in {} at ({}, {})", text, app_name, click_x, click_y)),
+                                Ok(_) => Ok(format!(
+                                    "✅ Clicked on '{}' in {} at ({}, {})",
+                                    text, app_name, click_x, click_y
+                                )),
                                 Err(e) => Ok(format!("❌ Failed to click: {}", e)),
                             }
                         }
@@ -4348,27 +5038,38 @@ Template:
             }
             "extract_text_with_boxes" => {
                 debug!("Processing extract_text_with_boxes tool call");
-                
+
                 if !self.config.macax.enabled {
-                    return Ok("❌ extract_text_with_boxes requires --macax flag to be enabled".to_string());
+                    return Ok(
+                        "❌ extract_text_with_boxes requires --macax flag to be enabled"
+                            .to_string(),
+                    );
                 }
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let path = tool_call.args.get("path")
+                    let path = tool_call
+                        .args
+                        .get("path")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?;
-                    
+
                     // Optional: take screenshot of app first
-                    let final_path = if let Some(app_name) = tool_call.args.get("app_name").and_then(|v| v.as_str()) {
-                        let temp_path = format!("/tmp/g3_extract_boxes_{}.png", uuid::Uuid::new_v4());
-                        match controller.take_screenshot(&temp_path, None, Some(app_name)).await {
+                    let final_path = if let Some(app_name) =
+                        tool_call.args.get("app_name").and_then(|v| v.as_str())
+                    {
+                        let temp_path =
+                            format!("/tmp/g3_extract_boxes_{}.png", uuid::Uuid::new_v4());
+                        match controller
+                            .take_screenshot(&temp_path, None, Some(app_name))
+                            .await
+                        {
                             Ok(_) => temp_path,
                             Err(e) => return Ok(format!("❌ Failed to take screenshot: {}", e)),
                         }
                     } else {
                         path.to_string()
                     };
-                    
+
                     // Extract text with locations
                     match controller.extract_text_with_locations(&final_path).await {
                         Ok(locations) => {
@@ -4376,10 +5077,14 @@ Template:
                             if final_path != path {
                                 let _ = std::fs::remove_file(&final_path);
                             }
-                            
+
                             // Return as JSON
                             match serde_json::to_string_pretty(&locations) {
-                                Ok(json) => Ok(format!("✅ Extracted {} text elements:\n{}", locations.len(), json)),
+                                Ok(json) => Ok(format!(
+                                    "✅ Extracted {} text elements:\n{}",
+                                    locations.len(),
+                                    json
+                                )),
                                 Err(e) => Ok(format!("❌ Failed to serialize results: {}", e)),
                             }
                         }
@@ -4391,37 +5096,61 @@ Template:
             }
             "vision_click_near_text" => {
                 debug!("Processing vision_click_near_text tool call");
-                
+
                 if let Some(controller) = &self.computer_controller {
-                    let app_name = tool_call.args.get("app_name")
+                    let app_name = tool_call
+                        .args
+                        .get("app_name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing app_name parameter"))?;
-                    
-                    let text = tool_call.args.get("text")
+
+                    let text = tool_call
+                        .args
+                        .get("text")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing text parameter"))?;
-                    
-                    let direction = tool_call.args.get("direction")
+
+                    let direction = tool_call
+                        .args
+                        .get("direction")
                         .and_then(|v| v.as_str())
                         .unwrap_or("right");
-                    
-                    let distance = tool_call.args.get("distance")
+
+                    let distance = tool_call
+                        .args
+                        .get("distance")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(50) as i32;
-                    
+
                     match controller.find_text_in_app(app_name, text).await {
                         Ok(Some(location)) => {
                             // Calculate click position based on direction
                             // location.x is LEFT edge, location.y is TOP edge (in NSScreen space)
                             let (click_x, click_y) = match direction {
-                                "right" => (location.x + location.width + distance, location.y - (location.height / 2)),
-                                "below" => (location.x + (location.width / 2), location.y - location.height - distance),
-                                "left" => (location.x - distance, location.y - (location.height / 2)),
-                                "above" => (location.x + (location.width / 2), location.y + distance),
-                                _ => (location.x + location.width + distance, location.y - (location.height / 2)),
+                                "right" => (
+                                    location.x + location.width + distance,
+                                    location.y - (location.height / 2),
+                                ),
+                                "below" => (
+                                    location.x + (location.width / 2),
+                                    location.y - location.height - distance,
+                                ),
+                                "left" => {
+                                    (location.x - distance, location.y - (location.height / 2))
+                                }
+                                "above" => {
+                                    (location.x + (location.width / 2), location.y + distance)
+                                }
+                                _ => (
+                                    location.x + location.width + distance,
+                                    location.y - (location.height / 2),
+                                ),
                             };
-                            debug!("[vision_click_near_text] Clicking {} of text at ({}, {})", direction, click_x, click_y);
-                            
+                            debug!(
+                                "[vision_click_near_text] Clicking {} of text at ({}, {})",
+                                direction, click_x, click_y
+                            );
+
                             match controller.click_at(click_x, click_y, Some(app_name)) {
                                 Ok(_) => Ok(format!(
                                     "✅ Clicked {} of '{}' in {} at ({}, {})",
@@ -4435,6 +5164,34 @@ Template:
                     }
                 } else {
                     Ok("❌ Computer control not enabled. Set computer_control.enabled = true in config.".to_string())
+                }
+            }
+            "code_search" => {
+                debug!("Processing code_search tool call");
+
+                // Parse the request
+                let request: crate::code_search::CodeSearchRequest =
+                    match serde_json::from_value(tool_call.args.clone()) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            return Ok(format!("❌ Invalid code_search arguments: {}", e));
+                        }
+                    };
+
+                // Execute the code search
+                match crate::code_search::execute_code_search(request).await {
+                    Ok(response) => {
+                        // Serialize the response to JSON
+                        match serde_json::to_string_pretty(&response) {
+                            Ok(json_output) => {
+                                Ok(format!("✅ Code search completed\n{}", json_output))
+                            }
+                            Err(e) => Ok(format!("❌ Failed to serialize response: {}", e)),
+                        }
+                    }
+                    Err(e) => {
+                        Ok(format!("❌ Code search failed: {}", e))
+                    }
                 }
             }
             _ => {
@@ -4901,7 +5658,7 @@ impl<W: UiWriter> Drop for Agent<W> {
                     .arg("-9")
                     .arg(process.id().unwrap_or(0).to_string())
                     .output();
-                
+
                 debug!("Attempted to clean up safaridriver process on Agent drop");
             }
         }

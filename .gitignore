@@ -27,5 +27,6 @@ target
 logs/
 *.json
 
-# G3 project requirements directory
-.g3/
+# g3 artifacts
+requirements.md
+todo.g3.md

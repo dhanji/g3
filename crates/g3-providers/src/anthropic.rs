@@ -106,7 +106,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
@@ -133,13 +133,13 @@ impl AnthropicProvider {
         temperature: Option<f32>,
     ) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))
             .build()
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
         let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
         
-        info!("Initialized Anthropic provider with model: {}", model);
+        debug!("Initialized Anthropic provider with model: {}", model);
 
         Ok(Self {
             client,

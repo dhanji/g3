@@ -298,6 +298,7 @@ impl DatabricksProvider {
         let mut current_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
             std::collections::HashMap::new(); // index -> (id, name, args)
         let mut incomplete_data_line = String::new(); // Buffer for incomplete data: lines
+        let mut chunk_count = 0;
         let accumulated_usage: Option<Usage> = None;
         let mut byte_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
 
@@ -305,6 +306,8 @@ impl DatabricksProvider {
             match chunk_result {
                 Ok(chunk) => {
                     // Debug: Log raw bytes received
+                    chunk_count += 1;
+                    debug!("Processing chunk #{}", chunk_count);
                     debug!("Raw SSE bytes received: {} bytes", chunk.len());
 
                     // Append new bytes to our buffer
@@ -589,11 +592,37 @@ impl DatabricksProvider {
                     }
                 }
                 Err(e) => {
-                    error!("Stream error: {}", e);
-                    let _ = tx.send(Err(anyhow!("Stream error: {}", e))).await;
+                    error!("Stream error at chunk {}: {}", chunk_count, e);
+                    
+                    // Check if this is a connection error that might be recoverable
+                    let error_msg = e.to_string();
+                    if error_msg.contains("unexpected EOF") || error_msg.contains("connection") {
+                        warn!("Connection terminated unexpectedly at chunk {}, treating as end of stream", chunk_count);
+                        // Don't send error, just break and finalize
+                        break;
+                    } else {
+                        let _ = tx.send(Err(anyhow!("Stream error: {}", e))).await;
+                    }
                     return accumulated_usage;
                 }
             }
+        }
+
+        // Log final state
+        debug!("Stream ended after {} chunks", chunk_count);
+        debug!("Final state: buffer_len={}, incomplete_data_line_len={}, byte_buffer_len={}",
+               buffer.len(), incomplete_data_line.len(), byte_buffer.len());
+        debug!("Accumulated tool calls: {}", current_tool_calls.len());
+        
+        // If we have any remaining data in buffers, log it for debugging
+        if !buffer.is_empty() {
+            debug!("Remaining buffer content: {:?}", buffer);
+        }
+        if !byte_buffer.is_empty() {
+            debug!("Remaining byte buffer: {} bytes", byte_buffer.len());
+        }
+        if !incomplete_data_line.is_empty() {
+            debug!("Remaining incomplete data line: {:?}", incomplete_data_line);
         }
 
         // If we have any incomplete data line at the end, try to process it
