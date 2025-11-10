@@ -1033,7 +1033,10 @@ impl<W: UiWriter> Agent<W> {
                     config.agent.fallback_default_max_tokens as u32
                 }
             }
-            "openai" => 192000,
+            "openai" => {
+                // gpt-5 has 400k window
+                get_provider_max_tokens(config, "openai").unwrap_or(400000)
+            }
             "anthropic" => {
                 // Claude models have large context windows
                 // Use configured max_tokens or fall back to default
