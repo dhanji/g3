@@ -14,6 +14,9 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersConfig {
     pub openai: Option<OpenAIConfig>,
+    /// Multiple named OpenAI-compatible providers (e.g., openrouter, groq, etc.)
+    #[serde(default)]
+    pub openai_compatible: std::collections::HashMap<String, OpenAIConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub databricks: Option<DatabricksConfig>,
     pub embedded: Option<EmbeddedConfig>,
@@ -121,6 +124,7 @@ impl Default for Config {
         Self {
             providers: ProvidersConfig {
                 openai: None,
+                openai_compatible: std::collections::HashMap::new(),
                 anthropic: None,
                 databricks: Some(DatabricksConfig {
                     host: "https://your-workspace.cloud.databricks.com".to_string(),
@@ -239,6 +243,7 @@ impl Config {
         Self {
             providers: ProvidersConfig {
                 openai: None,
+                openai_compatible: std::collections::HashMap::new(),
                 anthropic: None,
                 databricks: None,
                 embedded: Some(EmbeddedConfig {
