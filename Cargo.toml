@@ -6,7 +6,8 @@ members = [
     "crates/g3-config",
     "crates/g3-execution",
     "crates/g3-computer-control",
-    "crates/g3-console"
+    "crates/g3-console",
+    "crates/g3-ensembles"
 ]
 resolver = "2"
 

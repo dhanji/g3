@@ -246,10 +246,35 @@ pub struct Cli {
     /// Enable WebDriver browser automation tools
     #[arg(long)]
     pub webdriver: bool,
+
+    /// Enable flock mode - parallel multi-agent development
+    #[arg(long, requires = "flock_workspace", requires = "segments")]
+    pub project: Option<PathBuf>,
+
+    /// Flock workspace directory (where segment copies will be created)
+    #[arg(long, requires = "project")]
+    pub flock_workspace: Option<PathBuf>,
+
+    /// Number of segments to partition work into (for flock mode)
+    #[arg(long, requires = "project")]
+    pub segments: Option<usize>,
+
+    /// Maximum turns per segment in flock mode (default: 5)
+    #[arg(long, default_value = "5")]
+    pub flock_max_turns: usize,
 }
 
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    // Check if flock mode is enabled
+    if let (Some(project_dir), Some(flock_workspace), Some(num_segments)) = 
+        (&cli.project, &cli.flock_workspace, cli.segments) {
+        // Run flock mode
+        return run_flock_mode(project_dir.clone(), flock_workspace.clone(), num_segments, cli.flock_max_turns).await;
+    }
+
+    // Otherwise, continue with normal mode
 
     // Only initialize logging if not in retro mode
     if !cli.machine {
@@ -434,6 +459,39 @@ pub async fn run() -> Result<()> {
         };
         
         run_with_console_mode(agent, cli, project, combined_content).await?;
+    }
+    
+    Ok(())
+}
+
+/// Run flock mode - parallel multi-agent development
+async fn run_flock_mode(
+    project_dir: PathBuf,
+    flock_workspace: PathBuf,
+    num_segments: usize,
+    max_turns: usize,
+) -> Result<()> {
+    let output = SimpleOutput::new();
+    
+    output.print("");
+    output.print("🦅 G3 FLOCK MODE - Parallel Multi-Agent Development");
+    output.print("");
+    output.print(&format!("📁 Project: {}", project_dir.display()));
+    output.print(&format!("🗂️  Workspace: {}", flock_workspace.display()));
+    output.print(&format!("🔢 Segments: {}", num_segments));
+    output.print(&format!("🔄 Max Turns per Segment: {}", max_turns));
+    output.print("");
+    
+    // Create flock configuration
+    let config = g3_ensembles::FlockConfig::new(project_dir, flock_workspace, num_segments)?
+        .with_max_turns(max_turns);
+    
+    // Create and run flock mode
+    let mut flock = g3_ensembles::FlockMode::new(config)?;
+    
+    match flock.run().await {
+        Ok(_) => output.print("\n✅ Flock mode completed successfully"),
+        Err(e) => output.print(&format!("\n❌ Flock mode failed: {}", e)),
     }
     
     Ok(())

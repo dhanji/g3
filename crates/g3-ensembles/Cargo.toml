@@ -1,0 +1,20 @@
+[package]
+name = "g3-ensembles"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-agent ensemble functionality for G3"
+
+[dependencies]
+g3-core = { path = "../g3-core" }
+g3-config = { path = "../g3-config" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"

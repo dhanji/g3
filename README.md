@@ -96,6 +96,7 @@ These commands give you fine-grained control over context management, allowing y
   - Window listing and identification
 - **Code Search**: Embedded tree-sitter for syntax-aware code search (Rust, Python, JavaScript, TypeScript, Go, Java, C, C++) - see [Code Search Guide](docs/CODE_SEARCH.md)
 - **Final Output**: Formatted result presentation
+- **Flock Mode**: Parallel multi-agent development for large projects - see [Flock Mode Guide](docs/FLOCK_MODE.md)
 
 ### Provider Flexibility
 - Support for multiple LLM providers through a unified interface
@@ -129,6 +130,7 @@ G3 is designed for:
 - API integration and testing
 - Documentation generation
 - Complex multi-step workflows
+- Parallel development of modular architectures
 - Desktop application automation and testing
 
 ## Getting Started
