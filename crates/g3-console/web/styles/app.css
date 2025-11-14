@@ -64,6 +64,22 @@ body {
     color: var(--text-primary);
 }
 
+.live-indicator {
+    font-size: 0.625rem; /* 75% of 0.833rem */
+    font-weight: 600;
+    color: var(--success);
+    margin-left: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
 .header-actions {
     display: flex;
     gap: 1rem;

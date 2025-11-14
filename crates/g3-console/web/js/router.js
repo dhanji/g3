@@ -6,6 +6,7 @@ const router = {
     currentInstanceId: null,
     initialized: false,
     renderInProgress: false,
+    REFRESH_INTERVAL_MS: 3000, // Refresh every 3 seconds for live updates
     
     init() {
         console.log('[Router] init() called');
@@ -84,6 +85,9 @@ const router = {
         this.renderInProgress = true;
         
         try {
+            // Flash live indicator
+            this.flashLiveIndicator();
+            
             // Check if we already have a container for instances
             let instancesList = container.querySelector('.instances-list');
             const isInitialLoad = !instancesList;
@@ -167,11 +171,11 @@ const router = {
             
             // Schedule next refresh only if still on home route
             if (this.currentRoute === '/' || this.currentRoute === '') {
-                console.log('[Router] Scheduling auto-refresh in 5 seconds');
+                console.log(`[Router] Scheduling auto-refresh in ${this.REFRESH_INTERVAL_MS}ms`);
                 this.refreshTimeout = setTimeout(() => {
                     console.log('[Router] Auto-refresh triggered');
                     this.renderHome(container);
-                }, 5000);
+                }, this.REFRESH_INTERVAL_MS);
             }
         } catch (error) {
             console.error('[Router] Error in renderHome:', error);
@@ -187,12 +191,26 @@ const router = {
         }
     },
     
+    flashLiveIndicator() {
+        const indicator = document.getElementById('live-indicator');
+        if (indicator) {
+            indicator.style.animation = 'none';
+            // Force reflow
+            void indicator.offsetWidth;
+            indicator.style.animation = null;
+            indicator.style.opacity = '1';
+        }
+    },
+    
     async renderDetail(container, id) {
         console.log('[Router] renderDetail called for', id);
         
         this.currentInstanceId = id;
         
         try {
+            // Flash live indicator
+            this.flashLiveIndicator();
+            
             // Check if we already have a detail view for this instance
             let detailView = container.querySelector('.detail-view');
             const isInitialLoad = !detailView || detailView.getAttribute('data-instance-id') !== id;
