@@ -3,7 +3,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use sysinfo::{System, Pid, Process};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub struct ProcessDetector {
     system: System,
@@ -17,7 +17,11 @@ impl ProcessDetector {
     }
 
     pub fn detect_instances(&mut self) -> Result<Vec<Instance>> {
-        self.system.refresh_processes();
+        info!("Scanning for g3 processes...");
+        // Refresh all processes to ensure we catch newly started ones
+        // Using refresh_all() instead of just refresh_processes() to ensure
+        // we get complete information about new processes
+        self.system.refresh_all();
         let mut instances = Vec::new();
 
         // Find all g3 processes
@@ -33,7 +37,7 @@ impl ProcessDetector {
             }
         }
 
-        debug!("Detected {} g3 instances", instances.len());
+        info!("Detected {} g3 instances", instances.len());
         Ok(instances)
     }
 
@@ -45,24 +49,27 @@ impl ProcessDetector {
     ) -> Option<Instance> {
         let cmd_str = cmd.join(" ");
         
+        // Exclude g3-console itself
+        if cmd_str.contains("g3-console") {
+            return None;
+        }
+        
         // Check if this is a g3 binary (more comprehensive check)
         let is_g3_binary = cmd.get(0).map(|s| {
-            s.ends_with("g3") || s.ends_with("/g3") || s.contains("/target/release/g3") || s.contains("/target/debug/g3")
+            (s.ends_with("g3") || s.ends_with("/g3") || s.contains("/target/release/g3") || s.contains("/target/debug/g3"))
+            && !s.contains("g3-") // Exclude other g3-* binaries
         }).unwrap_or(false);
         
-        // Check if this is cargo run with g3
-        let is_cargo_run = cmd.get(0).map(|s| s.contains("cargo")).unwrap_or(false) && cmd.iter().any(|s| s == "run");
+        // Check if this is cargo run with g3 (not g3-console or other variants)
+        let is_cargo_run = cmd.get(0).map(|s| s.contains("cargo")).unwrap_or(false) 
+            && cmd.iter().any(|s| s == "run")
+            && !cmd_str.contains("g3-console");
         
-        // Also check if any part of the command line contains g3-related patterns
-        let has_g3_pattern = cmd_str.contains("g3 ") 
-            || cmd_str.contains("/g3 ")
-            || cmd_str.contains("g3-")
-            || cmd_str.ends_with("g3")
-            || cmd_str.contains("--workspace") // g3-specific flag
-            || cmd_str.contains("--autonomous"); // g3-specific flag
+        // Also check if command line has g3-specific flags
+        let has_g3_flags = cmd_str.contains("--workspace") || cmd_str.contains("--autonomous");
         
-        // Accept if it's a g3 binary, cargo run with g3 patterns, or has g3-specific flags
-        let is_g3_process = is_g3_binary || (is_cargo_run && has_g3_pattern) || has_g3_pattern;
+        // Accept if it's a g3 binary or cargo run with g3, and has typical g3 patterns
+        let is_g3_process = is_g3_binary || (is_cargo_run && has_g3_flags);
         
         if !is_g3_process {
             return None;
@@ -165,7 +172,7 @@ impl ProcessDetector {
     }
 
     pub fn get_process_status(&mut self, pid: u32) -> Option<InstanceStatus> {
-        self.system.refresh_processes();
+        self.system.refresh_all();
         
         let sysinfo_pid = Pid::from_u32(pid);
         if self.system.process(sysinfo_pid).is_some() {
