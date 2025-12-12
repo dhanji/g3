@@ -30,3 +30,4 @@ logs/
 # g3 artifacts
 requirements.md
 todo.g3.md
+.claude/
