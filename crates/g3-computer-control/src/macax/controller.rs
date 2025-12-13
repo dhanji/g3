@@ -15,8 +15,11 @@ use core_foundation::string::CFString;
 
 /// macOS Accessibility API controller using native APIs
 pub struct MacAxController {
-    // Cache for application elements
+    // Cache for application elements (only used on macOS)
+    #[cfg(target_os = "macos")]
     app_cache: std::sync::Mutex<HashMap<String, AXUIElement>>,
+    #[cfg(not(target_os = "macos"))]
+    _phantom: std::marker::PhantomData<()>,
 }
 
 impl MacAxController {
@@ -33,7 +36,9 @@ impl MacAxController {
 
         #[cfg(not(target_os = "macos"))]
         {
-            anyhow::bail!("macOS Accessibility API is only available on macOS")
+            Ok(Self {
+                _phantom: std::marker::PhantomData,
+            })
         }
     }
 
