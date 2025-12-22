@@ -1518,6 +1518,30 @@ impl<W: UiWriter> Agent<W> {
             }
         }
 
+        // Register Ollama providers (native Ollama API)
+        for (name, ollama_config) in &config.providers.ollama {
+            if should_register("ollama", name) {
+                let options = g3_providers::OllamaOptions {
+                    num_ctx: ollama_config.num_ctx,
+                    num_gpu: ollama_config.num_gpu,
+                    keep_alive: ollama_config.keep_alive.clone(),
+                    temperature: ollama_config.temperature,
+                    top_p: ollama_config.top_p,
+                    top_k: ollama_config.top_k,
+                    repeat_penalty: ollama_config.repeat_penalty,
+                    seed: ollama_config.seed,
+                };
+                let ollama_provider = g3_providers::OllamaProvider::new_with_name(
+                    format!("ollama.{}", name),
+                    ollama_config.base_url.clone(),
+                    ollama_config.model.clone(),
+                    ollama_config.max_tokens,
+                    options,
+                );
+                providers.register(ollama_provider);
+            }
+        }
+
         // Register Anthropic providers from HashMap
         for (name, anthropic_config) in &config.providers.anthropic {
             if should_register("anthropic", name) {

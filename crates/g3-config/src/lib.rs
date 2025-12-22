@@ -47,6 +47,10 @@ pub struct ProvidersConfig {
     /// Multiple named OpenAI-compatible providers (e.g., openrouter, groq, etc.)
     #[serde(default)]
     pub openai_compatible: HashMap<String, OpenAIConfig>,
+
+    /// Named Ollama provider configs (native Ollama API)
+    #[serde(default)]
+    pub ollama: HashMap<String, OllamaConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +60,22 @@ pub struct OpenAIConfig {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+}
+
+/// Ollama provider configuration (native API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaConfig {
+    pub base_url: String,
+    pub model: String,
+    pub num_ctx: Option<u32>,
+    pub num_gpu: Option<i32>,
+    pub keep_alive: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<i32>,
+    pub repeat_penalty: Option<f32>,
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +218,7 @@ impl Default for Config {
                 databricks: databricks_configs,
                 embedded: HashMap::new(),
                 openai_compatible: HashMap::new(),
+                ollama: HashMap::new(),
             },
             agent: AgentConfig {
                 max_context_length: None,
@@ -414,11 +435,20 @@ impl Config {
                     );
                 }
             }
+            "ollama" => {
+                if !self.providers.ollama.contains_key(config_name) {
+                    anyhow::bail!(
+                        "Provider config 'ollama.{}' not found. Available: {:?}",
+                        config_name,
+                        self.providers.ollama.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
             _ => {
                 // Check openai_compatible providers
                 if !self.providers.openai_compatible.contains_key(provider_type) {
                     anyhow::bail!(
-                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, or openai_compatible names",
+                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, ollama, or openai_compatible names",
                         provider_type
                     );
                 }
@@ -503,6 +533,16 @@ impl Config {
                     } else {
                         return Err(anyhow::anyhow!(
                             "Provider config 'openai.{}' not found.",
+                            config_name
+                        ));
+                    }
+                }
+                "ollama" => {
+                    if let Some(ref mut ollama_config) = config.providers.ollama.get_mut(&config_name) {
+                        ollama_config.model = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider config 'ollama.{}' not found.",
                             config_name
                         ));
                     }
@@ -620,12 +660,21 @@ impl Config {
                     .map(ProviderConfigRef::Embedded)
                     .ok_or_else(|| anyhow::anyhow!("Embedded config '{}' not found", config_name))
             }
+            "ollama" => {
+                self.providers.ollama.get(&config_name)
+                    .map(ProviderConfigRef::Ollama)
+                    .ok_or_else(|| anyhow::anyhow!("Ollama config '{}' not found", config_name))
+            }
             _ => {
                 self.providers.openai_compatible.get(&provider_type)
                     .map(ProviderConfigRef::OpenAICompatible)
                     .ok_or_else(|| anyhow::anyhow!("OpenAI compatible config '{}' not found", provider_type))
             }
         }
+    }
+
+    pub fn get_ollama_config(&self, name: &str) -> Option<&OllamaConfig> {
+        self.providers.ollama.get(name)
     }
 }
 
@@ -637,6 +686,7 @@ pub enum ProviderConfigRef<'a> {
     Databricks(&'a DatabricksConfig),
     Embedded(&'a EmbeddedConfig),
     OpenAICompatible(&'a OpenAIConfig),
+    Ollama(&'a OllamaConfig),
 }
 
 #[cfg(test)]
