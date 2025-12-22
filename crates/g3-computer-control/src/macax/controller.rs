@@ -1,5 +1,8 @@
 use super::{AXApplication, AXElement};
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+#[cfg(target_os = "macos")]
 use std::collections::HashMap;
 
 #[cfg(target_os = "macos")]
@@ -14,10 +17,14 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 
 /// macOS Accessibility API controller using native APIs
+#[cfg(target_os = "macos")]
 pub struct MacAxController {
     // Cache for application elements
     app_cache: std::sync::Mutex<HashMap<String, AXUIElement>>,
 }
+
+#[cfg(not(target_os = "macos"))]
+pub struct MacAxController {}
 
 impl MacAxController {
     pub fn new() -> Result<Self> {
