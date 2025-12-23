@@ -144,11 +144,13 @@ pub mod databricks;
 pub mod embedded;
 pub mod oauth;
 pub mod openai;
+pub mod openrouter;
 
 pub use anthropic::AnthropicProvider;
 pub use databricks::DatabricksProvider;
 pub use embedded::EmbeddedProvider;
 pub use openai::OpenAIProvider;
+pub use openrouter::{OpenRouterProvider, ProviderPreferences};
 
 impl Message {
     /// Generate a unique message ID in format HHMMSS-XXX

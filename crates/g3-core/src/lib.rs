@@ -1519,6 +1519,39 @@ impl<W: UiWriter> Agent<W> {
             }
         }
 
+        // Register OpenRouter providers from HashMap
+        for (name, openrouter_config) in &config.providers.openrouter {
+            if should_register("openrouter", name) {
+                let mut openrouter_provider = g3_providers::OpenRouterProvider::new_with_name(
+                    format!("openrouter.{}", name),
+                    openrouter_config.api_key.clone(),
+                    Some(openrouter_config.model.clone()),
+                    openrouter_config.max_tokens,
+                    openrouter_config.temperature,
+                )?;
+                
+                if let Some(prefs) = &openrouter_config.provider_preferences {
+                    // Convert config prefs to provider prefs
+                    let provider_prefs = g3_providers::ProviderPreferences {
+                        order: prefs.order.clone(),
+                        allow_fallbacks: prefs.allow_fallbacks,
+                        require_parameters: prefs.require_parameters,
+                    };
+                    openrouter_provider = openrouter_provider.with_provider_preferences(provider_prefs);
+                }
+                
+                if let Some(referer) = &openrouter_config.http_referer {
+                    openrouter_provider = openrouter_provider.with_http_referer(referer.clone());
+                }
+                
+                if let Some(title) = &openrouter_config.x_title {
+                    openrouter_provider = openrouter_provider.with_x_title(title.clone());
+                }
+
+                providers.register(openrouter_provider);
+            }
+        }
+
         // Register Anthropic providers from HashMap
         for (name, anthropic_config) in &config.providers.anthropic {
             if should_register("anthropic", name) {
@@ -1755,7 +1788,11 @@ impl<W: UiWriter> Agent<W> {
             "openai" => config.providers.openai.get(config_name)?.max_tokens,
             "databricks" => config.providers.databricks.get(config_name)?.max_tokens,
             "embedded" => config.providers.embedded.get(config_name)?.max_tokens,
-            _ => None,
+            "openrouter" => config.providers.openrouter.get(config_name)?.max_tokens,
+            _ => {
+                // Check openai_compatible
+                config.providers.openai_compatible.get(provider_type)?.max_tokens
+            }
         }
     }
 
@@ -1775,7 +1812,11 @@ impl<W: UiWriter> Agent<W> {
             "openai" => config.providers.openai.get(config_name)?.temperature,
             "databricks" => config.providers.databricks.get(config_name)?.temperature,
             "embedded" => config.providers.embedded.get(config_name)?.temperature,
-            _ => None,
+            "openrouter" => config.providers.openrouter.get(config_name)?.temperature,
+            _ => {
+                // Check openai_compatible
+                config.providers.openai_compatible.get(provider_type)?.temperature
+            }
         }
     }
 
@@ -2156,6 +2197,17 @@ impl<W: UiWriter> Agent<W> {
                     32768 // DBRX supports 32k context
                 } else {
                     16384 // Conservative default for other Databricks models
+                }
+            }
+            "openrouter" => {
+                if let Some(max_tokens) = Self::provider_max_tokens(config, provider_name) {
+                    warnings.push(format!(
+                        "Context length falling back to max_tokens ({}) for provider={}",
+                        max_tokens, provider_name
+                    ));
+                    max_tokens
+                } else {
+                    128000 // Default for OpenRouter
                 }
             }
             _ => config.agent.fallback_default_max_tokens as u32,

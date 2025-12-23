@@ -206,7 +206,7 @@ impl PlannerUiWriter {
     }
     
     /// Clear the current line and print a status message
-    fn print_status_line(&self, message: &str) {
+    fn _print_status_line(&self, message: &str) {
         // Print status message without overwriting previous content
         // Use println to ensure each status is on its own line
         println!("{:.80}", message);

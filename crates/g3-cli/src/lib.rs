@@ -333,7 +333,7 @@ pub struct Cli {
     #[arg(long)]
     pub machine: bool,
 
-    /// Override the configured provider (anthropic, databricks, embedded, openai)
+    /// Override the configured provider (anthropic, databricks, embedded, openai, openrouter)
     #[arg(long, value_name = "PROVIDER")]
     pub provider: Option<String>,
 
@@ -569,8 +569,9 @@ pub async fn run() -> Result<()> {
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
-        let valid_providers = ["anthropic", "databricks", "embedded", "openai"];
-        if !valid_providers.contains(&provider.as_str()) {
+        let valid_providers = ["anthropic", "databricks", "embedded", "openai", "openrouter"];
+        let provider_type = provider.split('.').next().unwrap_or(provider);
+        if !valid_providers.contains(&provider_type) {
             return Err(anyhow::anyhow!(
                 "Invalid provider '{}'. Valid options: {:?}",
                 provider,

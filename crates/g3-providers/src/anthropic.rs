@@ -125,7 +125,7 @@ pub struct AnthropicProvider {
     model: String,
     max_tokens: u32,
     temperature: f32,
-    cache_config: Option<String>,
+    _cache_config: Option<String>,
     enable_1m_context: bool,
     thinking_budget_tokens: Option<u32>,
 }
@@ -136,7 +136,7 @@ impl AnthropicProvider {
         model: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
-        cache_config: Option<String>,
+        _cache_config: Option<String>,
         enable_1m_context: Option<bool>,
         thinking_budget_tokens: Option<u32>,
     ) -> Result<Self> {
@@ -156,7 +156,7 @@ impl AnthropicProvider {
             model,
             max_tokens: max_tokens.unwrap_or(4096),
             temperature: temperature.unwrap_or(0.1),
-            cache_config,
+            _cache_config,
             enable_1m_context: enable_1m_context.unwrap_or(false),
             thinking_budget_tokens,
         })
@@ -169,7 +169,7 @@ impl AnthropicProvider {
         model: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
-        cache_config: Option<String>,
+        _cache_config: Option<String>,
         enable_1m_context: Option<bool>,
         thinking_budget_tokens: Option<u32>,
     ) -> Result<Self> {
@@ -189,7 +189,7 @@ impl AnthropicProvider {
             model,
             max_tokens: max_tokens.unwrap_or(4096),
             temperature: temperature.unwrap_or(0.1),
-            cache_config,
+            _cache_config,
             enable_1m_context: enable_1m_context.unwrap_or(false),
             thinking_budget_tokens,
         })

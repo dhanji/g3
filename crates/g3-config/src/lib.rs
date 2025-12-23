@@ -47,6 +47,10 @@ pub struct ProvidersConfig {
     /// Multiple named OpenAI-compatible providers (e.g., openrouter, groq, etc.)
     #[serde(default)]
     pub openai_compatible: HashMap<String, OpenAIConfig>,
+
+    /// Named OpenRouter provider configs
+    #[serde(default)]
+    pub openrouter: HashMap<String, OpenRouterConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +60,25 @@ pub struct OpenAIConfig {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterConfig {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub provider_preferences: Option<ProviderPreferencesConfig>,
+    pub http_referer: Option<String>,
+    pub x_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPreferencesConfig {
+    pub order: Option<Vec<String>>,
+    pub allow_fallbacks: Option<bool>,
+    pub require_parameters: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +221,7 @@ impl Default for Config {
                 databricks: databricks_configs,
                 embedded: HashMap::new(),
                 openai_compatible: HashMap::new(),
+                openrouter: HashMap::new(),
             },
             agent: AgentConfig {
                 max_context_length: None,
@@ -414,11 +438,20 @@ impl Config {
                     );
                 }
             }
+            "openrouter" => {
+                if !self.providers.openrouter.contains_key(config_name) {
+                    anyhow::bail!(
+                        "Provider config 'openrouter.{}' not found. Available: {:?}",
+                        config_name,
+                        self.providers.openrouter.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
             _ => {
                 // Check openai_compatible providers
                 if !self.providers.openai_compatible.contains_key(provider_type) {
                     anyhow::bail!(
-                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, or openai_compatible names",
+                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, openrouter, or openai_compatible names",
                         provider_type
                     );
                 }
