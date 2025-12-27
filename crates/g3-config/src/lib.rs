@@ -47,6 +47,10 @@ pub struct ProvidersConfig {
     /// Multiple named OpenAI-compatible providers (e.g., openrouter, groq, etc.)
     #[serde(default)]
     pub openai_compatible: HashMap<String, OpenAIConfig>,
+    
+    /// Named Azure OpenAI provider configs (for Claude via Azure AI)
+    #[serde(default)]
+    pub azure: HashMap<String, AzureConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +92,27 @@ pub struct EmbeddedConfig {
     pub temperature: Option<f32>,
     pub gpu_layers: Option<u32>,
     pub threads: Option<u32>,
+}
+
+/// Azure OpenAI configuration
+/// For accessing Claude models via Azure AI Model Catalog
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureConfig {
+    /// Azure resource endpoint (e.g., "https://your-resource.openai.azure.com")
+    pub endpoint: String,
+    /// Azure API key
+    pub api_key: String,
+    /// Deployment name (the name you gave when deploying the model)
+    pub deployment: String,
+    /// API version (e.g., "2024-02-15-preview")
+    #[serde(default = "default_azure_api_version")]
+    pub api_version: String,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+}
+
+fn default_azure_api_version() -> String {
+    "2024-02-15-preview".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +223,7 @@ impl Default for Config {
                 databricks: databricks_configs,
                 embedded: HashMap::new(),
                 openai_compatible: HashMap::new(),
+                azure: HashMap::new(),
             },
             agent: AgentConfig {
                 max_context_length: None,
@@ -414,11 +440,20 @@ impl Config {
                     );
                 }
             }
+            "azure" => {
+                if !self.providers.azure.contains_key(config_name) {
+                    anyhow::bail!(
+                        "Provider config 'azure.{}' not found. Available: {:?}",
+                        config_name,
+                        self.providers.azure.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
             _ => {
                 // Check openai_compatible providers
                 if !self.providers.openai_compatible.contains_key(provider_type) {
                     anyhow::bail!(
-                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, or openai_compatible names",
+                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, azure, or openai_compatible names",
                         provider_type
                     );
                 }
@@ -503,6 +538,16 @@ impl Config {
                     } else {
                         return Err(anyhow::anyhow!(
                             "Provider config 'openai.{}' not found.",
+                            config_name
+                        ));
+                    }
+                }
+                "azure" => {
+                    if let Some(ref mut azure_config) = config.providers.azure.get_mut(&config_name) {
+                        azure_config.deployment = model;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Provider config 'azure.{}' not found.",
                             config_name
                         ));
                     }
@@ -593,6 +638,11 @@ impl Config {
         self.providers.embedded.get(name)
     }
 
+    /// Get Azure config by name
+    pub fn get_azure_config(&self, name: &str) -> Option<&AzureConfig> {
+        self.providers.azure.get(name)
+    }
+
     /// Get the current default provider's config
     pub fn get_default_provider_config(&self) -> Result<ProviderConfigRef<'_>> {
         let (provider_type, config_name) = Self::parse_provider_reference(
@@ -620,6 +670,11 @@ impl Config {
                     .map(ProviderConfigRef::Embedded)
                     .ok_or_else(|| anyhow::anyhow!("Embedded config '{}' not found", config_name))
             }
+            "azure" => {
+                self.providers.azure.get(&config_name)
+                    .map(ProviderConfigRef::Azure)
+                    .ok_or_else(|| anyhow::anyhow!("Azure config '{}' not found", config_name))
+            }
             _ => {
                 self.providers.openai_compatible.get(&provider_type)
                     .map(ProviderConfigRef::OpenAICompatible)
@@ -637,6 +692,7 @@ pub enum ProviderConfigRef<'a> {
     Databricks(&'a DatabricksConfig),
     Embedded(&'a EmbeddedConfig),
     OpenAICompatible(&'a OpenAIConfig),
+    Azure(&'a AzureConfig),
 }
 
 #[cfg(test)]

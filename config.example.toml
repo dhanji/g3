@@ -61,6 +61,15 @@ use_oauth = true
 # max_tokens = 4096
 # temperature = 0.1
 
+# Azure OpenAI configuration (for Claude via Azure AI Model Catalog)
+# [providers.azure.default]
+# endpoint = "https://your-resource.openai.azure.com"
+# api_key = "your-azure-api-key"
+# deployment = "your-claude-deployment-name"  # The deployment name you created in Azure
+# api_version = "2024-02-15-preview"          # Optional, defaults to 2024-02-15-preview
+# max_tokens = 64000
+# temperature = 0.3
+
 [agent]
 fallback_default_max_tokens = 8192
 # max_context_length: Override the context window size for all providers

@@ -1068,6 +1068,22 @@ impl<W: UiWriter> Agent<W> {
             }
         }
 
+        // Register Azure providers from HashMap
+        for (name, azure_config) in &config.providers.azure {
+            if should_register("azure", name) {
+                let azure_provider = g3_providers::AzureProvider::new_with_name(
+                    format!("azure.{}", name),
+                    azure_config.endpoint.clone(),
+                    azure_config.api_key.clone(),
+                    azure_config.deployment.clone(),
+                    Some(azure_config.api_version.clone()),
+                    azure_config.max_tokens,
+                    azure_config.temperature,
+                )?;
+                providers.register(azure_provider);
+            }
+        }
+
         // Set default provider
         debug!(
             "Setting default provider to: {}",
@@ -1648,6 +1664,10 @@ impl<W: UiWriter> Agent<W> {
                 } else {
                     16384 // Conservative default for other Databricks models
                 }
+            }
+            "azure" => {
+                // Azure AI Claude models have large context windows (200k)
+                200000
             }
             _ => config.agent.fallback_default_max_tokens as u32,
         };
@@ -3512,12 +3532,15 @@ impl<W: UiWriter> Agent<W> {
                     Some(budget) => (budget + 2000).max(10_000), // At least budget + 2000 for response
                     None => 10_000,
                 };
-                summary_max_tokens = match provider_name.as_str() {
+                summary_max_tokens = match provider_name.split('.').next().unwrap_or(provider_name.as_str()) {
                     "anthropic" => summary_max_tokens.min(anthropic_cap),
                     "databricks" => summary_max_tokens.min(10_000),
+                    "azure" => summary_max_tokens.min(10_000),
                     "embedded" => summary_max_tokens.min(3000),
                     _ => summary_max_tokens.min(5000),
                 };
+                // Ensure max_tokens is at least 1 to avoid API errors
+                summary_max_tokens = summary_max_tokens.max(1);
 
                 debug!(
                     "Requesting summary with max_tokens: {} (current usage: {} tokens)",

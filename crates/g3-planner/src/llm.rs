@@ -96,9 +96,25 @@ pub async fn create_planner_provider(
             };
             Ok(Box::new(provider))
         }
+        "azure" => {
+            let azure_config = config
+                .get_azure_config(&config_name)
+                .ok_or_else(|| anyhow!("Azure config '{}' not found", config_name))?;
+            
+            let provider = g3_providers::AzureProvider::new_with_name(
+                format!("azure.{}", config_name),
+                azure_config.endpoint.clone(),
+                azure_config.api_key.clone(),
+                azure_config.deployment.clone(),
+                Some(azure_config.api_version.clone()),
+                azure_config.max_tokens,
+                azure_config.temperature,
+            )?;
+            Ok(Box::new(provider))
+        }
         _ => {
             Err(anyhow!(
-                "Unsupported provider type '{}' for planner. Supported: anthropic, openai, databricks",
+                "Unsupported provider type '{}' for planner. Supported: anthropic, openai, databricks, azure",
                 provider_type
             ))
         }
