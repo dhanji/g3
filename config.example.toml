@@ -46,11 +46,23 @@ use_oauth = true
 # max_tokens = 4096
 # temperature = 0.1
 
+# Named OpenRouter configurations
+# OpenRouter provides access to 200+ AI models through a unified API
+[providers.openrouter.default]
+api_key = "${OPENROUTER_API_KEY}"
+model = "anthropic/claude-3.5-sonnet"
+max_tokens = 4096
+temperature = 0.7
+# http_referer = "https://yourapp.com"  # Optional: Your app URL for analytics
+# x_title = "Your App Name"             # Optional: Your app name for analytics
+# provider_order = ["Anthropic"]        # Optional: Preferred provider routing
+# allow_fallbacks = true                # Optional: Allow fallback to other providers
+
 # Multiple OpenAI-compatible providers can be configured
-# [providers.openai_compatible.openrouter]
-# api_key = "your-openrouter-api-key"
-# model = "anthropic/claude-3.5-sonnet"
-# base_url = "https://openrouter.ai/api/v1"
+# [providers.openai_compatible.groq]
+# api_key = "your-groq-api-key"
+# model = "llama-3.3-70b-versatile"
+# base_url = "https://api.groq.com/openai/v1"
 # max_tokens = 4096
 # temperature = 0.1
 
