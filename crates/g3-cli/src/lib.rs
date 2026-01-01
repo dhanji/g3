@@ -185,34 +185,45 @@ fn extract_coach_feedback_from_logs(
                                                                         if let Some(prev_content) = prev_msg.get("content") {
                                                                             if let Some(prev_content_str) = prev_content.as_str() {
                                                                                 // Check if the previous assistant message contains a final_output tool call
-                                                                                if prev_content_str.contains("\"tool\": \"final_output\"") {
-                                                                                    // This is a final_output tool result
-                                                                                    let feedback = if content_str.starts_with("Tool result: ") {
+                                                                                // If the previous assistant message explicitly indicates a final_output tool
+                                                                                // then treat it as verified. Otherwise, accept the Tool result as a
+                                                                                // fallback (with a warning) to avoid losing coach feedback when logs
+                                                                                // don't include an exact final_output marker.
+                                                                                let feedback = if prev_content_str.contains("\"tool\": \"final_output\"") {
+                                                                                    if content_str.starts_with("Tool result: ") {
                                                                                         content_str.strip_prefix("Tool result: ")
                                                                                             .unwrap_or(content_str)
                                                                                             .to_string()
                                                                                     } else {
                                                                                         content_str.to_string()
-                                                                                    };
-                                                                                    
-                                                                                    output.print(&format!(
-                                                                                        "Coach feedback extracted: {} characters (from {} total)",
-                                                                                        feedback.len(),
-                                                                                        content_str.len()
-                                                                                    ));
-                                                                                    output.print(&format!("Coach feedback:\n{}", feedback));
-                                                                                    
-                                                                                    output.print(&format!(
-                                                                                        "✅ Extracted coach feedback from session: {} (verified final_output tool)",
-                                                                                        session_id
-                                                                                    ));
-                                                                                    return Ok(feedback);
+                                                                                    }
                                                                                 } else {
+                                                                                    // Unverified fallback: accept the tool result but warn
                                                                                     output.print(&format!(
-                                                                                        "⚠️  Skipping tool result at index {} - not a final_output tool call",
+                                                                                        "⚠️  Tool result at index {} not verified as final_output; accepting as fallback",
                                                                                         i
                                                                                     ));
-                                                                                }
+                                                                                    if content_str.starts_with("Tool result: ") {
+                                                                                        content_str.strip_prefix("Tool result: ")
+                                                                                            .unwrap_or(content_str)
+                                                                                            .to_string()
+                                                                                    } else {
+                                                                                        content_str.to_string()
+                                                                                    }
+                                                                                };
+
+                                                                                output.print(&format!(
+                                                                                    "Coach feedback extracted: {} characters (from {} total)",
+                                                                                    feedback.len(),
+                                                                                    content_str.len()
+                                                                                ));
+                                                                                output.print(&format!("Coach feedback:\n{}", feedback));
+
+                                                                                output.print(&format!(
+                                                                                    "✅ Extracted coach feedback from session: {}",
+                                                                                    session_id
+                                                                                ));
+                                                                                return Ok(feedback);
                                                                             }
                                                                         }
                                                                     }
@@ -233,8 +244,8 @@ fn extract_coach_feedback_from_logs(
         }
     }
 
-    // If we couldn't extract from logs, panic with detailed error
-    panic!(
+    // If we couldn't extract from logs, return an error (avoid panicking)
+    return Err(anyhow::anyhow!(
         "CRITICAL: Could not extract coach feedback from session: {}\n\
          Log file path: {:?}\n\
          Log file exists: {}\n\
@@ -244,7 +255,7 @@ fn extract_coach_feedback_from_logs(
         log_file_path,
         log_file_path.exists(),
         coach_result.response.len()
-    );
+    ));
 }
 
 use clap::Parser;
