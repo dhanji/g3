@@ -17,6 +17,7 @@ default_provider = "anthropic.default"
 [providers.anthropic.default]
 api_key = "your-anthropic-api-key"
 model = "claude-sonnet-4-5"
+# base_url = "https://api.anthropic.com/v1"  # Optional: Custom API base URL
 max_tokens = 64000
 temperature = 0.3
 # cache_config = "ephemeral"      # Optional: Enable prompt caching

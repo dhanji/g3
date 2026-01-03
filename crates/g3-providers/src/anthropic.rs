@@ -10,6 +10,7 @@
 //! - Proper message format conversion between g3 and Anthropic formats
 //! - Rate limiting and error handling
 //! - Native tool calling support
+//! - Custom base URL support for proxies or alternative API endpoints
 //!
 //! # Usage
 //!
@@ -22,6 +23,7 @@
 //!     let provider = AnthropicProvider::new(
 //!         "your-api-key".to_string(),
 //!         Some("claude-3-5-sonnet-20241022".to_string()),
+//!         None, // base_url (uses default Anthropic API)
 //!         Some(4096),
 //!         Some(0.1),
 //!         None, // cache_config
@@ -60,9 +62,10 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let provider = AnthropicProvider::new(
 //!         "your-api-key".to_string(),
-//!         None,
-//!         None,
-//!         None,
+//!         None, // model
+//!         None, // base_url
+//!         None, // max_tokens
+//!         None, // temperature
 //!         None, // cache_config
 //!         None, // enable_1m_context
 //!         None, // thinking_budget_tokens
@@ -114,7 +117,7 @@ use crate::{
     MessageRole, Tool, ToolCall, Usage,
 };
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone)]
@@ -123,6 +126,7 @@ pub struct AnthropicProvider {
     name: String,
     api_key: String,
     model: String,
+    base_url: String,
     max_tokens: u32,
     temperature: f32,
     #[allow(dead_code)]
@@ -135,6 +139,7 @@ impl AnthropicProvider {
     pub fn new(
         api_key: String,
         model: Option<String>,
+        base_url: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         cache_config: Option<String>,
@@ -147,14 +152,16 @@ impl AnthropicProvider {
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
         let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
+        let base_url = base_url.unwrap_or_else(|| DEFAULT_ANTHROPIC_BASE_URL.to_string());
 
-        debug!("Initialized Anthropic provider with model: {}", model);
+        debug!("Initialized Anthropic provider with model: {}, base_url: {}", model, base_url);
 
         Ok(Self {
             client,
             name: "anthropic".to_string(),
             api_key,
             model,
+            base_url,
             max_tokens: max_tokens.unwrap_or(4096),
             temperature: temperature.unwrap_or(0.1),
             cache_config,
@@ -168,6 +175,7 @@ impl AnthropicProvider {
         name: String,
         api_key: String,
         model: Option<String>,
+        base_url: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         cache_config: Option<String>,
@@ -180,14 +188,16 @@ impl AnthropicProvider {
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
         let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
+        let base_url = base_url.unwrap_or_else(|| DEFAULT_ANTHROPIC_BASE_URL.to_string());
 
-        debug!("Initialized Anthropic provider '{}' with model: {}", name, model);
+        debug!("Initialized Anthropic provider '{}' with model: {}, base_url: {}", name, model, base_url);
 
         Ok(Self {
             client,
             name,
             api_key,
             model,
+            base_url,
             max_tokens: max_tokens.unwrap_or(4096),
             temperature: temperature.unwrap_or(0.1),
             cache_config,
@@ -197,9 +207,10 @@ impl AnthropicProvider {
     }
 
     fn create_request_builder(&self, streaming: bool) -> RequestBuilder {
+        let url = format!("{}/messages", self.base_url);
         let mut builder = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
@@ -1010,7 +1021,7 @@ mod tests {
     #[test]
     fn test_message_conversion() {
         let provider =
-            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None).unwrap();
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None, None).unwrap();
 
         let messages = vec![
             Message::new(
@@ -1034,6 +1045,7 @@ mod tests {
         let provider = AnthropicProvider::new(
             "test-key".to_string(),
             Some("claude-3-haiku-20240307".to_string()),
+            None, // base_url
             Some(1000),
             Some(0.5),
             None,
@@ -1059,7 +1071,7 @@ mod tests {
     #[test]
     fn test_tool_conversion() {
         let provider =
-            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None).unwrap();
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None, None).unwrap();
 
         let tools = vec![Tool {
             name: "get_weather".to_string(),
@@ -1092,7 +1104,7 @@ mod tests {
     #[test]
     fn test_cache_control_serialization() {
         let provider =
-            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None).unwrap();
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None, None).unwrap();
 
         // Test message WITHOUT cache_control
         let messages_without = vec![Message::new(MessageRole::User, "Hello".to_string())];
@@ -1141,6 +1153,7 @@ mod tests {
         let provider_without = AnthropicProvider::new(
             "test-key".to_string(),
             Some("claude-sonnet-4-5".to_string()),
+            None, // base_url
             Some(1000),
             Some(0.5),
             None,
@@ -1161,6 +1174,7 @@ mod tests {
         let provider_with = AnthropicProvider::new(
             "test-key".to_string(),
             Some("claude-sonnet-4-5".to_string()),
+            None, // base_url
             Some(20000),  // Sufficient for thinking budget
             Some(0.5),
             None,
@@ -1191,6 +1205,7 @@ mod tests {
         let provider = AnthropicProvider::new(
             "test-key".to_string(),
             Some("claude-sonnet-4-5".to_string()),
+            None, // base_url
             Some(20000),
             Some(0.5),
             None,
@@ -1243,5 +1258,53 @@ mod tests {
         
         assert_eq!(text_content.len(), 1);
         assert_eq!(text_content[0], "Here is my response.");
+    }
+
+    #[test]
+    fn test_base_url_configuration() {
+        // Test with default base_url (None)
+        let provider_default = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            None, // base_url - should use default
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(provider_default.base_url, DEFAULT_ANTHROPIC_BASE_URL);
+
+        // Test with custom base_url
+        let custom_url = "https://custom.api.example.com/v1";
+        let provider_custom = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            Some(custom_url.to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(provider_custom.base_url, custom_url);
+
+        // Test new_with_name with custom base_url
+        let provider_named = AnthropicProvider::new_with_name(
+            "anthropic.custom".to_string(),
+            "test-key".to_string(),
+            Some("claude-3-haiku-20240307".to_string()),
+            Some(custom_url.to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(provider_named.base_url, custom_url);
+        assert_eq!(provider_named.name, "anthropic.custom");
     }
 }

@@ -16,6 +16,7 @@ fn create_test_config_with_thinking(thinking_budget: Option<u32>) -> Config {
     anthropic_configs.insert("default".to_string(), g3_config::AnthropicConfig {
         api_key: "test-key".to_string(),
         model: "claude-sonnet-4-5".to_string(),
+        base_url: None,
         max_tokens: Some(16000),
         temperature: Some(0.1),
         cache_config: None,

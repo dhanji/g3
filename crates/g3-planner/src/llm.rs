@@ -47,6 +47,7 @@ pub async fn create_planner_provider(
                 format!("anthropic.{}", config_name),
                 anthropic_config.api_key.clone(),
                 Some(anthropic_config.model.clone()),
+                anthropic_config.base_url.clone(),
                 anthropic_config.max_tokens,
                 anthropic_config.temperature,
                 anthropic_config.cache_config.clone(),
