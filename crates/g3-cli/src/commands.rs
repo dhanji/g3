@@ -156,7 +156,10 @@ pub async fn handle_command<W: UiWriter>(
                         } else {
                             G3Status::progress(&format!("loading {}", file_path));
                             G3Status::done();
-                            execute_task_with_retry(agent, prompt, show_prompt, show_code, output).await;
+                            let completed = execute_task_with_retry(agent, prompt, show_prompt, show_code, output).await;
+                            if !completed {
+                                return Ok(false);
+                            }
                         }
                     }
                     Err(e) => {
@@ -383,7 +386,10 @@ pub async fn handle_command<W: UiWriter>(
                             
                             // Auto-submit the project status prompt
                             let prompt = "what is the current state of the project? and what is your suggested next best step?";
-                            execute_task_with_retry(agent, prompt, show_prompt, show_code, output).await;
+                            let completed = execute_task_with_retry(agent, prompt, show_prompt, show_code, output).await;
+                            if !completed {
+                                return Ok(false);
+                            }
                         } else {
                             output.print("❌ Failed to set project content in agent context.");
                         }
