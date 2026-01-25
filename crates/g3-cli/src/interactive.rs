@@ -210,7 +210,7 @@ pub async fn run_interactive<W: UiWriter>(
                     }
 
                     // Process the multiline input
-                    execute_task_with_retry(
+                    let completed = execute_task_with_retry(
                         &mut agent,
                         &input,
                         show_prompt,
@@ -218,6 +218,9 @@ pub async fn run_interactive<W: UiWriter>(
                         &output,
                     )
                     .await;
+                    if !completed {
+                        break;
+                    }
 
                     // Send auto-memory reminder if enabled and tools were called
                     // Skip per-turn reminders when from_agent_mode - we'll send once on exit
@@ -243,13 +246,16 @@ pub async fn run_interactive<W: UiWriter>(
 
                     // Check for control commands
                     if input.starts_with('/') {
-                        if handle_command(&input, &mut agent, workspace_path, &output, &mut active_project, &mut rl, show_prompt, show_code).await? {
+                        let should_continue = handle_command(&input, &mut agent, workspace_path, &output, &mut active_project, &mut rl, show_prompt, show_code).await?;
+                        if should_continue {
                             continue;
+                        } else {
+                            break;
                         }
                     }
 
                     // Process the single line input
-                    execute_task_with_retry(
+                    let completed = execute_task_with_retry(
                         &mut agent,
                         &input,
                         show_prompt,
@@ -257,6 +263,9 @@ pub async fn run_interactive<W: UiWriter>(
                         &output,
                     )
                     .await;
+                    if !completed {
+                        break;
+                    }
 
                     // Send auto-memory reminder if enabled and tools were called
                     // Skip per-turn reminders when from_agent_mode - we'll send once on exit
@@ -269,15 +278,8 @@ pub async fn run_interactive<W: UiWriter>(
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl-C pressed
-                if in_multiline {
-                    // Cancel multiline input
-                    output.print("Multi-line input cancelled");
-                    multiline_buffer.clear();
-                    in_multiline = false;
-                } else {
-                    output.print("CTRL-C");
-                }
-                continue;
+                output.print("");
+                break;
             }
             Err(ReadlineError::Eof) => {
                 output.print("CTRL-D");

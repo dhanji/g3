@@ -26,13 +26,14 @@ fn recoverable_error_name(err: &RecoverableError) -> &'static str {
 }
 
 /// Execute a task with retry logic for recoverable errors.
+/// Returns `true` if the task completed normally, `false` if cancelled by Ctrl+C.
 pub async fn execute_task_with_retry<W: UiWriter>(
     agent: &mut Agent<W>,
     input: &str,
     show_prompt: bool,
     show_code: bool,
     output: &SimpleOutput,
-) {
+) -> bool {
     let mut attempt = 0;
 
     output.print("🤔 Thinking...");
@@ -54,7 +55,7 @@ pub async fn execute_task_with_retry<W: UiWriter>(
             _ = tokio::signal::ctrl_c() => {
                 cancel_token_clone.cancel();
                 output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
-                return;
+                return false;
             }
         };
 
@@ -64,12 +65,12 @@ pub async fn execute_task_with_retry<W: UiWriter>(
                     output.print(&format!("✅ Request succeeded after {} attempts", attempt));
                 }
                 // Response was already displayed during streaming - don't print again
-                return;
+                return true;
             }
             Err(e) => {
                 if e.to_string().contains("cancelled") {
                     output.print("⚠️  Operation cancelled by user");
-                    return;
+                    return false;
                 }
 
                 // Check if this is a recoverable error that we should retry
@@ -99,7 +100,7 @@ pub async fn execute_task_with_retry<W: UiWriter>(
 
                 // For non-recoverable errors or after max retries
                 handle_execution_error(&e, input, output, attempt);
-                return;
+                return true;
             }
         }
     }
