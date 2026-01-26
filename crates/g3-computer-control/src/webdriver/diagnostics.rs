@@ -170,8 +170,13 @@ fn check_chromedriver_installed() -> DiagnosticResult {
         _ => {
             // Check common locations
             let common_paths = [
+                // Chrome for Testing - macOS
                 dirs::home_dir().map(|h| h.join(".chrome-for-testing/chromedriver-mac-arm64/chromedriver")),
                 dirs::home_dir().map(|h| h.join(".chrome-for-testing/chromedriver-mac-x64/chromedriver")),
+                // Chrome for Testing - Linux
+                dirs::home_dir().map(|h| h.join(".chrome-for-testing/chromedriver-linux64/chromedriver")),
+                dirs::home_dir().map(|h| h.join(".chrome-for-testing/chromedriver-linux-arm64/chromedriver")),
+                // System locations
                 Some(PathBuf::from("/usr/local/bin/chromedriver")),
                 Some(PathBuf::from("/opt/homebrew/bin/chromedriver")),
             ];
@@ -362,14 +367,18 @@ fn check_config_chrome_binary(
 /// Check for Chrome for Testing installation
 fn check_chrome_for_testing() -> DiagnosticResult {
     let cft_dir = dirs::home_dir().map(|h| h.join(".chrome-for-testing"));
-    
+
     match cft_dir {
         Some(dir) if dir.exists() => {
-            // Check for both Chrome and ChromeDriver
-            let has_chrome = dir.join("chrome-mac-arm64").exists() 
-                || dir.join("chrome-mac-x64").exists();
+            // Check for both Chrome and ChromeDriver (support macOS and Linux)
+            let has_chrome = dir.join("chrome-mac-arm64").exists()
+                || dir.join("chrome-mac-x64").exists()
+                || dir.join("chrome-linux64").exists()
+                || dir.join("chrome-linux-arm64").exists();
             let has_driver = dir.join("chromedriver-mac-arm64").exists()
-                || dir.join("chromedriver-mac-x64").exists();
+                || dir.join("chromedriver-mac-x64").exists()
+                || dir.join("chromedriver-linux64").exists()
+                || dir.join("chromedriver-linux-arm64").exists();
 
             if has_chrome && has_driver {
                 DiagnosticResult {
@@ -473,27 +482,68 @@ fn find_chrome_path(config_binary: Option<&str>) -> Option<PathBuf> {
 }
 
 fn get_chrome_search_paths() -> Vec<PathBuf> {
-    let mut paths = vec![
-        // macOS paths
-        PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-    ];
+    // Check current platform to prioritize appropriate paths
+    #[cfg(target_os = "linux")]
+    {
+        let mut paths = Vec::new();
 
-    // Chrome for Testing paths
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".chrome-for-testing/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
-        paths.push(home.join(".chrome-for-testing/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
+        // Linux Chrome for Testing paths (prioritized for Linux)
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".chrome-for-testing/chrome-linux64/chrome"));
+            paths.push(home.join(".chrome-for-testing/chrome-linux-arm64/chrome"));
+        }
+
+        // Linux system paths
+        paths.extend([
+            PathBuf::from("/usr/bin/google-chrome"),
+            PathBuf::from("/usr/bin/google-chrome-stable"),
+            PathBuf::from("/usr/bin/chromium"),
+            PathBuf::from("/usr/bin/chromium-browser"),
+        ]);
+
+        // macOS paths (fallback)
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".chrome-for-testing/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
+            paths.push(home.join(".chrome-for-testing/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
+        }
+        paths.push(PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
+        paths.push(PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"));
+
+        paths
     }
 
-    // Linux paths
-    paths.extend([
-        PathBuf::from("/usr/bin/google-chrome"),
-        PathBuf::from("/usr/bin/google-chrome-stable"),
-        PathBuf::from("/usr/bin/chromium"),
-        PathBuf::from("/usr/bin/chromium-browser"),
-    ]);
+    #[cfg(target_os = "macos")]
+    {
+        let mut paths = vec![
+            // macOS paths (prioritized for macOS)
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ];
 
-    paths
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".chrome-for-testing/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
+            paths.push(home.join(".chrome-for-testing/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"));
+            // Linux paths (fallback)
+            paths.push(home.join(".chrome-for-testing/chrome-linux64/chrome"));
+            paths.push(home.join(".chrome-for-testing/chrome-linux-arm64/chrome"));
+        }
+
+        paths
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut paths = Vec::new();
+
+        // Windows paths
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(r"AppData\Local\Google\Chrome\Application\chrome.exe"));
+        }
+        paths.push(PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+        paths.push(PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"));
+
+        paths
+    }
 }
 
 fn get_chromedriver_version() -> Option<String> {

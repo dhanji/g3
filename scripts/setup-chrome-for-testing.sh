@@ -8,18 +8,34 @@ set -e
 INSTALL_DIR="${HOME}/.chrome-for-testing"
 BIN_DIR="${HOME}/.local/bin"
 
-# Detect architecture
+# Detect OS and architecture
+OS=$(uname -s)
 ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    PLATFORM="mac-arm64"
-elif [ "$ARCH" = "x86_64" ]; then
-    PLATFORM="mac-x64"
+
+if [ "$OS" = "Darwin" ]; then
+    if [ "$ARCH" = "arm64" ]; then
+        PLATFORM="mac-arm64"
+    elif [ "$ARCH" = "x86_64" ]; then
+        PLATFORM="mac-x64"
+    else
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+    fi
+elif [ "$OS" = "Linux" ]; then
+    if [ "$ARCH" = "x86_64" ]; then
+        PLATFORM="linux64"
+    elif [ "$ARCH" = "aarch64" ]; then
+        PLATFORM="linux-arm64"
+    else
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+    fi
 else
-    echo "❌ Unsupported architecture: $ARCH"
+    echo "Unsupported operating system: $OS"
     exit 1
 fi
 
-echo "🔍 Detecting platform: $PLATFORM"
+echo "Detected platform: $OS/$ARCH -> $PLATFORM"
 
 # Get latest stable version info
 echo "📡 Fetching latest Chrome for Testing version..."
@@ -91,13 +107,27 @@ fi
 cat > "$BIN_DIR/chrome-for-testing" << 'EOF'
 #!/bin/bash
 INSTALL_DIR="${HOME}/.chrome-for-testing"
+OS=$(uname -s)
 ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    PLATFORM="mac-arm64"
+
+if [ "$OS" = "Darwin" ]; then
+    if [ "$ARCH" = "arm64" ]; then
+        PLATFORM="mac-arm64"
+    else
+        PLATFORM="mac-x64"
+    fi
+    exec "$INSTALL_DIR/chrome-$PLATFORM/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" "$@"
+elif [ "$OS" = "Linux" ]; then
+    if [ "$ARCH" = "x86_64" ]; then
+        PLATFORM="linux64"
+    else
+        PLATFORM="linux-arm64"
+    fi
+    exec "$INSTALL_DIR/chrome-$PLATFORM/chrome" "$@"
 else
-    PLATFORM="mac-x64"
+    echo "Unsupported operating system: $OS"
+    exit 1
 fi
-exec "$INSTALL_DIR/chrome-$PLATFORM/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" "$@"
 EOF
 chmod +x "$BIN_DIR/chrome-for-testing"
 
