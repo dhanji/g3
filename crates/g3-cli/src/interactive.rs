@@ -63,11 +63,13 @@ pub async fn run_interactive<W: UiWriter>(
     // Agent mode with --chat should start fresh without prompting
     if !new_session && !from_agent_mode {
       if let Ok(Some(continuation)) = g3_core::load_continuation() {
+        // Truncate session_id to 20 characters, handling UTF-8 properly
+        let session_display: String = continuation.session_id.chars().take(20).collect();
         // Print session info and prompt on same line (no newline)
         print!(
             "\n >> session in progress: {}{}{} | {:.1}% used | resume? [y/n] ",
             SetForegroundColor(Color::Cyan),
-            &continuation.session_id[..continuation.session_id.len().min(20)],
+            session_display,
             ResetColor,
             continuation.context_percentage
         );
