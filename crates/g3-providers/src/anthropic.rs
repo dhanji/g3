@@ -127,6 +127,7 @@ pub struct AnthropicProvider {
     name: String,
     api_key: String,
     model: String,
+    base_url: String,
     max_tokens: u32,
     temperature: f32,
     #[allow(dead_code)]
@@ -145,33 +146,25 @@ impl AnthropicProvider {
         enable_1m_context: Option<bool>,
         thinking_budget_tokens: Option<u32>,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
-
-        let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
-
-        debug!("Initialized Anthropic provider with model: {}", model);
-
-        Ok(Self {
-            client,
-            name: "anthropic".to_string(),
+        Self::new_with_name(
+            "anthropic".to_string(),
             api_key,
             model,
-            max_tokens: max_tokens.unwrap_or(32768),
-            temperature: temperature.unwrap_or(0.1),
+            None, // Use default Anthropic URL
+            max_tokens,
+            temperature,
             cache_config,
-            enable_1m_context: enable_1m_context.unwrap_or(false),
+            enable_1m_context,
             thinking_budget_tokens,
-        })
+        )
     }
 
-    /// Create a new AnthropicProvider with a custom name (e.g., "anthropic.default")
+    /// Create a new AnthropicProvider with a custom name and base_url
     pub fn new_with_name(
         name: String,
         api_key: String,
         model: Option<String>,
+        base_url: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         cache_config: Option<String>,
@@ -184,10 +177,11 @@ impl AnthropicProvider {
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
         let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
+        let base_url = base_url.unwrap_or_else(|| ANTHROPIC_API_URL.to_string());
 
         debug!(
-            "Initialized Anthropic provider '{}' with model: {}",
-            name, model
+            "Initialized Anthropic provider '{}' with model: {}, base_url: {}",
+            name, model, base_url
         );
 
         Ok(Self {
@@ -195,6 +189,7 @@ impl AnthropicProvider {
             name,
             api_key,
             model,
+            base_url,
             max_tokens: max_tokens.unwrap_or(32768),
             temperature: temperature.unwrap_or(0.1),
             cache_config,
@@ -206,7 +201,7 @@ impl AnthropicProvider {
     fn create_request_builder(&self, streaming: bool) -> RequestBuilder {
         let mut builder = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(&self.base_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");

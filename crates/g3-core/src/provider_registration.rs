@@ -145,10 +145,15 @@ fn register_anthropic_providers(
 ) -> Result<()> {
     for (name, anthropic_config) in &config.providers.anthropic {
         if should_register(providers_to_register, "anthropic", name) {
+            debug!(
+                "Registering Anthropic provider '{}' with base_url: {:?}",
+                name, anthropic_config.base_url
+            );
             let anthropic_provider = g3_providers::AnthropicProvider::new_with_name(
                 format!("anthropic.{}", name),
                 anthropic_config.api_key.clone(),
                 Some(anthropic_config.model.clone()),
+                anthropic_config.base_url.clone(),
                 anthropic_config.max_tokens,
                 anthropic_config.temperature,
                 anthropic_config.cache_config.clone(),

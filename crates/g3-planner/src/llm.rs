@@ -42,11 +42,12 @@ pub async fn create_planner_provider(
             let anthropic_config = config
                 .get_anthropic_config(&config_name)
                 .ok_or_else(|| anyhow!("Anthropic config '{}' not found", config_name))?;
-            
+
             let provider = g3_providers::AnthropicProvider::new_with_name(
                 format!("anthropic.{}", config_name),
                 anthropic_config.api_key.clone(),
                 Some(anthropic_config.model.clone()),
+                anthropic_config.base_url.clone(),
                 anthropic_config.max_tokens,
                 anthropic_config.temperature,
                 anthropic_config.cache_config.clone(),

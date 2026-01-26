@@ -64,6 +64,7 @@ pub struct OpenAIConfig {
 pub struct AnthropicConfig {
     pub api_key: String,
     pub model: String,
+    pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub cache_config: Option<String>,
