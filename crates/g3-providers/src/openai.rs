@@ -12,7 +12,7 @@ use tracing::{debug, error};
 use crate::{
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
     MessageRole, Tool, ToolCall, Usage,
-    streaming::{make_text_chunk, make_final_chunk},
+    streaming::{decode_utf8_streaming, make_text_chunk, make_final_chunk},
 };
 
 #[derive(Clone)]
@@ -106,6 +106,7 @@ impl OpenAIProvider {
         mut stream: impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Unpin,
         tx: mpsc::Sender<Result<CompletionChunk>>,
     ) -> Option<Usage> {
+        let mut byte_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
         let mut buffer = String::new();
         let mut accumulated_content = String::new();
         let mut accumulated_usage: Option<Usage> = None;
@@ -114,15 +115,13 @@ impl OpenAIProvider {
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
-                    let chunk_str = match std::str::from_utf8(&chunk) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to parse chunk as UTF-8: {}", e);
-                            continue;
-                        }
+                    byte_buffer.extend_from_slice(&chunk);
+
+                    let Some(chunk_str) = decode_utf8_streaming(&mut byte_buffer) else {
+                        continue; // Wait for more bytes to complete UTF-8 sequence
                     };
 
-                    buffer.push_str(chunk_str);
+                    buffer.push_str(&chunk_str);
 
                     // Process complete lines
                     while let Some(line_end) = buffer.find('\n') {
