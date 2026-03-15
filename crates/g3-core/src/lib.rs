@@ -6,13 +6,14 @@ pub mod context_window;
 pub mod error_handling;
 pub mod feedback_extraction;
 pub mod paths;
-pub mod project;
 pub mod pending_research;
+pub mod project;
 pub mod provider_config;
 pub mod provider_registration;
 pub mod retry;
 pub mod session;
 pub mod session_continuation;
+pub mod skills;
 pub mod stats;
 pub mod streaming;
 pub mod streaming_parser;
@@ -20,11 +21,10 @@ pub mod task_result;
 pub mod tool_definitions;
 pub mod tool_dispatch;
 pub mod tools;
+pub mod toolsets;
 pub mod ui_writer;
 pub mod utils;
 pub mod webdriver_session;
-pub mod skills;
-pub mod toolsets;
 
 pub use feedback_extraction::{
     extract_coach_feedback, ExtractedFeedback, FeedbackExtractionConfig, FeedbackSource,
@@ -47,7 +47,7 @@ pub use prompts::{
 };
 
 // Export skills module
-pub use skills::{Skill, discover_skills, generate_skills_prompt};
+pub use skills::{discover_skills, generate_skills_prompt, Skill};
 
 #[cfg(test)]
 mod task_result_comprehensive_tests;
@@ -66,6 +66,7 @@ use g3_config::Config;
 use g3_providers::{CacheControl, CompletionRequest, Message, MessageRole, ProviderRegistry};
 use prompts::{get_system_prompt_for_native, get_system_prompt_for_non_native};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -150,6 +151,12 @@ pub struct Agent<W: UiWriter> {
     tool_call_count: usize,
     /// Tool calls made in the current turn (reset after each turn)
     tool_calls_this_turn: Vec<String>,
+    /// Tool call fingerprints already executed in the current turn.
+    executed_tool_fingerprints_this_turn: HashSet<String>,
+    /// Turn-scoped diagnostic counters for duplicate suppression.
+    dropped_duplicate_tool_calls_turn: u32,
+    dropped_duplicate_text_chunks_turn: u32,
+    dropped_duplicate_text_chars_turn: usize,
     requirements_sha: Option<String>,
     /// Working directory for tool execution (set by --codebase-fast-start)
     working_dir: Option<String>,
@@ -213,6 +220,10 @@ impl<W: UiWriter> Agent<W> {
             webdriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             tool_call_count: 0,
             tool_calls_this_turn: Vec::new(),
+            executed_tool_fingerprints_this_turn: HashSet::new(),
+            dropped_duplicate_tool_calls_turn: 0,
+            dropped_duplicate_text_chunks_turn: 0,
+            dropped_duplicate_text_chars_turn: 0,
             requirements_sha: None,
             working_dir: None,
             background_process_manager: std::sync::Arc::new(
@@ -246,7 +257,15 @@ impl<W: UiWriter> Agent<W> {
         project_context: Option<String>,
         quiet: bool,
     ) -> Result<Self> {
-        Self::new_with_mode_and_project_context(config, ui_writer, false, project_context, quiet, None).await
+        Self::new_with_mode_and_project_context(
+            config,
+            ui_writer,
+            false,
+            project_context,
+            quiet,
+            None,
+        )
+        .await
     }
 
     pub async fn new_autonomous_with_project_context_and_quiet(
@@ -255,7 +274,15 @@ impl<W: UiWriter> Agent<W> {
         project_context: Option<String>,
         quiet: bool,
     ) -> Result<Self> {
-        Self::new_with_mode_and_project_context(config, ui_writer, true, project_context, quiet, None).await
+        Self::new_with_mode_and_project_context(
+            config,
+            ui_writer,
+            true,
+            project_context,
+            quiet,
+            None,
+        )
+        .await
     }
 
     /// Create a new agent with a custom system prompt (for agent mode)
@@ -279,7 +306,7 @@ impl<W: UiWriter> Agent<W> {
 
     /// Create a new agent with a custom provider registry (for testing).
     /// This allows tests to inject mock providers without needing real API credentials.
-    /// 
+    ///
     /// **Note**: This method is intended for testing only. Do not use in production code.
     #[doc(hidden)]
     pub async fn new_for_test(
@@ -336,7 +363,8 @@ impl<W: UiWriter> Agent<W> {
         is_autonomous: bool,
         quiet: bool,
     ) -> Result<Self> {
-        Self::new_with_mode_and_project_context(config, ui_writer, is_autonomous, None, quiet, None).await
+        Self::new_with_mode_and_project_context(config, ui_writer, is_autonomous, None, quiet, None)
+            .await
     }
 
     async fn new_with_mode_and_project_context(
@@ -626,9 +654,12 @@ impl<W: UiWriter> Agent<W> {
     }
 
     /// Get tool definitions including any dynamically loaded toolsets.
-    fn get_tool_definitions_with_loaded_toolsets(&self, tool_config: tool_definitions::ToolConfig) -> Vec<g3_providers::Tool> {
+    fn get_tool_definitions_with_loaded_toolsets(
+        &self,
+        tool_config: tool_definitions::ToolConfig,
+    ) -> Vec<g3_providers::Tool> {
         let mut tools = tool_definitions::create_tool_definitions(tool_config);
-        
+
         // Add tools from loaded toolsets
         for toolset_name in &self.loaded_toolsets {
             if let Ok(toolset) = toolsets::get_toolset(toolset_name) {
@@ -641,7 +672,7 @@ impl<W: UiWriter> Agent<W> {
                 }
             }
         }
-        
+
         tools
     }
 
@@ -811,11 +842,11 @@ impl<W: UiWriter> Agent<W> {
     /// Returns the number of research results injected.
     pub fn inject_completed_research(&mut self) -> usize {
         let completed = self.pending_research_manager.take_completed();
-        
+
         if completed.is_empty() {
             return 0;
         }
-        
+
         for task in &completed {
             let message_content = match task.status {
                 pending_research::ResearchStatus::Complete => {
@@ -836,19 +867,23 @@ impl<W: UiWriter> Agent<W> {
                 }
                 pending_research::ResearchStatus::Pending => continue, // Skip pending tasks
             };
-            
+
             // Inject as a user message so the agent sees and responds to it
-            let message = g3_providers::Message::new(g3_providers::MessageRole::User, message_content);
+            let message =
+                g3_providers::Message::new(g3_providers::MessageRole::User, message_content);
             self.context_window.add_message(message);
         }
-        
+
         completed.len()
     }
 
     /// Subscribe to research completion notifications.
     ///
     /// Returns None if notifications are not enabled.
-    pub fn subscribe_research_notifications(&self) -> Option<tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification>> {
+    pub fn subscribe_research_notifications(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification>>
+    {
         self.pending_research_manager.subscribe()
     }
 
@@ -857,7 +892,9 @@ impl<W: UiWriter> Agent<W> {
     /// This replaces the internal research manager with one that sends notifications.
     /// Call this once during setup (e.g., in interactive mode) before any research tasks.
     /// Returns a receiver that will receive notifications when research tasks complete.
-    pub fn enable_research_notifications(&mut self) -> tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification> {
+    pub fn enable_research_notifications(
+        &mut self,
+    ) -> tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification> {
         let (manager, rx) = pending_research::PendingResearchManager::with_notifications();
         self.pending_research_manager = manager;
         rx
@@ -964,6 +1001,11 @@ impl<W: UiWriter> Agent<W> {
         // Reset the JSON tool call filter state at the start of each new task
         // This prevents the filter from staying in suppression mode between user interactions
         self.ui_writer.reset_json_filter();
+        // Reset turn-scoped duplicate suppression state/counters.
+        self.executed_tool_fingerprints_this_turn.clear();
+        self.dropped_duplicate_tool_calls_turn = 0;
+        self.dropped_duplicate_text_chunks_turn = 0;
+        self.dropped_duplicate_text_chars_turn = 0;
 
         // Validate that the system prompt is the first message (critical invariant)
         self.validate_system_prompt_is_first();
@@ -1046,9 +1088,8 @@ impl<W: UiWriter> Agent<W> {
         let _has_native_tool_calling = provider.has_native_tool_calling();
         let _supports_cache_control = provider.supports_cache_control();
         let tools = if provider.has_native_tool_calling() {
-            let tool_config = tool_definitions::ToolConfig::new(
-                self.config.computer_control.enabled,
-            );
+            let tool_config =
+                tool_definitions::ToolConfig::new(self.config.computer_control.enabled);
             Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
@@ -1132,9 +1173,12 @@ impl<W: UiWriter> Agent<W> {
             self.ui_writer.print_g3_progress("compacting session");
             match self.force_compact().await {
                 Ok(true) => self.ui_writer.print_g3_status("compacting session", "done"),
-                Ok(false) => self.ui_writer.print_g3_status("compacting session", "failed"),
+                Ok(false) => self
+                    .ui_writer
+                    .print_g3_status("compacting session", "failed"),
                 Err(e) => {
-                    self.ui_writer.print_g3_status("compacting session", &format!("error: {}", e));
+                    self.ui_writer
+                        .print_g3_status("compacting session", &format!("error: {}", e));
                 }
             }
             self.pending_90_compaction = false;
@@ -1337,9 +1381,10 @@ impl<W: UiWriter> Agent<W> {
         use crate::compaction::{perform_compaction, CompactionConfig};
 
         self.ui_writer.println("");
-        self.ui_writer.print_g3_progress(
-            &format!("compacting session ({}%)", self.context_window.percentage_used() as u32)
-        );
+        self.ui_writer.print_g3_progress(&format!(
+            "compacting session ({}%)",
+            self.context_window.percentage_used() as u32
+        ));
 
         let provider_name = self.providers.get(None)?.name().to_string();
         let latest_user_msg = request
@@ -1371,7 +1416,8 @@ impl<W: UiWriter> Agent<W> {
             return Ok(true);
         }
 
-        self.ui_writer.print_g3_status("compacting session", "failed");
+        self.ui_writer
+            .print_g3_status("compacting session", "failed");
         Err(anyhow::anyhow!(
             "Context window at capacity and compaction failed. Please start a new session."
         ))
@@ -1379,12 +1425,19 @@ impl<W: UiWriter> Agent<W> {
 
     /// Check if a tool call is a duplicate of the last tool call in the previous assistant message.
     /// Returns Some("DUP IN MSG") if it's a duplicate, None otherwise.
-    fn check_duplicate_in_previous_message(&self, tool_call: &ToolCall, history_cutoff: usize) -> Option<String> {
+    fn check_duplicate_in_previous_message(
+        &self,
+        tool_call: &ToolCall,
+        history_cutoff: usize,
+    ) -> Option<String> {
         // Find the most recent assistant message, but only look at messages that
         // existed before the current streaming iteration started. This prevents
         // tool calls within the same response from being marked as DUP IN MSG
         // against messages added during the current iteration's tool execution.
-        for msg in self.context_window.conversation_history[..history_cutoff].iter().rev() {
+        for msg in self.context_window.conversation_history[..history_cutoff]
+            .iter()
+            .rev()
+        {
             if !matches!(msg.role, MessageRole::Assistant) {
                 continue;
             }
@@ -1550,7 +1603,9 @@ impl<W: UiWriter> Agent<W> {
 
     /// Check if there is currently project content loaded.
     pub fn has_project_content(&self) -> bool {
-        self.context_window.conversation_history.get(1)
+        self.context_window
+            .conversation_history
+            .get(1)
             .map(|m| m.content.contains("=== ACTIVE PROJECT:"))
             .unwrap_or(false)
     }
@@ -1701,7 +1756,10 @@ impl<W: UiWriter> Agent<W> {
         let Some(session_id) = &self.session_id else {
             return false;
         };
-        read_plan(session_id).ok().flatten().map_or(false, |plan| plan.is_complete())
+        read_plan(session_id)
+            .ok()
+            .flatten()
+            .map_or(false, |plan| plan.is_complete())
     }
 
     // =========================================================================
@@ -1724,6 +1782,12 @@ impl<W: UiWriter> Agent<W> {
         first_token_time: Option<Duration>,
         turn_accumulated_usage: &Option<g3_providers::Usage>,
     ) -> TaskResult {
+        debug!(
+            "Turn dedup diagnostics: duplicate_tool_calls_dropped={}, duplicate_text_chunks_dropped={}, duplicate_text_chars_dropped={}",
+            self.dropped_duplicate_tool_calls_turn,
+            self.dropped_duplicate_text_chunks_turn,
+            self.dropped_duplicate_text_chars_turn
+        );
         self.ui_writer.finish_streaming_markdown();
         self.save_context_window("completed");
 
@@ -1908,7 +1972,8 @@ impl<W: UiWriter> Agent<W> {
         // Without the trailing newline, tool call JSON like `{"tool": "remember", ...}` would
         // appear on the same line as "Memory checkpoint:" and leak through to the UI.
         // See test: test_tool_call_not_at_line_start_passes_through in filter_json.rs
-        self.ui_writer.print_context_status("\nMemory checkpoint:\n");
+        self.ui_writer
+            .print_context_status("\nMemory checkpoint:\n");
 
         // Reset JSON filter state so it starts fresh for this response
         self.ui_writer.reset_json_filter();
@@ -1956,9 +2021,8 @@ Skip if nothing new. Be brief."#;
         let provider = self.providers.get(None)?;
         let provider_name = provider.name().to_string();
         let tools = if provider.has_native_tool_calling() {
-            let tool_config = tool_definitions::ToolConfig::new(
-                self.config.computer_control.enabled,
-            );
+            let tool_config =
+                tool_definitions::ToolConfig::new(self.config.computer_control.enabled);
             Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
@@ -2231,8 +2295,14 @@ Skip if nothing new. Be brief."#;
             // Inject any completed research results into the context
             let injected_count = self.inject_completed_research();
             if injected_count > 0 {
-                debug!("Injected {} completed research result(s) into context", injected_count);
-                self.ui_writer.println(&format!("📋 {} research result(s) ready and injected into context", injected_count));
+                debug!(
+                    "Injected {} completed research result(s) into context",
+                    injected_count
+                );
+                self.ui_writer.println(&format!(
+                    "📋 {} research result(s) ready and injected into context",
+                    injected_count
+                ));
             }
 
             // Get provider info for logging, then drop it to avoid borrow issues
@@ -2323,7 +2393,7 @@ Skip if nothing new. Be brief."#;
                         if let Some(ref usage) = chunk.usage {
                             iter.accumulated_usage = Some(usage.clone());
                             state.turn_accumulated_usage = Some(usage.clone());
-                            
+
                             // Update cumulative cache statistics
                             self.cache_stats.total_calls += 1;
                             self.cache_stats.total_input_tokens += usage.prompt_tokens as u64;
@@ -2361,7 +2431,8 @@ Skip if nothing new. Be brief."#;
                                 chunk.tool_calls
                             ));
                         } else if iter.raw_chunks.len() == 20 {
-                            iter.raw_chunks.push("... (chunks 21+ omitted for brevity) ...".to_string());
+                            iter.raw_chunks
+                                .push("... (chunks 21+ omitted for brevity) ...".to_string());
                         }
 
                         // Record time to first token
@@ -2401,7 +2472,10 @@ Skip if nothing new. Be brief."#;
                                     }
                                 }
                                 // Then check against messages from before this iteration
-                                self.check_duplicate_in_previous_message(tc, history_len_before_iteration)
+                                self.check_duplicate_in_previous_message(
+                                    tc,
+                                    history_len_before_iteration,
+                                )
                             });
 
                         // Process each tool call
@@ -2418,6 +2492,21 @@ Skip if nothing new. Be brief."#;
                                         .unwrap_or_else(|_| "<unserializable>".to_string())
                                 );
                                 continue;
+                            }
+                            if !streaming::is_turn_dedup_exempt_tool(&tool_call.tool) {
+                                let turn_fingerprint =
+                                    streaming::tool_fingerprint(&tool_call.tool, &tool_call.args);
+                                if !self
+                                    .executed_tool_fingerprints_this_turn
+                                    .insert(turn_fingerprint.clone())
+                                {
+                                    self.dropped_duplicate_tool_calls_turn += 1;
+                                    debug!(
+                                        "Skipping duplicate tool call (DUP IN TURN): {} with fingerprint {}",
+                                        tool_call.tool, turn_fingerprint
+                                    );
+                                    continue;
+                                }
                             }
 
                             // Flag for post-turn compaction if at 90% capacity
@@ -2438,7 +2527,9 @@ Skip if nothing new. Be brief."#;
                             // Use only the text before tool calls for the log message.
                             // This prevents duplicate tool call JSON from being stored
                             // in the assistant message when the LLM stutters.
-                            let raw_content_for_log = streaming::clean_llm_tokens(iter.parser.get_text_before_tool_calls());
+                            let raw_content_for_log = streaming::clean_llm_tokens(
+                                iter.parser.get_text_before_tool_calls(),
+                            );
                             let filtered_content =
                                 self.ui_writer.filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
@@ -2461,9 +2552,21 @@ Skip if nothing new. Be brief."#;
                                     self.ui_writer.print_agent_prompt();
                                     state.response_started = true;
                                 }
-                                self.ui_writer.print_agent_response(&new_content);
-                                self.ui_writer.flush();
-                                iter.current_response.push_str(&new_content);
+                                let deduped_text = streaming::dedup_consecutive_text(
+                                    &iter.current_response,
+                                    &new_content,
+                                );
+                                if deduped_text.dropped_events > 0 {
+                                    self.dropped_duplicate_text_chunks_turn +=
+                                        deduped_text.dropped_events;
+                                    self.dropped_duplicate_text_chars_turn +=
+                                        deduped_text.dropped_chars;
+                                }
+                                if !deduped_text.content.trim().is_empty() {
+                                    self.ui_writer.print_agent_response(&deduped_text.content);
+                                    self.ui_writer.flush();
+                                    iter.current_response.push_str(&deduped_text.content);
+                                }
                             }
 
                             self.ui_writer.finish_streaming_markdown();
@@ -2510,8 +2613,12 @@ Skip if nothing new. Be brief."#;
                             {
                                 Ok(result) => result?,
                                 Err(_) => {
-                                    let timeout_mins = if tool_call.tool == "research" { 20 } else { 8 };
-                                    warn!("Tool call {} timed out after {} minutes", tool_call.tool, timeout_mins);
+                                    let timeout_mins =
+                                        if tool_call.tool == "research" { 20 } else { 8 };
+                                    warn!(
+                                        "Tool call {} timed out after {} minutes",
+                                        tool_call.tool, timeout_mins
+                                    );
                                     format!(
                                         "❌ Tool execution timed out after {} minutes",
                                         timeout_mins
@@ -2545,25 +2652,25 @@ Skip if nothing new. Be brief."#;
                                     streaming::ToolOutputFormat::SelfHandled => None,
                                     streaming::ToolOutputFormat::Compact(summary) => Some(summary),
                                     streaming::ToolOutputFormat::Regular => {
-                                    // Regular tools: show truncated output lines
-                                    let max_lines_to_show =
-                                        if wants_full { output_len } else { MAX_LINES };
-                                    for (idx, line) in output_lines.iter().enumerate() {
-                                        if !wants_full && idx >= max_lines_to_show {
-                                            break;
+                                        // Regular tools: show truncated output lines
+                                        let max_lines_to_show =
+                                            if wants_full { output_len } else { MAX_LINES };
+                                        for (idx, line) in output_lines.iter().enumerate() {
+                                            if !wants_full && idx >= max_lines_to_show {
+                                                break;
+                                            }
+                                            self.ui_writer.update_tool_output_line(
+                                                &streaming::truncate_line(
+                                                    line,
+                                                    MAX_LINE_WIDTH,
+                                                    !wants_full,
+                                                ),
+                                            );
                                         }
-                                        self.ui_writer.update_tool_output_line(
-                                            &streaming::truncate_line(
-                                                line,
-                                                MAX_LINE_WIDTH,
-                                                !wants_full,
-                                            ),
-                                        );
-                                    }
-                                    if !wants_full && output_len > MAX_LINES {
-                                        self.ui_writer.print_tool_output_summary(output_len);
-                                    }
-                                    None
+                                        if !wants_full && output_len > MAX_LINES {
+                                            self.ui_writer.print_tool_output_summary(output_len);
+                                        }
+                                        None
                                     }
                                 }
                             };
@@ -2572,10 +2679,7 @@ Skip if nothing new. Be brief."#;
                             // This ensures the log file contains the true raw content including JSON tool calls
                             let tool_message = {
                                 let text_content = raw_content_for_log.trim().to_string();
-                                let mut msg = Message::new(
-                                    MessageRole::Assistant,
-                                    text_content,
-                                );
+                                let mut msg = Message::new(MessageRole::Assistant, text_content);
                                 // Store the tool call structurally so that providers can
                                 // emit proper tool_use blocks (e.g. Anthropic API) instead
                                 // of inline JSON text that confuses the model.
@@ -2585,7 +2689,10 @@ Skip if nothing new. Be brief."#;
                                         // Anthropic API requires tool_use IDs matching ^[a-zA-Z0-9_-]+$
                                         use std::sync::atomic::{AtomicU64, Ordering};
                                         static FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
-                                        format!("tool_{}", FALLBACK_COUNTER.fetch_add(1, Ordering::SeqCst))
+                                        format!(
+                                            "tool_{}",
+                                            FALLBACK_COUNTER.fetch_add(1, Ordering::SeqCst)
+                                        )
                                     } else {
                                         tool_call.id.clone()
                                     },
@@ -2671,8 +2778,9 @@ Skip if nothing new. Be brief."#;
                                 let tool_config = tool_definitions::ToolConfig::new(
                                     self.config.computer_control.enabled,
                                 );
-                                request.tools =
-                                    Some(self.get_tool_definitions_with_loaded_toolsets(tool_config));
+                                request.tools = Some(
+                                    self.get_tool_definitions_with_loaded_toolsets(tool_config),
+                                );
                             }
 
                             // DO NOT add final_display_content to full_response here!
@@ -2728,10 +2836,21 @@ Skip if nothing new. Be brief."#;
                                         self.ui_writer.print_agent_prompt();
                                         state.response_started = true;
                                     }
-
-                                    self.ui_writer.print_agent_response(&filtered_content);
-                                    self.ui_writer.flush();
-                                    iter.current_response.push_str(&filtered_content);
+                                    let deduped_text = streaming::dedup_consecutive_text(
+                                        &iter.current_response,
+                                        &filtered_content,
+                                    );
+                                    if deduped_text.dropped_events > 0 {
+                                        self.dropped_duplicate_text_chunks_turn +=
+                                            deduped_text.dropped_events;
+                                        self.dropped_duplicate_text_chars_turn +=
+                                            deduped_text.dropped_chars;
+                                    }
+                                    if !deduped_text.content.is_empty() {
+                                        self.ui_writer.print_agent_response(&deduped_text.content);
+                                        self.ui_writer.flush();
+                                        iter.current_response.push_str(&deduped_text.content);
+                                    }
                                 }
                             }
                         }
@@ -2759,7 +2878,9 @@ Skip if nothing new. Be brief."#;
                                 // Don't re-add text from parser buffer if we already displayed it
                                 // The parser buffer contains ALL accumulated text, but current_response
                                 // already has what was displayed during streaming
-                                if iter.current_response.is_empty() && !text_content.trim().is_empty() {
+                                if iter.current_response.is_empty()
+                                    && !text_content.trim().is_empty()
+                                {
                                     // Only use parser text if we truly have no response
                                     // This should be rare - only if streaming failed to display anything
                                     debug!("Warning: Using parser buffer text as fallback - this may duplicate output");
@@ -2771,7 +2892,8 @@ Skip if nothing new. Be brief."#;
                                         self.ui_writer.filter_json_tool_calls(&clean_text);
 
                                     // Only use this if we truly have nothing else
-                                    if !filtered_text.trim().is_empty() && state.full_response.is_empty()
+                                    if !filtered_text.trim().is_empty()
+                                        && state.full_response.is_empty()
                                     {
                                         debug!(
                                             "Using filtered parser text as last resort: {} chars",
@@ -2809,7 +2931,9 @@ Skip if nothing new. Be brief."#;
                                     debug!("Tools were executed in previous iterations, breaking to finalize");
                                     // IMPORTANT: Save any text response to context window before breaking
                                     // This ensures text displayed after tool execution is not lost
-                                    if !iter.current_response.trim().is_empty() && !state.assistant_message_added {
+                                    if !iter.current_response.trim().is_empty()
+                                        && !state.assistant_message_added
+                                    {
                                         debug!("Saving current_response ({} chars) to context before finalization", iter.current_response.len());
                                         let assistant_msg = Message::new(
                                             MessageRole::Assistant,
@@ -2829,7 +2953,9 @@ Skip if nothing new. Be brief."#;
 
                                 // Save assistant message before returning (no tools were executed)
                                 // This ensures text-only responses are saved to context
-                                if !iter.current_response.trim().is_empty() && !state.assistant_message_added {
+                                if !iter.current_response.trim().is_empty()
+                                    && !state.assistant_message_added
+                                {
                                     debug!("Saving current_response ({} chars) to context before early return", iter.current_response.len());
                                     let assistant_msg = Message::new(
                                         MessageRole::Assistant,
@@ -2922,7 +3048,8 @@ Skip if nothing new. Be brief."#;
                     state.full_response.len()
                 );
 
-                let has_response = !iter.current_response.is_empty() || !state.full_response.is_empty();
+                let has_response =
+                    !iter.current_response.is_empty() || !state.full_response.is_empty();
 
                 // Check if the response is essentially empty (just whitespace or timing lines)
                 // Check if there's an incomplete tool call in the buffer (for debugging)
@@ -3024,12 +3151,12 @@ Skip if nothing new. Be brief."#;
         // Check plan approval gate after tool execution (only in plan mode)
         if self.in_plan_mode {
             if let Some(session_id) = &self.session_id {
-            if let ApprovalGateResult::Blocked { message } =
-                check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files)
-            {
-                // Return the blocking message instead of the tool result
-                return Ok(message);
-            }
+                if let ApprovalGateResult::Blocked { message } =
+                    check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files)
+                {
+                    // Return the blocking message instead of the tool result
+                    return Ok(message);
+                }
             }
         }
 
@@ -3183,7 +3310,12 @@ mod tool_timeout_tests {
     fn test_webdriver_tools_have_8_minute_timeout() {
         for tool in ["webdriver_start", "webdriver_navigate", "webdriver_click"] {
             let timeout = get_tool_timeout(tool);
-            assert_eq!(timeout, Duration::from_secs(8 * 60), "Tool {} should have 8 min timeout", tool);
+            assert_eq!(
+                timeout,
+                Duration::from_secs(8 * 60),
+                "Tool {} should have 8 min timeout",
+                tool
+            );
         }
     }
 
@@ -3191,11 +3323,25 @@ mod tool_timeout_tests {
     fn test_only_research_has_extended_timeout() {
         // List of all tools that should have 8-minute timeout
         let standard_tools = [
-            "shell", "read_file", "write_file", "str_replace", "read_image",
-            "screenshot", "code_search", "todo_read", "todo_write", "remember",
-            "rehydrate", "coverage", "background_process",
-            "webdriver_start", "webdriver_navigate", "webdriver_click",
-            "webdriver_send_keys", "webdriver_find_element", "webdriver_quit",
+            "shell",
+            "read_file",
+            "write_file",
+            "str_replace",
+            "read_image",
+            "screenshot",
+            "code_search",
+            "todo_read",
+            "todo_write",
+            "remember",
+            "rehydrate",
+            "coverage",
+            "background_process",
+            "webdriver_start",
+            "webdriver_navigate",
+            "webdriver_click",
+            "webdriver_send_keys",
+            "webdriver_find_element",
+            "webdriver_quit",
         ];
 
         for tool in standard_tools {
