@@ -45,12 +45,14 @@ model = "claude-sonnet-4-5"
 # [providers.openai.default]
 # api_key = "your-openai-api-key"
 # model = "gpt-4-turbo"
+# reasoning_exclude = true         # Optional: add reasoning.exclude=true to requests
 
 # OpenAI-compatible providers (OpenRouter, Groq, etc.)
 # [providers.openai_compatible.openrouter]
 # api_key = "your-openrouter-api-key"
 # model = "anthropic/claude-3.5-sonnet"
 # base_url = "https://openrouter.ai/api/v1"
+# reasoning_exclude = true         # Optional: useful for reasoning models via OpenRouter
 
 # =============================================================================
 # Embedded providers (local models via llama.cpp with Metal acceleration)

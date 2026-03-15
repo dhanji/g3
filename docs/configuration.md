@@ -113,6 +113,7 @@ model = "gpt-4-turbo"            # Model to use
 max_tokens = 4096
 temperature = 0.1
 # base_url = "https://api.openai.com/v1"  # Optional: Custom endpoint
+# reasoning_exclude = true        # Optional: send reasoning.exclude=true
 ```
 
 ### OpenAI-Compatible Providers
@@ -126,6 +127,7 @@ model = "anthropic/claude-3.5-sonnet"
 base_url = "https://openrouter.ai/api/v1"
 max_tokens = 4096
 temperature = 0.1
+reasoning_exclude = true         # Optional: hide reasoning tokens from response content
 
 [providers.openai_compatible.groq]
 api_key = "gsk_..."
@@ -136,6 +138,9 @@ temperature = 0.1
 ```
 
 Reference these as `openrouter.default` or `groq.default` in `default_provider`.
+
+`reasoning_exclude` is optional and defaults to disabled. Enable it per provider when using
+reasoning-capable models where you want concise `content` output.
 
 ### Embedded (Local) Models
 

@@ -264,4 +264,36 @@ autonomous_max_retry_attempts = 6
         // Test that planner falls back to default provider
         assert_eq!(config.get_planner_provider(), "databricks.default");
     }
+
+    #[test]
+    fn test_openai_compatible_reasoning_exclude_parsing() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let config_content = format!(r#"
+[providers]
+default_provider = "openrouter.default"
+
+[providers.openai_compatible.openrouter]
+api_key = "test-key"
+model = "x-ai/grok-code-fast-1"
+base_url = "https://openrouter.ai/api/v1"
+reasoning_exclude = true
+
+[agent]
+fallback_default_max_tokens = 32000
+enable_streaming = true
+timeout_seconds = 60
+auto_compact = true
+max_retry_attempts = 3
+autonomous_max_retry_attempts = 6
+{}"#, test_config_footer());
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
+        let openrouter = config.providers.openai_compatible.get("openrouter").unwrap();
+
+        assert_eq!(openrouter.reasoning_exclude, Some(true));
+    }
 }

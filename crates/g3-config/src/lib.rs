@@ -64,6 +64,7 @@ pub struct OpenAIConfig {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    pub reasoning_exclude: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

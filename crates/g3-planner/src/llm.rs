@@ -67,6 +67,7 @@ pub async fn create_planner_provider(
                 openai_config.base_url.clone(),
                 openai_config.max_tokens,
                 openai_config.temperature,
+                openai_config.reasoning_exclude,
             )?;
             Ok(Box::new(provider))
         }

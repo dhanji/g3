@@ -10,9 +10,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
 use crate::{
+    streaming::{make_final_chunk, make_text_chunk},
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
     MessageRole, Tool, ToolCall, Usage,
-    streaming::{make_text_chunk, make_final_chunk},
 };
 
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct OpenAIProvider {
     base_url: String,
     max_tokens: Option<u32>,
     _temperature: Option<f32>,
+    reasoning_exclude: Option<bool>,
     name: String,
 }
 
@@ -33,6 +34,7 @@ impl OpenAIProvider {
         base_url: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
+        reasoning_exclude: Option<bool>,
     ) -> Result<Self> {
         Self::new_with_name(
             "openai".to_string(),
@@ -41,6 +43,7 @@ impl OpenAIProvider {
             base_url,
             max_tokens,
             temperature,
+            reasoning_exclude,
         )
     }
 
@@ -51,6 +54,7 @@ impl OpenAIProvider {
         base_url: Option<String>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
+        reasoning_exclude: Option<bool>,
     ) -> Result<Self> {
         Ok(Self {
             client: Client::new(),
@@ -59,6 +63,7 @@ impl OpenAIProvider {
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
             max_tokens,
             _temperature: temperature,
+            reasoning_exclude,
             name,
         })
     }
@@ -98,7 +103,30 @@ impl OpenAIProvider {
             });
         }
 
+        if self.reasoning_exclude == Some(true) {
+            Self::set_reasoning_exclude(&mut body);
+        }
+
         body
+    }
+
+    fn set_reasoning_exclude(body: &mut serde_json::Value) {
+        let Some(body_obj) = body.as_object_mut() else {
+            return;
+        };
+
+        match body_obj.get_mut("reasoning") {
+            Some(reasoning) => {
+                if let Some(reasoning_obj) = reasoning.as_object_mut() {
+                    reasoning_obj
+                        .entry("exclude".to_string())
+                        .or_insert_with(|| json!(true));
+                }
+            }
+            None => {
+                body_obj.insert("reasoning".to_string(), json!({ "exclude": true }));
+            }
+        }
     }
 
     async fn parse_streaming_response(
@@ -411,6 +439,74 @@ impl LLMProvider for OpenAIProvider {
 
     fn temperature(&self) -> f32 {
         self._temperature.unwrap_or(0.1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_provider(reasoning_exclude: Option<bool>) -> OpenAIProvider {
+        OpenAIProvider::new_with_name(
+            "openai.test".to_string(),
+            "key".to_string(),
+            Some("gpt-4o-mini".to_string()),
+            None,
+            None,
+            None,
+            reasoning_exclude,
+        )
+        .expect("provider should construct")
+    }
+
+    #[test]
+    fn create_request_body_includes_reasoning_exclude_when_enabled() {
+        let provider = make_provider(Some(true));
+        let messages = vec![Message::new(MessageRole::User, "ping".to_string())];
+        let body = provider.create_request_body(&messages, None, false, None, None);
+
+        assert_eq!(body["reasoning"]["exclude"], json!(true));
+    }
+
+    #[test]
+    fn create_request_body_skips_reasoning_exclude_when_disabled() {
+        let provider = make_provider(None);
+        let messages = vec![Message::new(MessageRole::User, "ping".to_string())];
+        let body = provider.create_request_body(&messages, None, false, None, None);
+
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn set_reasoning_exclude_merges_without_overwriting_existing_exclude() {
+        let mut body = json!({
+            "model": "gpt-4o-mini",
+            "reasoning": {
+                "effort": "medium",
+                "exclude": false
+            }
+        });
+
+        OpenAIProvider::set_reasoning_exclude(&mut body);
+
+        assert_eq!(body["reasoning"]["effort"], json!("medium"));
+        assert_eq!(body["reasoning"]["exclude"], json!(false));
+    }
+
+    #[test]
+    fn set_reasoning_exclude_adds_exclude_when_reasoning_present_without_it() {
+        let mut body = json!({
+            "model": "gpt-4o-mini",
+            "reasoning": {
+                "effort": "high"
+            }
+        });
+
+        OpenAIProvider::set_reasoning_exclude(&mut body);
+
+        assert_eq!(body["reasoning"]["effort"], json!("high"));
+        assert_eq!(body["reasoning"]["exclude"], json!(true));
     }
 }
 

@@ -110,6 +110,7 @@ fn register_openai_providers(
                 openai_config.base_url.clone(),
                 openai_config.max_tokens,
                 openai_config.temperature,
+                openai_config.reasoning_exclude,
             )?;
             registry.register(openai_provider);
         }
@@ -132,6 +133,7 @@ fn register_openai_compatible_providers(
                 openai_config.base_url.clone(),
                 openai_config.max_tokens,
                 openai_config.temperature,
+                openai_config.reasoning_exclude,
             )?;
             registry.register(openai_provider);
         }

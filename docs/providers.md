@@ -185,6 +185,7 @@ model = "gpt-4-turbo"            # Model name
 max_tokens = 4096
 temperature = 0.1
 # base_url = "https://api.openai.com/v1"  # Optional
+# reasoning_exclude = true        # Optional: add reasoning.exclude=true
 ```
 
 ### Available Models
@@ -214,6 +215,7 @@ model = "anthropic/claude-3.5-sonnet"
 base_url = "https://openrouter.ai/api/v1"
 max_tokens = 4096
 temperature = 0.1
+reasoning_exclude = true         # Optional: hide reasoning tokens from content
 
 # Groq
 [providers.openai_compatible.groq]
@@ -231,6 +233,9 @@ base_url = "https://api.together.xyz/v1"
 max_tokens = 4096
 temperature = 0.1
 ```
+
+`reasoning_exclude` is optional and disabled by default. Enable it per provider when you want
+reasoning-capable models to return concise `content` without reasoning text.
 
 ### Supported Services
 
