@@ -30,12 +30,10 @@ core-foundation = "0.10"
 cocoa = "0.25"
 objc = "0.2"
 accessibility = "0.2"
-image = "0.25"
 
 # Linux dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = { version = "2.21", features = ["xlib", "xtest"] }
-image = "0.25"
 
 # Windows dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
