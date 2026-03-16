@@ -94,17 +94,9 @@ pub fn extract_coach_feedback<W>(
     config: &FeedbackExtractionConfig,
 ) -> ExtractedFeedback
 where
-    W: UiWriter + Clone + Send + Sync + 'static,
+    W: UiWriter + Send + Sync + 'static,
 {
-    // Try session log first - now looks for last assistant message (primary method)
-    if let Some(session_id) = agent.get_session_id() {
-        if let Some(feedback) = try_extract_last_assistant_message(&session_id, config) {
-            debug!("Extracted coach feedback from last assistant message: {} chars", feedback.len());
-            return ExtractedFeedback::new(feedback, FeedbackSource::ConversationHistory);
-        }
-    }
-
-    // Fallback: Try session log with final_output pattern (backwards compatibility)
+    // Try session log with verified final_output pattern first.
     if let Some(session_id) = agent.get_session_id() {
         if let Some(feedback) = try_extract_from_session_log(&session_id, config) {
             debug!("Extracted coach feedback from session log (final_output): {} chars", feedback.len());
@@ -128,9 +120,20 @@ where
 
     // Fallback: Try TaskResult parsing (extracts last text block)
     let extracted = coach_result.extract_final_output();
-    if !extracted.is_empty() {
+    if !extracted.is_empty() && !is_meta_coach_text(&extracted) {
         debug!("Extracted coach feedback from task result: {} chars", extracted.len());
         return ExtractedFeedback::new(extracted, FeedbackSource::TaskResultResponse);
+    }
+
+    // Last resort: use the last assistant message, but skip obvious meta-review chatter.
+    if let Some(session_id) = agent.get_session_id() {
+        if let Some(feedback) = try_extract_last_assistant_message(&session_id, config) {
+            debug!(
+                "Extracted coach feedback from last assistant message: {} chars",
+                feedback.len()
+            );
+            return ExtractedFeedback::new(feedback, FeedbackSource::ConversationHistory);
+        }
     }
 
     // Fallback to default
@@ -163,39 +166,74 @@ fn try_extract_last_assistant_message(
         .get("conversation_history")?
         .as_array()?;
 
-    // Search backwards for the last assistant message with text content
+    extract_last_meaningful_assistant_message(messages)
+}
+
+fn extract_last_meaningful_assistant_message(messages: &[Value]) -> Option<String> {
     for msg in messages.iter().rev() {
         let role = msg.get("role").and_then(|v| v.as_str())?;
-        
+
         if role.eq_ignore_ascii_case("assistant") {
-            if let Some(content) = msg.get("content") {
-                // Handle string content
-                if let Some(content_str) = content.as_str() {
-                    let trimmed = content_str.trim();
-                    // Skip empty or very short responses (likely just tool calls)
+            if let Some(text) = extract_assistant_text(msg) {
+                if !is_meta_coach_text(&text) {
+                    return Some(text);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_assistant_text(msg: &Value) -> Option<String> {
+    let content = msg.get("content")?;
+
+    if let Some(content_str) = content.as_str() {
+        let trimmed = content_str.trim();
+        if !trimmed.is_empty() && trimmed.len() > 10 {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(content_array) = content.as_array() {
+        for block in content_array {
+            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    let trimmed = text.trim();
                     if !trimmed.is_empty() && trimmed.len() > 10 {
                         return Some(trimmed.to_string());
-                    }
-                }
-                // Handle array content (native tool calling format)
-                // Look for text blocks in the array
-                if let Some(content_array) = content.as_array() {
-                    for block in content_array {
-                        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                let trimmed = text.trim();
-                                if !trimmed.is_empty() && trimmed.len() > 10 {
-                                    return Some(trimmed.to_string());
-                                }
-                            }
-                        }
                     }
                 }
             }
         }
     }
-    
+
     None
+}
+
+fn is_meta_coach_text(text: &str) -> bool {
+    let normalized = text.trim().to_ascii_lowercase();
+    let prefixes = [
+        "let me ",
+        "now let me ",
+        "i'll ",
+        "i will ",
+        "first, let me ",
+    ];
+    let meta_markers = [
+        "run the acceptance commands",
+        "check the remaining",
+        "review the requirements more carefully",
+        "read the spec more carefully",
+        "check several important details",
+        "check the current working directory",
+        "find the actual workspace directory",
+        "deeper review of the implementation quality",
+        "more carefully",
+    ];
+
+    prefixes.iter().any(|p| normalized.starts_with(p))
+        && meta_markers.iter().any(|m| normalized.contains(m))
 }
 
 /// Try to extract feedback from session log file
@@ -628,5 +666,57 @@ mod tests {
         let config = FeedbackExtractionConfig::default();
         assert!(!config.verbose);
         assert!(config.default_feedback.contains("review"));
+    }
+
+    #[test]
+    fn test_is_meta_coach_text_detects_review_chatter() {
+        assert!(is_meta_coach_text(
+            "Now let me check the attach_to_order method more carefully — specifically whether attaching to an order moves the state to linked."
+        ));
+        assert!(!is_meta_coach_text(
+            "Fix reopened history persistence and make attach_to_order persist linked state."
+        ));
+    }
+
+    #[test]
+    fn test_extract_last_meaningful_assistant_message_skips_meta_review_chatter() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": "Let me run the acceptance commands from the correct directory."
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "Now let me check the attach_to_order method more carefully — specifically whether attaching to an order moves the state to linked."
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "The implementation is missing reopened history preservation and attach_to_order does not persist linked state."
+            }),
+        ];
+
+        let extracted = extract_last_meaningful_assistant_message(&messages);
+        assert_eq!(
+            extracted.as_deref(),
+            Some(
+                "The implementation is missing reopened history preservation and attach_to_order does not persist linked state."
+            )
+        );
+    }
+
+    #[test]
+    fn test_extract_last_meaningful_assistant_message_returns_none_for_only_meta_chatter() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": "Let me check the current working directory and run the tests."
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "Now let me check the remaining acceptance commands individually and review the requirements more carefully."
+            }),
+        ];
+
+        assert_eq!(extract_last_meaningful_assistant_message(&messages), None);
     }
 }

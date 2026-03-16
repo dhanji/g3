@@ -7,6 +7,7 @@ use crate::context_window::ContextWindow;
 use crate::streaming_parser::StreamingToolParser;
 use crate::ToolCall;
 use g3_providers::{CompletionRequest, MessageRole};
+use serde_json::{Map, Value};
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
 
@@ -47,7 +48,8 @@ impl StreamingState {
     }
 
     pub fn get_ttft(&self) -> Duration {
-        self.first_token_time.unwrap_or_else(|| self.stream_start.elapsed())
+        self.first_token_time
+            .unwrap_or_else(|| self.stream_start.elapsed())
     }
 }
 
@@ -109,10 +111,9 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
 }
 
 pub fn is_self_handled_tool(tool_name: &str) -> bool {
-    matches!(tool_name, 
-        "todo_read" | "todo_write" | 
-        "plan_read" | "plan_write" |
-        "write_envelope"
+    matches!(
+        tool_name,
+        "todo_read" | "todo_write" | "plan_read" | "plan_write" | "write_envelope"
     )
 }
 
@@ -210,7 +211,8 @@ impl IterationState {
                 chunk.tool_calls
             ));
         } else if self.raw_chunks.len() == 20 {
-            self.raw_chunks.push("... (chunks 21+ omitted for brevity) ...".to_string());
+            self.raw_chunks
+                .push("... (chunks 21+ omitted for brevity) ...".to_string());
         }
         self.chunks_received += 1;
     }
@@ -261,10 +263,7 @@ pub fn format_timing_footer(
 
     // Add token usage info if available (dimmed)
     if let Some(tokens) = turn_tokens {
-        format!(
-            "{}  {} ◉ | {:.0}%",
-            timing, tokens, context_percentage
-        )
+        format!("{}  {} ◉ | {:.0}%", timing, tokens, context_percentage)
     } else {
         format!("{}  {:.0}%", timing, context_percentage)
     }
@@ -286,15 +285,21 @@ pub fn log_stream_error(
     error!("Iteration: {}/{}", iteration_count, MAX_ITERATIONS);
     error!("Provider: {} (model: {})", provider_name, provider_model);
     error!("Chunks received: {}", chunks_received);
-    
+
     error!("Parser state:");
     error!("  - Text buffer length: {}", parser.text_buffer_len());
     error!("  - Text buffer content: {:?}", parser.get_text_content());
-    error!("  - Has incomplete tool call: {}", parser.has_incomplete_tool_call());
+    error!(
+        "  - Has incomplete tool call: {}",
+        parser.has_incomplete_tool_call()
+    );
     error!("  - Message stopped: {}", parser.is_message_stopped());
     error!("  - In JSON tool call: {}", parser.is_in_json_tool_call());
-    error!("  - JSON tool start: {:?}", parser.json_tool_start_position());
-    
+    error!(
+        "  - JSON tool start: {:?}",
+        parser.json_tool_start_position()
+    );
+
     error!("Request details:");
     error!("  - Messages count: {}", request.messages.len());
     error!("  - Has tools: {}", request.tools.is_some());
@@ -335,7 +340,10 @@ pub fn log_stream_error(
         "  - Used tokens: {}/{}",
         context_window.used_tokens, context_window.total_tokens
     );
-    error!("  - Percentage used: {:.1}%", context_window.percentage_used());
+    error!(
+        "  - Percentage used: {:.1}%",
+        context_window.percentage_used()
+    );
     error!(
         "  - Conversation history length: {}",
         context_window.conversation_history.len()
@@ -395,10 +403,15 @@ pub fn format_tool_arg_value(tool_name: &str, key: &str, value: &serde_json::Val
 }
 
 /// Format tool output lines for display, respecting machine vs human mode.
-pub fn format_tool_output_summary(output: &str, max_lines: usize, max_width: usize, wants_full: bool) -> Vec<String> {
+pub fn format_tool_output_summary(
+    output: &str,
+    max_lines: usize,
+    max_width: usize,
+    wants_full: bool,
+) -> Vec<String> {
     let lines: Vec<&str> = output.lines().collect();
     let limit = if wants_full { lines.len() } else { max_lines };
-    
+
     lines
         .iter()
         .take(limit)
@@ -515,8 +528,14 @@ pub fn format_code_search_summary(result: &str) -> String {
     } else if let Some(json_start) = result.find('{') {
         // Try to parse the JSON to extract summary stats
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result[json_start..]) {
-            let matches = parsed.get("total_matches").and_then(|v| v.as_u64()).unwrap_or(0);
-            let files = parsed.get("total_files_searched").and_then(|v| v.as_u64()).unwrap_or(0);
+            let matches = parsed
+                .get("total_matches")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let files = parsed
+                .get("total_files_searched")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             return format!("🔍 {} matches in {} files", matches, files);
         }
         "🔍 search complete".to_string()
@@ -609,6 +628,105 @@ where
     result
 }
 
+/// Build a deterministic fingerprint for a tool call using tool name and normalized args.
+/// Object keys are sorted recursively so equivalent JSON payloads hash identically.
+pub fn tool_fingerprint(tool_name: &str, args: &Value) -> String {
+    fn normalize(value: &Value) -> Value {
+        match value {
+            Value::Object(obj) => {
+                let mut keys: Vec<&String> = obj.keys().collect();
+                keys.sort();
+                let mut normalized = Map::new();
+                for key in keys {
+                    if let Some(val) = obj.get(key) {
+                        normalized.insert(key.clone(), normalize(val));
+                    }
+                }
+                Value::Object(normalized)
+            }
+            Value::Array(arr) => Value::Array(arr.iter().map(normalize).collect()),
+            _ => value.clone(),
+        }
+    }
+
+    let normalized_args = normalize(args);
+    let normalized_json =
+        serde_json::to_string(&normalized_args).unwrap_or_else(|_| String::from("{}"));
+    format!("{tool_name}|{normalized_json}")
+}
+
+/// Tools that are expected to be called repeatedly with identical args as a polling pattern.
+/// These should not be blocked by turn-scoped duplicate suppression.
+pub fn is_turn_dedup_exempt_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "research_status")
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DedupTextResult {
+    pub content: String,
+    pub dropped_chars: usize,
+    pub dropped_events: u32,
+}
+
+/// Conservative dedup for streaming text:
+/// - drops exact consecutive duplicates already present at the tail of `previous`,
+/// - collapses exact in-chunk repetition (e.g. "abcabc" -> "abc"),
+/// - does not attempt overlap merge for partial matches.
+pub fn dedup_consecutive_text(previous: &str, incoming: &str) -> DedupTextResult {
+    if incoming.is_empty() {
+        return DedupTextResult::default();
+    }
+
+    let mut dropped_chars = 0usize;
+    let mut dropped_events = 0u32;
+
+    let (collapsed, internal_dropped_chars) = collapse_exact_repetition(incoming);
+    if internal_dropped_chars > 0 {
+        dropped_chars += internal_dropped_chars;
+        dropped_events += 1;
+    }
+
+    if !collapsed.is_empty() && previous.ends_with(&collapsed) {
+        dropped_chars += collapsed.len();
+        dropped_events += 1;
+        return DedupTextResult {
+            content: String::new(),
+            dropped_chars,
+            dropped_events,
+        };
+    }
+
+    DedupTextResult {
+        content: collapsed,
+        dropped_chars,
+        dropped_events,
+    }
+}
+
+fn collapse_exact_repetition(incoming: &str) -> (String, usize) {
+    if incoming.is_empty() {
+        return (String::new(), 0);
+    }
+
+    let len = incoming.len();
+    let mut unit_boundaries: Vec<usize> = incoming.char_indices().map(|(i, _)| i).collect();
+    unit_boundaries.push(len);
+
+    for &unit_len in unit_boundaries.iter().skip(1) {
+        if unit_len == len || len % unit_len != 0 {
+            continue;
+        }
+
+        let unit = &incoming[..unit_len];
+        let repeats = len / unit_len;
+        if repeats > 1 && unit.repeat(repeats) == incoming {
+            return (unit.to_string(), len - unit_len);
+        }
+    }
+
+    (incoming.to_string(), 0)
+}
+
 // =============================================================================
 // Auto-Continue Decision Logic
 // =============================================================================
@@ -691,8 +809,14 @@ mod tests {
         assert_eq!(truncate_for_display("short", 10), "short");
         assert_eq!(truncate_for_display("this is long", 5), "this ...");
         // Multi-line input should only use first line
-        assert_eq!(truncate_for_display("first line\nsecond line", 20), "first line");
-        assert_eq!(truncate_for_display("❌ Error\nDetails here", 10), "❌ Error");
+        assert_eq!(
+            truncate_for_display("first line\nsecond line", 20),
+            "first line"
+        );
+        assert_eq!(
+            truncate_for_display("❌ Error\nDetails here", 10),
+            "❌ Error"
+        );
     }
 
     #[test]
@@ -713,10 +837,16 @@ mod tests {
     #[test]
     fn test_format_tool_arg_value_shell_command() {
         let val = serde_json::json!("echo hello\necho world");
-        assert_eq!(format_tool_arg_value("shell", "command", &val), "echo hello...");
-        
+        assert_eq!(
+            format_tool_arg_value("shell", "command", &val),
+            "echo hello..."
+        );
+
         let single_line = serde_json::json!("ls -la");
-        assert_eq!(format_tool_arg_value("shell", "command", &single_line), "ls -la");
+        assert_eq!(
+            format_tool_arg_value("shell", "command", &single_line),
+            "ls -la"
+        );
     }
 
     #[test]
@@ -731,7 +861,10 @@ mod tests {
     #[test]
     fn test_format_read_file_summary() {
         assert_eq!(format_read_file_summary(42, 500), "42 lines (500 chars)");
-        assert_eq!(format_read_file_summary(100, 1500), "100 lines (1.5k chars)");
+        assert_eq!(
+            format_read_file_summary(100, 1500),
+            "100 lines (1.5k chars)"
+        );
     }
 
     #[test]
@@ -745,12 +878,20 @@ mod tests {
     #[test]
     fn test_deduplicate_tool_calls_no_duplicates() {
         let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
-            ToolCall { tool: "read_file".to_string(), args: serde_json::json!({"path": "foo.rs"}), id: String::new() },
+            ToolCall {
+                tool: "shell".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+                id: String::new(),
+            },
+            ToolCall {
+                tool: "read_file".to_string(),
+                args: serde_json::json!({"path": "foo.rs"}),
+                id: String::new(),
+            },
         ];
-        
+
         let result = deduplicate_tool_calls(tools, |_| None);
-        
+
         assert_eq!(result.len(), 2);
         assert!(result[0].1.is_none());
         assert!(result[1].1.is_none());
@@ -759,12 +900,20 @@ mod tests {
     #[test]
     fn test_deduplicate_tool_calls_sequential_duplicate() {
         let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
+            ToolCall {
+                tool: "shell".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+                id: String::new(),
+            },
+            ToolCall {
+                tool: "shell".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+                id: String::new(),
+            },
         ];
-        
+
         let result = deduplicate_tool_calls(tools, |_| None);
-        
+
         assert_eq!(result.len(), 2);
         assert!(result[0].1.is_none(), "First should not be duplicate");
         assert_eq!(result[1].1, Some("DUP IN CHUNK".to_string()));
@@ -772,15 +921,74 @@ mod tests {
 
     #[test]
     fn test_deduplicate_tool_calls_previous_message_duplicate() {
-        let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
-        ];
-        
+        let tools = vec![ToolCall {
+            tool: "shell".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            id: String::new(),
+        }];
+
         // Simulate finding a duplicate in previous message
         let result = deduplicate_tool_calls(tools, |_| Some("DUP IN MSG".to_string()));
-        
+
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].1, Some("DUP IN MSG".to_string()));
+    }
+
+    #[test]
+    fn test_tool_fingerprint_normalizes_object_key_order() {
+        let left = serde_json::json!({
+            "z": 1,
+            "a": {"b": 2, "a": 1},
+            "arr": [{"y": 2, "x": 1}]
+        });
+        let right = serde_json::json!({
+            "arr": [{"x": 1, "y": 2}],
+            "a": {"a": 1, "b": 2},
+            "z": 1
+        });
+
+        assert_eq!(
+            tool_fingerprint("shell", &left),
+            tool_fingerprint("shell", &right)
+        );
+    }
+
+    #[test]
+    fn test_turn_dedup_exempt_tool() {
+        assert!(is_turn_dedup_exempt_tool("research_status"));
+        assert!(!is_turn_dedup_exempt_tool("shell"));
+    }
+
+    #[test]
+    fn test_dedup_consecutive_text_drops_tail_duplicate() {
+        let result = dedup_consecutive_text("hello world", "world");
+        assert_eq!(result.content, "");
+        assert_eq!(result.dropped_events, 1);
+        assert_eq!(result.dropped_chars, "world".len());
+    }
+
+    #[test]
+    fn test_dedup_consecutive_text_collapses_internal_repeat() {
+        let result = dedup_consecutive_text("", "Yes. Yes. Yes. ");
+        assert_eq!(result.content, "Yes. ");
+        assert_eq!(result.dropped_events, 1);
+        assert_eq!(
+            result.dropped_chars,
+            "Yes. Yes. Yes. ".len() - "Yes. ".len()
+        );
+    }
+
+    #[test]
+    fn test_dedup_consecutive_text_keeps_non_duplicate_content() {
+        let result = dedup_consecutive_text("abc", "bcx");
+        assert_eq!(
+            result,
+            DedupTextResult {
+                content: "bcx".to_string(),
+                dropped_chars: 0,
+                dropped_events: 0,
+            }
+        );
     }
 
     #[test]
@@ -793,19 +1001,31 @@ mod tests {
     #[test]
     fn test_should_auto_continue_autonomous() {
         use AutoContinueReason::*;
-        
+
         // Tools executed
-        assert_eq!(should_auto_continue(true, true, false, false, false), Some(ToolsExecuted));
-        
+        assert_eq!(
+            should_auto_continue(true, true, false, false, false),
+            Some(ToolsExecuted)
+        );
+
         // Incomplete tool call
-        assert_eq!(should_auto_continue(true, false, true, false, false), Some(IncompleteToolCall));
-        
+        assert_eq!(
+            should_auto_continue(true, false, true, false, false),
+            Some(IncompleteToolCall)
+        );
+
         // Unexecuted tool call
-        assert_eq!(should_auto_continue(true, false, false, true, false), Some(UnexecutedToolCall));
-        
+        assert_eq!(
+            should_auto_continue(true, false, false, true, false),
+            Some(UnexecutedToolCall)
+        );
+
         // Max tokens truncation
-        assert_eq!(should_auto_continue(true, false, false, false, true), Some(MaxTokensTruncation));
-        
+        assert_eq!(
+            should_auto_continue(true, false, false, false, true),
+            Some(MaxTokensTruncation)
+        );
+
         // Nothing special - no auto-continue
         assert_eq!(should_auto_continue(true, false, false, false, false), None);
     }
