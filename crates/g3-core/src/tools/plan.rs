@@ -815,7 +815,7 @@ pub async fn execute_plan_read<W: UiWriter>(
         }
         None => {
             ctx.ui_writer.print_plan_compact(None, None, false);
-            Ok(String::new())
+            Ok("No plan exists yet. Use plan_write to create one.".to_string())
         }
     }
 }

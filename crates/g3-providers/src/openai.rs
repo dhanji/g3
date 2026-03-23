@@ -415,19 +415,57 @@ impl LLMProvider for OpenAIProvider {
 }
 
 fn convert_messages(messages: &[Message]) -> Vec<serde_json::Value> {
-    messages
-        .iter()
-        .map(|msg| {
-            json!({
-                "role": match msg.role {
-                    MessageRole::System => "system",
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                },
+    let mut result = Vec::new();
+    for msg in messages {
+        // Tool result messages: OpenAI expects role "tool" with tool_call_id
+        if let Some(ref tool_call_id) = msg.tool_result_id {
+            result.push(json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
                 "content": msg.content,
-            })
-        })
-        .collect()
+            }));
+            continue;
+        }
+
+        let role = match msg.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+        };
+
+        // Assistant messages with tool calls
+        if !msg.tool_calls.is_empty() {
+            let tool_calls: Vec<serde_json::Value> = msg.tool_calls.iter().map(|tc| {
+                json!({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.input.to_string(),
+                    }
+                })
+            }).collect();
+
+            let mut m = json!({
+                "role": role,
+                "tool_calls": tool_calls,
+            });
+            // Include content only if non-empty (OpenAI allows null/absent content
+            // on assistant messages that have tool_calls)
+            if !msg.content.is_empty() {
+                m["content"] = json!(msg.content);
+            }
+            result.push(m);
+            continue;
+        }
+
+        // Regular messages
+        result.push(json!({
+            "role": role,
+            "content": msg.content,
+        }));
+    }
+    result
 }
 
 fn convert_tools(tools: &[Tool]) -> Vec<serde_json::Value> {
