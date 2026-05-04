@@ -32,6 +32,8 @@ pub struct CommonFlags {
     pub project: Option<PathBuf>,
     /// Resume a specific session by ID
     pub resume: Option<String>,
+    /// Skip the plan approval gate for plan tools
+    pub skip_plan_tool_check: bool,
 }
 
 #[derive(Parser, Clone)]
@@ -161,6 +163,11 @@ pub struct Cli {
     /// Load a project from the given path at startup (like /project but without auto-prompt)
     #[arg(long, value_name = "PATH")]
     pub project: Option<PathBuf>,
+
+    /// Skip the plan approval gate check for plan tools (plan_read, plan_write, plan_approve).
+    /// Without this flag, plan tools are subject to the same approval gate as other tools.
+    #[arg(long)]
+    pub skip_plan_tool_check: bool,
 }
 
 impl Cli {
@@ -179,6 +186,7 @@ impl Cli {
             acd: self.acd,
             project: self.project.clone(),
             resume: self.resume.clone(),
+            skip_plan_tool_check: self.skip_plan_tool_check,
         }
     }
 }

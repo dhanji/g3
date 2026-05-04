@@ -207,6 +207,9 @@ pub async fn run_agent_mode(
     if flags.acd {
         agent.set_acd_enabled(true);
     }
+    if flags.skip_plan_tool_check {
+        agent.set_skip_plan_tool_check(true);
+    }
 
     // If resuming a session, restore context and TODO
     let initial_task = if let Some(ref incomplete_session) = resuming_session {

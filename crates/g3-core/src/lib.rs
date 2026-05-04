@@ -166,6 +166,9 @@ pub struct Agent<W: UiWriter> {
     acd_enabled: bool,
     /// Whether plan mode is active (gate blocks file changes without approved plan)
     in_plan_mode: bool,
+    /// When true, plan tools (plan_read/write/approve) skip the approval gate.
+    /// Controlled by --skip-plan-tool-check CLI flag.
+    skip_plan_tool_check: bool,
     /// Files that were already dirty when plan mode started (excluded from approval gate)
     baseline_dirty_files: std::collections::HashSet<String>,
     /// Manager for async research tasks
@@ -226,6 +229,7 @@ impl<W: UiWriter> Agent<W> {
             auto_memory: false,
             acd_enabled: false,
             in_plan_mode: false,
+            skip_plan_tool_check: false,
             baseline_dirty_files: std::collections::HashSet::new(),
             pending_research_manager: pending_research::PendingResearchManager::new(),
             loaded_toolsets: std::collections::HashSet::new(),
@@ -1676,6 +1680,11 @@ impl<W: UiWriter> Agent<W> {
         self.in_plan_mode
     }
 
+    /// Set whether plan tools skip the approval gate.
+    pub fn set_skip_plan_tool_check(&mut self, skip: bool) {
+        self.skip_plan_tool_check = skip;
+    }
+
     /// Check if the current plan is in a terminal state (all items done or blocked).
     ///
     /// Returns true if:
@@ -3012,7 +3021,12 @@ Skip if nothing new. Be brief."#;
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
 
         // Check plan approval gate after tool execution (only in plan mode)
-        if self.in_plan_mode {
+        // Plan tools (plan_read/write/approve) only skip the gate when
+        // --skip-plan-tool-check is passed; otherwise they are gated like
+        // every other tool.
+        let is_plan_tool = matches!(tool_call.tool.as_str(), "plan_write" | "plan_read" | "plan_approve");
+        let dominated_by_gate = if is_plan_tool { !self.skip_plan_tool_check } else { true };
+        if self.in_plan_mode && dominated_by_gate {
             if let Some(session_id) = &self.session_id {
             if let ApprovalGateResult::Blocked { message } =
                 check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files)

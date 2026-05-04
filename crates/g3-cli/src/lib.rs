@@ -193,6 +193,9 @@ async fn run_console_mode(
     if cli.acd {
         agent.set_acd_enabled(true);
     }
+    if cli.skip_plan_tool_check {
+        agent.set_skip_plan_tool_check(true);
+    }
 
     // Load CLI project if --project flag was specified
     let initial_project: Option<project::Project> = if let Some(ref project_path) = cli.project {
