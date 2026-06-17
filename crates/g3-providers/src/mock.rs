@@ -322,6 +322,7 @@ pub struct MockProvider {
     max_tokens: u32,
     temperature: f32,
     native_tool_calling: bool,
+    supports_cache_control: bool,
     /// Queue of responses to return (FIFO)
     responses: Arc<Mutex<Vec<MockResponse>>>,
     /// All requests received (for verification)
@@ -339,6 +340,7 @@ impl MockProvider {
             max_tokens: 4096,
             temperature: 0.7,
             native_tool_calling: false,
+            supports_cache_control: false,
             responses: Arc::new(Mutex::new(Vec::new())),
             requests: Arc::new(Mutex::new(Vec::new())),
             default_response: None,
@@ -372,6 +374,12 @@ impl MockProvider {
     /// Enable native tool calling
     pub fn with_native_tool_calling(mut self, enabled: bool) -> Self {
         self.native_tool_calling = enabled;
+        self
+    }
+
+    /// Enable cache_control support (as the Anthropic provider reports).
+    pub fn with_cache_control_support(mut self, enabled: bool) -> Self {
+        self.supports_cache_control = enabled;
         self
     }
 
@@ -498,6 +506,10 @@ impl LLMProvider for MockProvider {
 
     fn has_native_tool_calling(&self) -> bool {
         self.native_tool_calling
+    }
+
+    fn supports_cache_control(&self) -> bool {
+        self.supports_cache_control
     }
 
     fn max_tokens(&self) -> u32 {
