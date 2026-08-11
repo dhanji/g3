@@ -32,6 +32,10 @@ pub struct CommonFlags {
     pub project: Option<PathBuf>,
     /// Resume a specific session by ID
     pub resume: Option<String>,
+    /// Emit structured NDJSON events (tokens, tool calls, results) to this file path.
+    /// Used by external UIs (e.g. butler.app) to display live streaming without
+    /// re-implementing g3's markdown/JSON-filter state machines.
+    pub stream_events: Option<PathBuf>,
 }
 
 #[derive(Parser, Clone)]
@@ -161,6 +165,11 @@ pub struct Cli {
     /// Load a project from the given path at startup (like /project but without auto-prompt)
     #[arg(long, value_name = "PATH")]
     pub project: Option<PathBuf>,
+
+    /// Emit structured NDJSON events (streaming tokens, tool calls, tool results) to this file.
+    /// Consumed by external UIs (butler.app) — see docs/stream-events.md.
+    #[arg(long, value_name = "PATH")]
+    pub stream_events: Option<PathBuf>,
 }
 
 impl Cli {
@@ -179,6 +188,7 @@ impl Cli {
             acd: self.acd,
             project: self.project.clone(),
             resume: self.resume.clone(),
+            stream_events: self.stream_events.clone(),
         }
     }
 }

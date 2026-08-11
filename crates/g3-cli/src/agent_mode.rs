@@ -193,6 +193,12 @@ pub async fn run_agent_mode(
     // Set agent mode on UI writer for visual differentiation (light gray tool names)
     ui_writer.set_agent_mode(true);
     ui_writer.set_workspace_path(workspace_dir.clone());
+    // Wrap in EventStreamWriter — if --stream-events was passed, events will be
+    // teed to that file; otherwise this is a zero-cost pass-through.
+    let ui_writer = crate::event_stream::EventStreamWriter::new(
+        ui_writer,
+        flags.stream_events.as_deref(),
+    );
     let mut agent =
         Agent::new_with_custom_prompt(config, ui_writer, system_prompt, combined_content.clone()).await?;
 

@@ -14,6 +14,7 @@ mod cli_args;
 mod coach_feedback;
 mod commands;
 mod display;
+mod event_stream;
 mod interactive;
 mod simple_output;
 mod task_execution;
