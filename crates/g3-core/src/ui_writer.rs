@@ -33,6 +33,11 @@ pub trait UiWriter: Send + Sync {
     /// Print a context thinning message (legacy - for pre-formatted messages)
     fn print_context_thinning(&self, _message: &str) {}
 
+    /// Print end-of-turn context window summary.
+    /// Default: no-op. The CLI's SimpleUiWriter renders the dot-bar; the
+    /// EventStreamWriter tees an NDJSON `context_summary` event.
+    fn print_context_summary(&self, _used_tokens: u32, _total_tokens: u32, _percentage: f32) {}
+
     /// Print a tool execution header
     fn print_tool_header(&self, tool_name: &str, tool_args: Option<&serde_json::Value>);
 

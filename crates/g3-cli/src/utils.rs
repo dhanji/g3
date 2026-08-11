@@ -3,18 +3,14 @@
 use anyhow::Result;
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use g3_config::Config;
-use g3_core::ui_writer::UiWriter;
-use g3_core::Agent;
 use std::path::PathBuf;
 
 use crate::cli_args::Cli;
 use crate::simple_output::SimpleOutput;
 
-/// Display context window progress bar.
-pub fn display_context_progress<W: UiWriter>(agent: &Agent<W>, _output: &SimpleOutput) {
-    let context = agent.get_context_window();
-    let percentage = context.percentage_used();
-
+/// Render the context-window dot bar with color + compact token counts.
+/// Standalone so both the interactive prompt and end-of-turn summary use it.
+pub fn render_context_bar(used_tokens: u32, total_tokens: u32, percentage: f32) {
     // Ensure we start on a new line (previous response may not end with newline)
     println!();
 
@@ -64,8 +60,8 @@ pub fn display_context_progress<W: UiWriter>(agent: &Agent<W>, _output: &SimpleO
         filled_str,
         empty_str,
         ResetColor,
-        format_tokens(context.used_tokens),
-        format_tokens(context.total_tokens),
+        format_tokens(used_tokens),
+        format_tokens(total_tokens),
         percentage
     );
 }

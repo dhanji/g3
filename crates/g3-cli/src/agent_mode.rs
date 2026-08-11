@@ -321,6 +321,15 @@ pub async fn run_agent_mode(
     // Save session continuation for resume capability
     agent.save_session_continuation(None);
 
+    // Emit end-of-turn context window summary (renders locally + tees NDJSON
+    // event when --stream-events is active, e.g. from butler.app).
+    {
+        let cw = agent.get_context_window();
+        agent
+            .ui_writer()
+            .print_context_summary(cw.used_tokens, cw.total_tokens, cw.percentage_used());
+    }
+
     // Don't print completion message for scout agent - it needs the last line
     // to be the report file path for the research tool to read
     if agent_name != "scout" {

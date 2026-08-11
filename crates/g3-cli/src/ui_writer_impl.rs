@@ -263,6 +263,11 @@ impl UiWriter for ConsoleUiWriter {
         crate::g3_status::G3Status::thin_result(result);
     }
 
+    fn print_context_summary(&self, used_tokens: u32, total_tokens: u32, percentage: f32) {
+        // Reuse the same dot-bar rendering as the interactive prompt bar.
+        crate::utils::render_context_bar(used_tokens, total_tokens, percentage);
+    }
+
     fn print_tool_header(&self, tool_name: &str, _tool_args: Option<&serde_json::Value>) {
         // Store the tool name and clear args for collection
         *self.current_tool_name.lock().unwrap() = Some(tool_name.to_string());

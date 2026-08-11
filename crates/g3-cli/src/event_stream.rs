@@ -157,6 +157,18 @@ impl<W: UiWriter> UiWriter for EventStreamWriter<W> {
         self.inner.print_context_thinning(message);
     }
 
+    fn print_context_summary(&self, used_tokens: u32, total_tokens: u32, percentage: f32) {
+        self.emit(
+            "context_summary",
+            json!({
+                "used_tokens": used_tokens,
+                "total_tokens": total_tokens,
+                "pct": percentage,
+            }),
+        );
+        self.inner.print_context_summary(used_tokens, total_tokens, percentage);
+    }
+
     // ── Streaming assistant text ─────────────────────────────────────────────
     fn print_agent_response(&self, content: &str) {
         // content has already been through clean_llm_tokens + filter_json_tool_calls

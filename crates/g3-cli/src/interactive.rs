@@ -19,7 +19,6 @@ use crate::simple_output::SimpleOutput;
 use crate::input_formatter::reprint_formatted_input;
 use crate::template::process_template;
 use crate::task_execution::execute_task_with_retry;
-use crate::utils::display_context_progress;
 
 /// Plan mode prompt string.
 const PLAN_MODE_PROMPT: &str = " [plan mode] >> ";
@@ -205,7 +204,16 @@ pub async fn run_interactive<W: UiWriter>(
 
     loop {
         // Display context window progress bar before each prompt
-        display_context_progress(&agent, &output);
+        // Route through the UI writer so EventStreamWriter tees an NDJSON
+        // context_summary event for callers like butler.app.
+        {
+            let cw = agent.get_context_window();
+            agent.ui_writer().print_context_summary(
+                cw.used_tokens,
+                cw.total_tokens,
+                cw.percentage_used(),
+            );
+        }
 
         // Build prompt
         let prompt = build_prompt(in_multiline, in_plan_mode, agent_name, &active_project);
