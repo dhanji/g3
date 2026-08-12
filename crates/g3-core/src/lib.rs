@@ -2021,24 +2021,45 @@ Skip if nothing new. Be brief."#;
                         for msg in messages {
                             let role_str =
                                 msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-                            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                            // Skip system messages — already preserved on the agent.
+                            if role_str == "system" {
+                                continue;
+                            }
 
-                            let role = match role_str {
-                                "system" => continue, // Skip system messages, already preserved
-                                "assistant" => MessageRole::Assistant,
-                                _ => MessageRole::User,
-                            };
+                            // Prefer full serde deserialization so tool_calls and
+                            // tool_result_id (and any future Message fields) survive
+                            // the save→resume roundtrip. Fall back to a minimal
+                            // reconstruction only for legacy/malformed entries.
+                            let restored: Message =
+                                match serde_json::from_value::<Message>(msg.clone()) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        debug!(
+                                            "Message deserialize failed ({}); falling back to minimal reconstruction",
+                                            e
+                                        );
+                                        let content = msg
+                                            .get("content")
+                                            .and_then(|c| c.as_str())
+                                            .unwrap_or("");
+                                        let role = match role_str {
+                                            "assistant" => MessageRole::Assistant,
+                                            _ => MessageRole::User,
+                                        };
+                                        Message {
+                                            role,
+                                            id: String::new(),
+                                            images: Vec::new(),
+                                            content: content.to_string(),
+                                            kind: g3_providers::MessageKind::Regular,
+                                            cache_control: None,
+                                            tool_calls: Vec::new(),
+                                            tool_result_id: None,
+                                        }
+                                    }
+                                };
 
-                            self.context_window.add_message(Message {
-                                role,
-                                id: String::new(),
-                                images: Vec::new(),
-                                content: content.to_string(),
-                                kind: g3_providers::MessageKind::Regular,
-                                cache_control: None,
-                                tool_calls: Vec::new(),
-                                tool_result_id: None,
-                            });
+                            self.context_window.add_message(restored);
                         }
 
                         debug!("Restored full context from session log");
