@@ -727,8 +727,26 @@ impl<W: UiWriter> Agent<W> {
                 }
             }
             "anthropic" => {
-                // Claude models have large context windows
-                if let Some(max_tokens) = provider_config::get_max_tokens(config, provider_name) {
+                // Claude models have large context windows.
+                //
+                // Precedence note: `enable_1m_context` is checked BEFORE the
+                // max_tokens fallback. max_tokens is an *output* limit that this
+                // function only borrows as a last-resort guess at the window size;
+                // enable_1m_context is an explicit statement about the window. If
+                // both are set, honouring max_tokens would silently hand back a
+                // tiny context (e.g. 32k) despite the 1M beta being active.
+                if provider_config::is_1m_context_enabled(config, provider_name) {
+                    // This flag also sends the `context-1m-2025-08-07` beta header,
+                    // so local accounting must match the real API limit or we'd
+                    // compact/trim long before we actually need to.
+                    debug!(
+                        "1M context beta enabled for provider={}, using 1000000",
+                        provider_name
+                    );
+                    1_000_000
+                } else if let Some(max_tokens) =
+                    provider_config::get_max_tokens(config, provider_name)
+                {
                     warnings.push(format!(
                         "Context length falling back to max_tokens ({}) for provider={}",
                         max_tokens, provider_name

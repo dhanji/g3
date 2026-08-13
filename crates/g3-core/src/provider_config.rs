@@ -62,6 +62,25 @@ pub fn get_thinking_budget_tokens(config: &Config, provider_name: &str) -> Optio
         .and_then(|c| c.thinking_budget_tokens)
 }
 
+/// Whether the 1M-token context beta is enabled for an Anthropic provider.
+///
+/// Only Anthropic supports this (via the `context-1m-2025-08-07` beta header),
+/// so any other provider type returns false. An unset flag or unknown config
+/// name also returns false, so callers can treat this as a plain bool.
+pub fn is_1m_context_enabled(config: &Config, provider_name: &str) -> bool {
+    let (provider_type, config_name) = parse_provider_ref(provider_name);
+
+    // Only Anthropic has the 1M context beta
+    if provider_type != "anthropic" {
+        return false;
+    }
+
+    config.providers.anthropic
+        .get(config_name)
+        .and_then(|c| c.enable_1m_context)
+        .unwrap_or(false)
+}
+
 /// Resolve the max_tokens to use for a given provider, applying fallbacks.
 pub fn resolve_max_tokens(config: &Config, provider_name: &str) -> u32 {
     let (provider_type, _) = parse_provider_ref(provider_name);
@@ -223,5 +242,82 @@ mod tests {
         let (ptype, name) = parse_provider_ref("openai.gpt4");
         assert_eq!(ptype, "openai");
         assert_eq!(name, "gpt4");
+    }
+
+    // ── is_1m_context_enabled ──────────────────────────────────────────
+    //
+    // These build a Config from Config::default() and inject a single named
+    // Anthropic entry, so we exercise the real HashMap lookup path.
+
+    /// Build a config with one Anthropic provider named `name`, with
+    /// `enable_1m_context` set to `flag`.
+    fn config_with_anthropic(name: &str, flag: Option<bool>) -> g3_config::Config {
+        let mut config = g3_config::Config::default();
+        config.providers.anthropic.insert(
+            name.to_string(),
+            g3_config::AnthropicConfig {
+                api_key: "sk-test".to_string(),
+                model: "claude-opus-5".to_string(),
+                max_tokens: None,
+                temperature: None,
+                cache_config: None,
+                enable_1m_context: flag,
+                thinking_budget_tokens: None,
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn test_1m_context_enabled_when_flag_true() {
+        let config = config_with_anthropic("default", Some(true));
+        assert!(is_1m_context_enabled(&config, "anthropic.default"));
+    }
+
+    #[test]
+    fn test_1m_context_disabled_when_flag_false() {
+        let config = config_with_anthropic("default", Some(false));
+        assert!(!is_1m_context_enabled(&config, "anthropic.default"));
+    }
+
+    /// Boundary: flag unset (None) must default to false, not panic.
+    #[test]
+    fn test_1m_context_defaults_false_when_unset() {
+        let config = config_with_anthropic("default", None);
+        assert!(!is_1m_context_enabled(&config, "anthropic.default"));
+    }
+
+    /// Negative: a non-anthropic provider type never gets the beta, even if
+    /// an anthropic entry with the flag happens to exist in the same config.
+    #[test]
+    fn test_1m_context_false_for_non_anthropic_provider() {
+        let config = config_with_anthropic("default", Some(true));
+        assert!(!is_1m_context_enabled(&config, "gemini.default"));
+        assert!(!is_1m_context_enabled(&config, "openai.default"));
+        assert!(!is_1m_context_enabled(&config, "embedded.qwen3-big"));
+        assert!(!is_1m_context_enabled(&config, "databricks.default"));
+    }
+
+    /// Negative: correct provider type but the named config isn't in the map.
+    #[test]
+    fn test_1m_context_false_for_unknown_config_name() {
+        let config = config_with_anthropic("default", Some(true));
+        assert!(!is_1m_context_enabled(&config, "anthropic.nonexistent"));
+    }
+
+    /// Boundary: bare "anthropic" resolves to the "default" config name.
+    #[test]
+    fn test_1m_context_bare_provider_name_resolves_to_default() {
+        let config = config_with_anthropic("default", Some(true));
+        assert!(is_1m_context_enabled(&config, "anthropic"));
+    }
+
+    /// A non-"default" named config is honoured independently.
+    #[test]
+    fn test_1m_context_custom_config_name() {
+        let config = config_with_anthropic("bigctx", Some(true));
+        assert!(is_1m_context_enabled(&config, "anthropic.bigctx"));
+        // ...and the absent "default" entry is still false
+        assert!(!is_1m_context_enabled(&config, "anthropic.default"));
     }
 }
