@@ -133,12 +133,43 @@ pub fn save_context_window(
 
     match serde_json::to_string_pretty(&context_data) {
         Ok(json_content) => {
-            if let Err(e) = std::fs::write(&filename, &json_content) {
+            if let Err(e) = write_atomic(&filename, &json_content) {
                 error!("Failed to save context window to {:?}: {}", &filename, e);
             }
         }
         Err(e) => {
             error!("Failed to serialize context window: {}", e);
+        }
+    }
+}
+
+/// Write a file atomically: serialize into a sibling temp file, then rename.
+///
+/// `fs::write` truncates the target and streams into it, so a concurrent reader
+/// can observe a half-written file and fail to parse it. That was survivable
+/// when each turn wrote a brand-new session dir, but `--resume` now continues
+/// IN PLACE, so session.json is rewritten under readers (butler.app polls it
+/// while a turn streams). rename(2) within a directory is atomic on macOS and
+/// Linux, so a reader sees either the complete old file or the complete new one.
+///
+/// A failed write also leaves the previous file intact rather than truncated,
+/// which matters because a partial session.json reads as a lost conversation.
+fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    // Temp file must be a sibling: rename is only atomic within a filesystem.
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        use std::io::Write;
+        f.write_all(contents.as_bytes())?;
+        // fsync before rename so a crash can't leave a renamed-but-empty file.
+        f.sync_all()?;
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Don't leave litter behind if the rename failed.
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
         }
     }
 }

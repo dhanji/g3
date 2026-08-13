@@ -2086,14 +2086,39 @@ Skip if nothing new. Be brief."#;
                             self.context_window.add_message(restored);
                         }
 
-                        debug!("Restored full context from session log");
+                        // Continue IN PLACE: adopt the resumed session's id so
+                        // this turn rewrites that session dir instead of
+                        // minting a new one. Without this, execute_task() sees
+                        // session_id == None and generates a fresh id, so every
+                        // resume forked a new dir holding a full copy of the
+                        // history — one conversation became N directories.
+                        //
+                        // Only safe on the FULL-restore path: the whole
+                        // transcript is now in memory, so rewriting the file is
+                        // lossless. The summary-only fallback below must NOT do
+                        // this (see the comment there).
+                        self.session_id = Some(continuation.session_id.clone());
+
+                        debug!(
+                            "Restored full context from session log; continuing in place as {}",
+                            continuation.session_id
+                        );
                         return Ok(true);
                     }
                 }
             }
         }
 
-        // Fall back to using session summary + TODO
+        // Fall back to using session summary + TODO.
+        //
+        // DELIBERATELY does NOT adopt continuation.session_id. We only hold a
+        // summary of the conversation, not the conversation, so continuing in
+        // place would have this turn's save_context_window() overwrite a
+        // complete transcript with a summary plus a couple of new turns —
+        // silent, irreversible history loss. Leaving session_id as None means
+        // execute_task() mints a fresh dir and the original stays intact.
+        // This path triggers when context >= 80% (see can_restore_full_context)
+        // or when the session log is missing/unreadable.
         let mut context_msg = String::new();
         if let Some(ref summary) = continuation.summary {
             context_msg.push_str(&format!("Previous session summary:\n{}\n\n", summary));
@@ -2115,7 +2140,11 @@ Skip if nothing new. Be brief."#;
             });
         }
 
-        debug!("Restored session from summary");
+        debug!(
+            "Restored session {} from summary only; starting a NEW session dir to \
+             avoid overwriting the full transcript",
+            continuation.session_id
+        );
         Ok(false)
     }
 
