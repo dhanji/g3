@@ -264,4 +264,58 @@ autonomous_max_retry_attempts = 6
         // Test that planner falls back to default provider
         assert_eq!(config.get_planner_provider(), "databricks.default");
     }
+
+    /// A config that predates `compaction_threshold_percent` must still load,
+    /// defaulting to 80. Regression guard: if this deserialized to 0.0,
+    /// every session would compact immediately.
+    #[test]
+    fn test_compaction_threshold_defaults_when_absent() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let config_content = format!(r#"
+[providers]
+default_provider = "databricks.default"
+
+[providers.databricks.default]
+host = "https://test.databricks.com"
+token = "test-token"
+model = "test-model"
+
+[agent]
+fallback_default_max_tokens = 32000
+auto_compact = true
+{}"#, test_config_footer());
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
+        assert_eq!(config.agent.compaction_threshold_percent, 80.0);
+    }
+
+    #[test]
+    fn test_compaction_threshold_is_read_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let config_content = format!(r#"
+[providers]
+default_provider = "databricks.default"
+
+[providers.databricks.default]
+host = "https://test.databricks.com"
+token = "test-token"
+model = "test-model"
+
+[agent]
+max_context_length = 1000000
+compaction_threshold_percent = 60.0
+{}"#, test_config_footer());
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
+        assert_eq!(config.agent.compaction_threshold_percent, 60.0);
+        assert_eq!(config.agent.max_context_length, Some(1_000_000));
+    }
 }

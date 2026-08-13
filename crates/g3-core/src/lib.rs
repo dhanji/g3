@@ -304,7 +304,10 @@ impl<W: UiWriter> Agent<W> {
         use g3_providers::{Message, MessageRole};
 
         let context_length = config.agent.max_context_length.unwrap_or(200_000);
-        let mut context_window = ContextWindow::new(context_length);
+        let mut context_window = ContextWindow::with_threshold(
+            context_length,
+            config.agent.compaction_threshold_percent,
+        );
 
         // Add system prompt
         let system_prompt = get_system_prompt_for_native();
@@ -357,7 +360,10 @@ impl<W: UiWriter> Agent<W> {
         let mut context_warnings = Vec::new();
         let context_length =
             Self::get_configured_context_length(&config, &providers, &mut context_warnings)?;
-        let mut context_window = ContextWindow::new(context_length);
+        let mut context_window = ContextWindow::with_threshold(
+            context_length,
+            config.agent.compaction_threshold_percent,
+        );
 
         // Surface any context warnings to the user via UI
         for warning in context_warnings {

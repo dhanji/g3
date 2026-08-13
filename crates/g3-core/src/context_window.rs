@@ -71,6 +71,19 @@ enum ThinModification {
 // ContextWindow
 // ============================================================================
 
+/// Default fraction of the context window at which compaction triggers.
+pub const DEFAULT_COMPACTION_THRESHOLD_PERCENT: f32 = 80.0;
+
+/// Clamp bounds for a configured compaction threshold. Below 10% compaction
+/// would fire constantly (the summary itself costs tokens); above 95% we risk
+/// blowing the real API limit before the summary request can be made.
+const MIN_COMPACTION_THRESHOLD_PERCENT: f32 = 10.0;
+const MAX_COMPACTION_THRESHOLD_PERCENT: f32 = 95.0;
+
+fn default_compaction_threshold_percent() -> f32 {
+    DEFAULT_COMPACTION_THRESHOLD_PERCENT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextWindow {
     pub used_tokens: u32,
@@ -80,22 +93,50 @@ pub struct ContextWindow {
     pub conversation_history: Vec<Message>,
     /// Track the last percentage at which we thinned
     pub last_thinning_percentage: u32,
+    /// Fraction of `total_tokens` at which compaction triggers.
+    ///
+    /// This is deliberately *proportional*. An earlier version also had an
+    /// absolute `used_tokens > 150_000` guard, which silently capped every
+    /// large window: with the Anthropic 1M-context beta enabled, sessions
+    /// compacted at ~15% of the available window instead of 80%.
+    #[serde(default = "default_compaction_threshold_percent")]
+    pub compaction_threshold_percent: f32,
 }
 
 impl ContextWindow {
     pub fn new(total_tokens: u32) -> Self {
+        Self::with_threshold(total_tokens, DEFAULT_COMPACTION_THRESHOLD_PERCENT)
+    }
+
+    /// Create a context window with an explicit compaction threshold (percent
+    /// of the buffered total). Values outside 10..=95 are clamped; non-finite
+    /// values fall back to the default.
+    pub fn with_threshold(total_tokens: u32, compaction_threshold_percent: f32) -> Self {
         // Apply a 1% safety buffer to absorb token estimation drift.
         // Our heuristic (chars/3 * 1.1 for code, chars/4 * 1.1 for text) slightly
         // undercounts over long sessions with hundreds of tool calls. Without this
         // buffer, accumulated drift of ~89 tokens caused API 400 errors:
         //   "prompt is too long: 200089 tokens > 200000 maximum"
         let buffered_tokens = (total_tokens as f64 * 0.99) as u32;
+        let threshold = if compaction_threshold_percent.is_finite() {
+            compaction_threshold_percent.clamp(
+                MIN_COMPACTION_THRESHOLD_PERCENT,
+                MAX_COMPACTION_THRESHOLD_PERCENT,
+            )
+        } else {
+            warn!(
+                "Non-finite compaction threshold {}; falling back to {}%",
+                compaction_threshold_percent, DEFAULT_COMPACTION_THRESHOLD_PERCENT
+            );
+            DEFAULT_COMPACTION_THRESHOLD_PERCENT
+        };
         Self {
             used_tokens: 0,
             total_tokens: buffered_tokens,
             cumulative_tokens: 0,
             conversation_history: Vec::new(),
             last_thinning_percentage: 0,
+            compaction_threshold_percent: threshold,
         }
     }
 
@@ -264,9 +305,21 @@ impl ContextWindow {
         self.total_tokens.saturating_sub(self.used_tokens)
     }
 
-    /// Check if we should trigger compaction (at 80% capacity or 150k tokens).
+    /// Tokens at which compaction triggers: a fraction of the buffered window.
+    pub fn compaction_threshold_tokens(&self) -> u32 {
+        ((self.total_tokens as f64) * (self.compaction_threshold_percent as f64) / 100.0) as u32
+    }
+
+    /// Check if we should trigger compaction.
+    ///
+    /// Purely proportional to the window size. Do NOT reintroduce an absolute
+    /// token guard here: a hardcoded `used_tokens > 150_000` used to make
+    /// 1M-context sessions compact at ~15% of their window.
     pub fn should_compact(&self) -> bool {
-        self.percentage_used() >= 80.0 || self.used_tokens > 150_000
+        if self.total_tokens == 0 {
+            return false;
+        }
+        self.percentage_used() >= self.compaction_threshold_percent
     }
 
     /// Check if we should trigger context thinning.
@@ -881,11 +934,112 @@ mod tests {
         assert!(cw.should_compact());
     }
 
+    /// Regression: an absolute `used_tokens > 150_000` guard used to force
+    /// compaction at ~15% of a 1M-context window. The threshold must be
+    /// proportional to the window, not a hardcoded token count.
     #[test]
-    fn test_should_compact_at_absolute_limit() {
+    fn test_1m_window_does_not_compact_at_150k() {
         let mut cw = ContextWindow::new(1_000_000);
+        assert_eq!(cw.total_tokens, 990_000);
+
         cw.used_tokens = 150_001;
+        assert!(
+            !cw.should_compact(),
+            "1M window at {:.1}% must not compact (old absolute 150k guard)",
+            cw.percentage_used(),
+        );
+
+        // 200k used is still only ~20% of the window
+        cw.used_tokens = 200_000;
+        assert!(!cw.should_compact(), "1M window at ~20% must not compact");
+    }
+
+    #[test]
+    fn test_1m_window_compacts_at_80_percent() {
+        let mut cw = ContextWindow::new(1_000_000);
+        let threshold = cw.compaction_threshold_tokens(); // 80% of 990k = 792k
+        assert_eq!(threshold, 792_000);
+
+        cw.used_tokens = threshold - 1_000;
+        assert!(!cw.should_compact());
+
+        cw.used_tokens = threshold;
         assert!(cw.should_compact());
+    }
+
+    /// No regression for the default Anthropic window: 200k still compacts at
+    /// 80% of the buffered total (158.4k).
+    #[test]
+    fn test_200k_window_still_compacts_at_80_percent() {
+        let mut cw = ContextWindow::new(200_000);
+        assert_eq!(cw.compaction_threshold_tokens(), 158_400);
+
+        cw.used_tokens = 150_000;
+        assert!(!cw.should_compact(), "150k is below 80% of 198k");
+
+        cw.used_tokens = 158_400;
+        assert!(cw.should_compact());
+    }
+
+    #[test]
+    fn test_configured_threshold_is_honoured() {
+        let mut cw = ContextWindow::with_threshold(1_000_000, 60.0);
+        assert_eq!(cw.compaction_threshold_tokens(), 594_000); // 60% of 990k
+
+        cw.used_tokens = 500_000;
+        assert!(!cw.should_compact());
+
+        cw.used_tokens = 594_000;
+        assert!(cw.should_compact());
+    }
+
+    #[test]
+    fn test_threshold_is_clamped() {
+        // Absurdly low: compaction would fire on the system prompt alone
+        let cw = ContextWindow::with_threshold(200_000, 0.0);
+        assert_eq!(cw.compaction_threshold_percent, 10.0);
+
+        // Absurdly high: no room left to make the summary request
+        let cw = ContextWindow::with_threshold(200_000, 500.0);
+        assert_eq!(cw.compaction_threshold_percent, 95.0);
+
+        // Negative
+        let cw = ContextWindow::with_threshold(200_000, -20.0);
+        assert_eq!(cw.compaction_threshold_percent, 10.0);
+
+        // Non-finite falls back to the default
+        let cw = ContextWindow::with_threshold(200_000, f32::NAN);
+        assert_eq!(cw.compaction_threshold_percent, 80.0);
+    }
+
+    #[test]
+    fn test_zero_window_never_compacts() {
+        // Degenerate window: must not divide by zero or spuriously compact
+        let mut cw = ContextWindow::new(0);
+        assert_eq!(cw.total_tokens, 0);
+        assert_eq!(cw.percentage_used(), 0.0);
+        assert!(!cw.should_compact());
+
+        cw.used_tokens = 999_999;
+        assert!(!cw.should_compact(), "zero-capacity window must not compact");
+        assert_eq!(cw.compaction_threshold_tokens(), 0);
+    }
+
+    /// A resumed session whose serialized form predates the threshold field
+    /// must deserialize to the default rather than 0% (which would compact
+    /// immediately).
+    #[test]
+    fn test_deserialize_without_threshold_field_uses_default() {
+        let json = r#"{
+            "used_tokens": 40000,
+            "total_tokens": 990000,
+            "cumulative_tokens": 40000,
+            "conversation_history": [],
+            "last_thinning_percentage": 0
+        }"#;
+        let cw: ContextWindow = serde_json::from_str(json).expect("legacy shape must deserialize");
+        assert_eq!(cw.compaction_threshold_percent, 80.0);
+        assert!(!cw.should_compact(), "40k of 990k must not compact");
     }
 
     #[test]

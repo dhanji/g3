@@ -117,6 +117,10 @@ pub struct AgentConfig {
     pub timeout_seconds: u64,
     #[serde(default = "default_true")]
     pub auto_compact: bool,
+    /// Percent of the context window at which auto-compaction triggers.
+    /// Clamped to 10..=95 by ContextWindow. Defaults to 80.
+    #[serde(default = "default_compaction_threshold_percent")]
+    pub compaction_threshold_percent: f32,
     #[serde(default = "default_max_retry_attempts")]
     pub max_retry_attempts: u32,
     #[serde(default = "default_autonomous_max_retry_attempts")]
@@ -127,6 +131,11 @@ pub struct AgentConfig {
 
 fn default_fallback_max_tokens() -> usize {
     32000
+}
+/// Compaction fires at this percent of the context window unless overridden.
+/// Kept in sync with g3-core's DEFAULT_COMPACTION_THRESHOLD_PERCENT.
+fn default_compaction_threshold_percent() -> f32 {
+    80.0
 }
 fn default_true() -> bool {
     true
@@ -223,6 +232,7 @@ impl Default for AgentConfig {
             enable_streaming: true,
             timeout_seconds: 120,
             auto_compact: true,
+            compaction_threshold_percent: default_compaction_threshold_percent(),
             max_retry_attempts: 3,
             autonomous_max_retry_attempts: 6,
             check_todo_staleness: true,
@@ -273,6 +283,7 @@ impl Default for Config {
                 enable_streaming: true,
                 timeout_seconds: 60,
                 auto_compact: true,
+                compaction_threshold_percent: default_compaction_threshold_percent(),
                 max_retry_attempts: 3,
                 autonomous_max_retry_attempts: 6,
                 check_todo_staleness: true,
