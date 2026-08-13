@@ -327,6 +327,72 @@ pub fn log_error_to_session(
     }
 }
 
+/// Drop trailing messages that would form an unanswered tool call.
+///
+/// Anthropic's API requires that "each tool_use block must have a corresponding
+/// tool_result block in the next message", and the other providers we support
+/// have no equivalent forgiveness at all — only anthropic.rs strips orphans
+/// defensively. So a transcript whose LAST assistant message holds tool_calls
+/// with no following tool_result is not resumable as-is: the next request would
+/// be rejected.
+///
+/// This became reachable when session.json started being written every
+/// iteration rather than only at end-of-turn. The loop-top save point is
+/// deliberately chosen so the snapshot is always well-formed, but the
+/// end-of-turn saves on the "error" and "cancelled" paths are NOT so lucky:
+/// they run wherever the failure happened, including mid-dispatch. Rather than
+/// reason about every such path, we make the RESTORE side total.
+///
+/// Returns the number of messages removed. Trims repeatedly, because an
+/// assistant message may be followed by a partial run of tool results (some
+/// tools answered, then a kill) — removing the unanswered tail can expose
+/// another one underneath.
+pub fn trim_unanswered_tool_calls(history: &mut Vec<g3_providers::Message>) -> usize {
+    let mut removed = 0;
+    loop {
+        // Find the last assistant message carrying tool calls.
+        let idx = match history
+            .iter()
+            .rposition(|m| !m.tool_calls.is_empty() && matches!(m.role, MessageRole::Assistant))
+        {
+            Some(i) => i,
+            None => break,
+        };
+
+        // Every tool_call id it made must be answered by a tool_result
+        // somewhere after it. We do not require the answers to be in the
+        // immediately-next message: g3 appends one (tool_use, tool_result) pair
+        // per tool, so a multi-tool iteration legitimately interleaves them,
+        // and the provider layer reassembles the blocks.
+        let answered: std::collections::HashSet<&str> = history[idx + 1..]
+            .iter()
+            .filter_map(|m| m.tool_result_id.as_deref())
+            .collect();
+        let unanswered = history[idx]
+            .tool_calls
+            .iter()
+            .any(|tc| !answered.contains(tc.id.as_str()));
+
+        if !unanswered {
+            break;
+        }
+
+        // Drop the offending assistant message and everything after it. The
+        // tail can only be partial tool results for this very message, which
+        // are meaningless once their tool_use is gone (an orphaned tool_result
+        // is just as invalid as an orphaned tool_use).
+        removed += history.len() - idx;
+        history.truncate(idx);
+    }
+    if removed > 0 {
+        debug!(
+            "Trimmed {} trailing message(s) with unanswered tool calls on restore",
+            removed
+        );
+    }
+    removed
+}
+
 /// Restore conversation history from a session log file.
 ///
 /// Returns the messages to add to the context window, or None if restoration failed.

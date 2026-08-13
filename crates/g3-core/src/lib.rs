@@ -2086,6 +2086,29 @@ Skip if nothing new. Be brief."#;
                             self.context_window.add_message(restored);
                         }
 
+                        // An eagerly-written snapshot can end on an assistant
+                        // message whose tool calls were never answered (the
+                        // "error"/"cancelled" saves fire wherever the failure
+                        // happened, including mid-dispatch). Resuming that
+                        // shape makes the very next API request invalid —
+                        // fatally so on every provider except Anthropic, which
+                        // is alone in stripping orphans defensively. Trim here,
+                        // at the one point every restore path funnels through.
+                        let trimmed = crate::session::trim_unanswered_tool_calls(
+                            &mut self.context_window.conversation_history,
+                        );
+                        if trimmed > 0 {
+                            debug!(
+                                "Dropped {} incomplete trailing message(s) from resumed session {}",
+                                trimmed, continuation.session_id
+                            );
+                            // Trimming bypasses add_message(), which is what
+                            // maintains used_tokens. Left stale, the count
+                            // would overstate usage for the rest of the
+                            // session and push it toward premature compaction.
+                            self.context_window.recalculate_tokens();
+                        }
+
                         // Continue IN PLACE: adopt the resumed session's id so
                         // this turn rewrites that session dir instead of
                         // minting a new one. Without this, execute_task() sees
@@ -2366,6 +2389,31 @@ Skip if nothing new. Be brief."#;
 
             // Write context window summary every time we send messages to LLM
             self.write_context_window_summary();
+
+            // Persist the FULL transcript too, not just the human-readable
+            // summary. Without this, session.json was written only at the end
+            // of a turn (see the "completed"/"error"/"cancelled" calls in
+            // process_message), so a turn killed mid-flight — wall-clock kill,
+            // crash, machine sleep, or the server it runs under being
+            // restarted — left a session dir holding context_summary.txt and
+            // NOTHING ELSE. That dir is unreadable and unresumable: the whole
+            // conversation is gone. Measured on one real workspace: 10 of 219
+            // butler session dirs had no session.json, the largest having lost
+            // 210 messages.
+            //
+            // THIS IS THE ONLY PLACE THE SNAPSHOT IS GUARANTEED VALID.
+            // Anthropic requires every tool_use block to be answered by a
+            // tool_result in the very next message. At the top of the loop that
+            // invariant always holds, because every tool result for the
+            // previous iteration has already been appended (the same reason
+            // inject_pending_input is only safe here). Saving from inside the
+            // tool-dispatch block would persist an assistant message whose
+            // tool_use has no answer yet, and resuming that is an API error.
+            //
+            // Status is "running" rather than "completed": a reader must be
+            // able to tell a turn in progress from one that finished. The
+            // end-of-turn save overwrites it with the real terminal status.
+            self.save_context_window("running");
 
             // Create fresh iteration state for this streaming iteration
             let mut iter = streaming::IterationState::new();
