@@ -109,6 +109,36 @@ fn get_session_path(session_id: &str) -> PathBuf {
     get_sessions_dir().join(session_id)
 }
 
+/// Recover the agent name from a session directory name.
+///
+/// `session::generate_session_id()` builds ids as `<prefix>_<hex hash>`, where the
+/// prefix IS the agent name in agent mode, and the first 5 words of the prompt
+/// otherwise. So the agent is recoverable from the id alone.
+///
+/// This matters because `latest.json` is only written on graceful exit. Resuming a
+/// session that is still running — or that crashed — falls back to `session.json`,
+/// which has never contained an `agent_name` field at all. That made
+/// `agent_name` unconditionally `None` on the fallback path, so
+/// `g3 --agent butler --resume <id>` rejected its own sessions with
+/// "belongs to agent '(none)'".
+///
+/// Returns `None` unless the name matches `<lowercase>_<hex>`: a prompt-derived id
+/// such as `process_new_emails_9f3a` has a multi-word prefix and is correctly read
+/// as having no agent.
+fn agent_name_from_session_id(dir_name: &str) -> Option<String> {
+    let (prefix, hash) = dir_name.rsplit_once('_')?;
+    if prefix.is_empty() || hash.is_empty() {
+        return None;
+    }
+    if !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        return None;
+    }
+    if !hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        return None;
+    }
+    Some(prefix.to_string())
+}
+
 /// Get the path to the latest.json continuation file
 /// This follows the symlink to get the actual path
 pub fn get_latest_continuation_path() -> PathBuf {
@@ -294,8 +324,17 @@ pub fn load_continuation_by_id(session_id: &str) -> Result<SessionContinuation> 
             
             SessionContinuation {
                 version: CONTINUATION_VERSION.to_string(),
-                is_agent_mode: session_data.get("is_agent_mode").and_then(|v| v.as_bool()).unwrap_or(false),
-                agent_name: session_data.get("agent_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                // session.json carries no agent fields, so recover them from the
+                // directory name (see agent_name_from_session_id).
+                is_agent_mode: session_data
+                    .get("is_agent_mode")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| agent_name_from_session_id(dir_name).is_some()),
+                agent_name: session_data
+                    .get("agent_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| agent_name_from_session_id(dir_name)),
                 created_at: session_data.get("timestamp").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
                 session_id: dir_name.to_string(),
                 description: None,
@@ -580,6 +619,86 @@ pub fn format_session_time(created_at: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── agent recovery from the session id ──────────────────────────────────
+    //
+    // Regression: latest.json is written only on graceful exit, so resuming a
+    // running or crashed session falls back to session.json — which has never
+    // held an agent_name. That made `g3 --agent butler --resume <id>` fail with
+    // "Session '<id>' belongs to agent '(none)', not 'butler'" on its own
+    // sessions. 4 real conversations were unresumable this way.
+
+    #[test]
+    fn agent_mode_ids_yield_their_agent() {
+        assert_eq!(
+            agent_name_from_session_id("butler_fd63622402933845").as_deref(),
+            Some("butler")
+        );
+        assert_eq!(
+            agent_name_from_session_id("scout_1b2c").as_deref(),
+            Some("scout")
+        );
+    }
+
+    #[test]
+    fn prompt_derived_ids_have_no_agent() {
+        // A bare `g3 "<prompt>"` names the dir after the first 5 words, so the
+        // prefix is multi-word and must NOT be read as an agent. Getting this
+        // wrong would let butler.app resume duty runs as if they were chats.
+        for id in [
+            "process_new_emails_9f3a",
+            "produce_a_morning_briefing_for_1a2b",
+            "create_a_plan_what_is_67ab",
+        ] {
+            assert_eq!(agent_name_from_session_id(id), None, "id: {}", id);
+        }
+    }
+
+    #[test]
+    fn malformed_ids_are_rejected_rather_than_guessed() {
+        // No hash, empty halves, non-hex tail, uppercase — in every case we do
+        // not know the agent, and saying so beats inventing one.
+        for id in [
+            "butler",
+            "butler_",
+            "_abc123",
+            "butler_xyz",
+            "Butler_ab12",
+            "",
+            "_",
+        ] {
+            assert_eq!(agent_name_from_session_id(id), None, "id: {}", id);
+        }
+    }
+
+    #[test]
+    fn single_char_boundaries() {
+        assert_eq!(agent_name_from_session_id("a_f").as_deref(), Some("a"));
+        // 16 hex chars is what the real generator emits; longer is still hex.
+        assert_eq!(
+            agent_name_from_session_id("butler_0123456789abcdef").as_deref(),
+            Some("butler")
+        );
+    }
+
+    #[test]
+    fn recovery_agrees_with_the_real_generator() {
+        // The whole premise: generate_session_id() uses the agent name AS the
+        // prefix. Assert that against the generator itself, so a change there
+        // breaks this test rather than silently breaking resume.
+        for agent in ["butler", "scout", "g3"] {
+            let id = crate::session::generate_session_id("some prompt text", Some(agent));
+            assert_eq!(
+                agent_name_from_session_id(&id).as_deref(),
+                Some(agent),
+                "generated id: {}",
+                id
+            );
+        }
+        // ...and that a non-agent invocation is not mistaken for one.
+        let id = crate::session::generate_session_id("process new emails now please", None);
+        assert_eq!(agent_name_from_session_id(&id), None, "generated id: {}", id);
+    }
 
     #[test]
     fn test_session_continuation_creation() {
