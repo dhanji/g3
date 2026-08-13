@@ -38,6 +38,14 @@ pub trait UiWriter: Send + Sync {
     /// EventStreamWriter tees an NDJSON `context_summary` event.
     fn print_context_summary(&self, _used_tokens: u32, _total_tokens: u32, _percentage: f32) {}
 
+    /// Report a user message that was queued mid-turn and has just been
+    /// injected into the conversation.
+    ///
+    /// Default: no-op. The EventStreamWriter tees an NDJSON `user_injected`
+    /// event so an external UI can render the message in place rather than
+    /// having it appear from nowhere on the next reload.
+    fn print_user_injected(&self, _text: &str) {}
+
     /// Print a tool execution header
     fn print_tool_header(&self, tool_name: &str, tool_args: Option<&serde_json::Value>);
 

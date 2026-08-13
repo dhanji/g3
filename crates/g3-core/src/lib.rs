@@ -7,6 +7,7 @@ pub mod error_handling;
 pub mod feedback_extraction;
 pub mod paths;
 pub mod project;
+pub mod pending_input;
 pub mod pending_research;
 pub mod provider_config;
 pub mod provider_registration;
@@ -890,6 +891,50 @@ impl<W: UiWriter> Agent<W> {
     /// Get a reference to the pending research manager.
     pub fn pending_research_manager(&self) -> &pending_research::PendingResearchManager {
         &self.pending_research_manager
+    }
+
+    // =========================================================================
+    // MID-TURN USER INPUT
+    // =========================================================================
+
+    /// Drain queued mid-turn user messages and inject them as user turns.
+    ///
+    /// Returns the number of messages injected.
+    ///
+    /// Callers MUST invoke this only at the top of the streaming loop — see the
+    /// call site for why any other position corrupts tool_use/tool_result
+    /// pairing.
+    pub fn inject_pending_input(&mut self) -> usize {
+        let Some(session_id) = self.session_id.as_deref() else {
+            // No session id means no session directory, so nowhere to queue to.
+            return 0;
+        };
+        let inbox = crate::paths::get_inbox_dir(session_id);
+        let queued = pending_input::drain(&inbox);
+        if queued.is_empty() {
+            return 0;
+        }
+
+        for input in &queued {
+            // Marked so the model can tell an interjection from a fresh turn —
+            // it arrives mid-task, and without the marker reads as though the
+            // previous instruction had been restated.
+            let content = format!(
+                "💬 **User message sent while you were working** — read it now and \
+                 adjust course if it changes the task; otherwise acknowledge and carry on:\n\n{}",
+                input.text
+            );
+            let message =
+                g3_providers::Message::new(g3_providers::MessageRole::User, content);
+            self.context_window.add_message(message);
+            // Console gets a one-line notice; the event stream gets the full
+            // text so butler.app can render the real bubble.
+            self.ui_writer
+                .println(&format!("💬 queued message injected: {}", first_line(&input.text)));
+            self.ui_writer.print_user_injected(&input.text);
+        }
+
+        queued.len()
     }
 
     // =========================================================================
@@ -2321,6 +2366,31 @@ Skip if nothing new. Be brief."#;
                 self.ui_writer.println(&format!("📋 {} research result(s) ready and injected into context", injected_count));
             }
 
+            // Inject any user messages queued mid-turn by an external process
+            // (butler.app writes them into .g3/sessions/<id>/inbox/).
+            //
+            // ⚠️ THIS IS THE ONLY SAFE PLACE TO DO THIS. The provider strips
+            // orphaned tool_use blocks (see anthropic.rs `sanitize`): if an
+            // assistant message holds a tool_use and the *immediately next*
+            // user message carries no matching tool_result, the tool call is
+            // deleted from history. Injecting inside the tool-dispatch block
+            // would therefore silently corrupt the conversation. Here at the
+            // loop top, every tool result for the previous iteration has
+            // already been appended, so a plain user message is safe.
+            let injected_input = self.inject_pending_input();
+            if injected_input > 0 {
+                debug!("Injected {} queued user message(s) into context", injected_input);
+            }
+
+            // Both injections above mutate context_window. `request.messages`
+            // is only refreshed from it inside the tool-dispatch block
+            // (~L2734), so on an iteration that injects without dispatching a
+            // tool the new messages would never reach the provider. Refresh
+            // unconditionally when anything was injected.
+            if injected_count > 0 || injected_input > 0 {
+                request.messages = self.context_window.conversation_history.clone();
+            }
+
             // Get provider info for logging, then drop it to avoid borrow issues
             let (provider_name, provider_model) = {
                 let provider = self.providers.get(None)?;
@@ -3206,6 +3276,17 @@ Skip if nothing new. Be brief."#;
 // Re-export utility functions
 pub use utils::apply_unified_diff_to_string;
 use utils::truncate_to_word_boundary;
+
+/// First line of a message, ellipsised, for one-line status output.
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    // Char-based, not byte-based: slicing a multi-byte char would panic.
+    let mut out: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        out.push('…');
+    }
+    out
+}
 
 // Implement Drop to clean up safaridriver process
 impl<W: UiWriter> Drop for Agent<W> {

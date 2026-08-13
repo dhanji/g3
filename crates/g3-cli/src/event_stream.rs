@@ -184,6 +184,14 @@ impl<W: UiWriter> UiWriter for EventStreamWriter<W> {
         self.inner.finish_streaming_markdown();
     }
 
+    fn print_user_injected(&self, text: &str) {
+        // Full text, not a summary: the UI renders this as the user's own
+        // message bubble, so a truncated version would misrepresent what was
+        // actually sent to the model.
+        self.emit("user_injected", json!({ "text": text }));
+        self.inner.print_user_injected(text);
+    }
+
     // ── Tool calls ───────────────────────────────────────────────────────────
     fn print_tool_header(&self, tool_name: &str, tool_args: Option<&serde_json::Value>) {
         *self.current_tool.lock().unwrap() = Some(tool_name.to_string());

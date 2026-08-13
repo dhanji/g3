@@ -98,6 +98,16 @@ pub fn get_fragments_dir(session_id: &str) -> PathBuf {
     get_session_logs_dir(session_id).join("fragments")
 }
 
+/// Get the inbox directory for a session (mid-turn user messages).
+/// Returns .g3/sessions/<session_id>/inbox/
+///
+/// External processes (butler.app) drop one file per queued message here while
+/// a turn is in flight; the agent drains it at the top of each streaming
+/// iteration. See `pending_input`.
+pub fn get_inbox_dir(session_id: &str) -> PathBuf {
+    get_session_logs_dir(session_id).join("inbox")
+}
+
 /// Get the path to the session.json file for a session.
 /// Returns .g3/sessions/<session_id>/session.json
 pub fn get_session_file(session_id: &str) -> PathBuf {
