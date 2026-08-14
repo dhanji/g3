@@ -154,6 +154,11 @@ pub struct Agent<W: UiWriter> {
     requirements_sha: Option<String>,
     /// Working directory for tool execution (set by --codebase-fast-start)
     working_dir: Option<String>,
+    /// Override for the workspace memory file (`--memory <path>`). `None` means
+    /// the default `analysis/memory.md`. Consumed only via
+    /// `tools::memory::resolve_memory_path` so that the read path (startup) and
+    /// the write path (`remember`) can never disagree.
+    memory_path: Option<String>,
     background_process_manager: std::sync::Arc<background_process::BackgroundProcessManager>,
     /// Pending images to attach to the next user message
     pending_images: Vec<g3_providers::ImageContent>,
@@ -216,6 +221,7 @@ impl<W: UiWriter> Agent<W> {
             tool_calls_this_turn: Vec::new(),
             requirements_sha: None,
             working_dir: None,
+            memory_path: None,
             background_process_manager: std::sync::Arc::new(
                 background_process::BackgroundProcessManager::new(
                     paths::get_background_processes_dir(),
@@ -825,6 +831,16 @@ impl<W: UiWriter> Agent<W> {
     /// Set the working directory (useful for testing)
     pub fn set_working_dir(&mut self, working_dir: String) {
         self.working_dir = Some(working_dir);
+    }
+
+    /// Set the workspace memory file override (`--memory <path>`).
+    ///
+    /// This governs BOTH where memory is read from at startup and where the
+    /// `remember` tool writes. Callers that load memory into the system prompt
+    /// themselves must resolve the same path via
+    /// `tools::memory::resolve_memory_path`.
+    pub fn set_memory_path(&mut self, memory_path: Option<String>) {
+        self.memory_path = memory_path;
     }
 
     // =========================================================================
@@ -3277,6 +3293,7 @@ Skip if nothing new. Be brief."#;
             requirements_sha: self.requirements_sha.as_deref(),
             context_total_tokens: self.context_window.total_tokens,
             context_used_tokens: self.context_window.used_tokens,
+            memory_path: self.memory_path.as_deref(),
             loaded_toolsets: &mut self.loaded_toolsets,
         };
 

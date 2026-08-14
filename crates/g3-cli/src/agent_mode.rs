@@ -133,7 +133,10 @@ pub async fn run_agent_mode(
 
     // Load AGENTS.md and memory - same as normal mode
     let agents_content_opt = read_agents_config(&workspace_dir);
-    let memory_content_opt = read_workspace_memory(&workspace_dir);
+    let memory_content_opt = read_workspace_memory(
+        &workspace_dir,
+        flags.memory_path.as_deref().and_then(|p| p.to_str()),
+    );
 
     // Read include prompt early so we can show it in the status line
     let include_prompt = read_include_prompt(flags.include_prompt.as_deref());
@@ -204,6 +207,12 @@ pub async fn run_agent_mode(
 
     // Set agent mode for session tracking
     agent.set_agent_mode(agent_name);
+
+    // Keep the write path (remember) pointed at the same file read_workspace_memory
+    // loaded from above. If this is ever dropped, memory forks silently.
+    agent.set_memory_path(
+        flags.memory_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+    );
 
     // Auto-memory is enabled by default in agent mode (unless --no-auto-memory is set)
     // This prompts the LLM to save discoveries to workspace memory after each turn

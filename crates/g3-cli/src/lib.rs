@@ -105,7 +105,10 @@ pub async fn run() -> Result<()> {
 
     // Load project context files
     let agents_content = read_agents_config(&workspace_dir);
-    let memory_content = read_workspace_memory(&workspace_dir);
+    let memory_content = read_workspace_memory(
+        &workspace_dir,
+        cli.memory.as_deref().and_then(|p| p.to_str()),
+    );
     let language_content = language_prompts::get_language_prompts_for_workspace(&workspace_dir);
     let include_prompt = read_include_prompt(cli.include_prompt.as_deref());
 
@@ -191,6 +194,11 @@ async fn run_console_mode(
     if cli.auto_memory {
         agent.set_auto_memory(true);
     }
+    // Keep the write path (remember) pointed at the same file the read path
+    // loaded from above. If this is ever dropped, memory forks silently.
+    agent.set_memory_path(
+        cli.memory.as_ref().map(|p| p.to_string_lossy().to_string()),
+    );
     if cli.acd {
         agent.set_acd_enabled(true);
     }

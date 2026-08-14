@@ -30,6 +30,10 @@ pub struct ToolContext<'a, W: UiWriter> {
     pub requirements_sha: Option<&'a str>,
     pub context_total_tokens: u32,
     pub context_used_tokens: u32,
+    /// Override for the workspace memory file location (`--memory <path>`).
+    /// `None` means the default `analysis/memory.md`. Must be passed to
+    /// `tools::memory::resolve_memory_path` — never joined by hand.
+    pub memory_path: Option<&'a str>,
     /// Set of toolset names that have been loaded in this session
     pub loaded_toolsets: &'a mut HashSet<String>,
 }

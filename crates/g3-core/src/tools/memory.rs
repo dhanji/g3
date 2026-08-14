@@ -13,13 +13,39 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
-/// Get the path to the memory file.
-/// Memory is stored at `analysis/memory.md` in the working directory (version controlled).
-fn get_memory_path(working_dir: Option<&str>) -> PathBuf {
-    let base = working_dir
+/// The default location of the memory file, relative to the workspace root.
+pub const DEFAULT_MEMORY_RELATIVE_PATH: &str = "analysis/memory.md";
+
+/// Resolve the path to the memory file.
+///
+/// This is the SINGLE source of truth for where workspace memory lives. Both the
+/// read path (g3-cli loading memory into the system prompt at startup) and the
+/// write path (the `remember` tool) MUST call this. If they ever disagree, memory
+/// silently forks: reads come from one file, writes land in another, and neither
+/// side reports an error.
+///
+/// `override_path`, when set (from `--memory <path>`), wins outright. A leading
+/// `~` is expanded; a relative path is resolved against `workspace_dir` so that
+/// read and write agree regardless of the process's current directory.
+///
+/// With no override the result is `<workspace_dir>/analysis/memory.md`, which is
+/// the historical behaviour and must remain byte-identical for other projects.
+pub fn resolve_memory_path(workspace_dir: Option<&str>, override_path: Option<&str>) -> PathBuf {
+    let base = workspace_dir
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    base.join("analysis").join("memory.md")
+
+    match override_path {
+        Some(raw) if !raw.trim().is_empty() => {
+            let expanded = PathBuf::from(shellexpand::tilde(raw.trim()).to_string());
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                base.join(expanded)
+            }
+        }
+        _ => base.join("analysis").join("memory.md"),
+    }
 }
 
 /// Format the file size in a human-readable way.
@@ -43,9 +69,10 @@ pub async fn execute_remember<W: UiWriter>(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing required 'notes' parameter"))?;
 
-    let memory_path = get_memory_path(ctx.working_dir);
+    let memory_path = resolve_memory_path(ctx.working_dir, ctx.memory_path);
 
-    // Ensure analysis directory exists
+    // Ensure the containing directory exists (analysis/ by default, but the
+    // --memory override may point anywhere).
     if let Some(parent) = memory_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

@@ -175,6 +175,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            memory_path: None,
             loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 
@@ -208,6 +209,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            memory_path: None,
             loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 
@@ -241,6 +243,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            memory_path: None,
             loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 

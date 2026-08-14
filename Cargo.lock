@@ -1651,6 +1651,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "datafrog",
+ "dirs 5.0.1",
  "futures-util",
  "g3-computer-control",
  "g3-config",

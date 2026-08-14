@@ -24,6 +24,9 @@ pub struct CommonFlags {
     pub safari: bool,
     /// Include additional prompt content from a file
     pub include_prompt: Option<PathBuf>,
+    /// Override the workspace memory file location (default: analysis/memory.md).
+    /// Governs both startup loading and where the `remember` tool writes.
+    pub memory_path: Option<PathBuf>,
     /// Disable automatic memory update reminder
     pub no_auto_memory: bool,
     /// Enable aggressive context dehydration
@@ -158,6 +161,12 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub include_prompt: Option<PathBuf>,
 
+    /// Override the workspace memory file (default: <workspace>/analysis/memory.md).
+    /// Governs BOTH startup loading and where the `remember` tool writes, so memory
+    /// cannot fork. Useful to keep personal memory outside a git repo.
+    #[arg(long, value_name = "PATH")]
+    pub memory: Option<PathBuf>,
+
     /// Disable automatic memory update reminder at end of agent mode
     #[arg(long)]
     pub no_auto_memory: bool,
@@ -184,6 +193,7 @@ impl Cli {
             chrome_headless: self.chrome_headless,
             safari: self.safari,
             include_prompt: self.include_prompt.clone(),
+            memory_path: self.memory.clone(),
             no_auto_memory: self.no_auto_memory,
             acd: self.acd,
             project: self.project.clone(),

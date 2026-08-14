@@ -34,10 +34,20 @@ pub fn read_agents_config(workspace_dir: &Path) -> Option<String> {
     None
 }
 
-/// Read workspace memory from analysis/memory.md in the workspace directory.
-/// Returns formatted content with emoji prefix and size info, or None if not found.
-pub fn read_workspace_memory(workspace_dir: &Path) -> Option<String> {
-    let memory_path = workspace_dir.join("analysis").join("memory.md");
+/// Read workspace memory, honouring the `--memory <path>` override.
+///
+/// The location is resolved by `g3_core::tools::memory::resolve_memory_path` —
+/// the same function the `remember` tool uses to WRITE. Do not join a memory
+/// path by hand here: a read/write split forks memory silently (reads from one
+/// file, writes to another, no error on either side).
+///
+/// Returns formatted content with size info, or None if the file is absent or
+/// unreadable (e.g. evicted from iCloud), which degrades to "no memory".
+pub fn read_workspace_memory(workspace_dir: &Path, memory_override: Option<&str>) -> Option<String> {
+    let memory_path = g3_core::tools::memory::resolve_memory_path(
+        workspace_dir.to_str(),
+        memory_override,
+    );
 
     if !memory_path.exists() {
         return None;
@@ -46,8 +56,11 @@ pub fn read_workspace_memory(workspace_dir: &Path) -> Option<String> {
     match std::fs::read_to_string(&memory_path) {
         Ok(content) => {
             let size = format_size(content.len());
+            // Report the path actually used, so an unexpected override is visible.
+            let shown = memory_path.display();
             Some(format!(
-                "=== Workspace Memory (read from analysis/memory.md, {}) ===\n{}\n=== End Workspace Memory ===",
+                "=== Workspace Memory (read from {}, {}) ===\n{}\n=== End Workspace Memory ===",
+                shown,
                 size,
                 content
             ))
