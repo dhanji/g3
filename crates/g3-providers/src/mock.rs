@@ -328,6 +328,19 @@ pub struct MockProvider {
     requests: Arc<Mutex<Vec<CompletionRequest>>>,
     /// Default response when queue is empty
     default_response: Option<MockResponse>,
+    /// Error message returned by `stream()`/`complete()` for the first
+    /// `error_count` calls, before normal responses resume.
+    ///
+    /// Used to exercise the retry and overload-fallback paths: an error is
+    /// returned *instead of* a stream, which is exactly how a real provider
+    /// surfaces an HTTP 529 / "Overloaded" — the failure happens when opening
+    /// the stream, not as a chunk within it.
+    error_message: Option<String>,
+    /// How many remaining calls should fail. Decremented on each failing call.
+    error_count: Arc<Mutex<usize>>,
+    /// Total calls (successful or failing) — lets a test assert a provider was
+    /// tried even when every attempt errored.
+    call_count: Arc<Mutex<usize>>,
 }
 
 impl MockProvider {
@@ -342,6 +355,9 @@ impl MockProvider {
             responses: Arc::new(Mutex::new(Vec::new())),
             requests: Arc::new(Mutex::new(Vec::new())),
             default_response: None,
+            error_message: None,
+            error_count: Arc::new(Mutex::new(0)),
+            call_count: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -393,6 +409,41 @@ impl MockProvider {
         self
     }
 
+    /// Fail the first `count` calls with `message`, then behave normally.
+    ///
+    /// The message is classified by `g3_core::error_handling::classify_error`
+    /// exactly as a real provider error would be, so "Overloaded" produces
+    /// RecoverableError::ModelBusy and drives the fallback path.
+    pub fn with_error(mut self, message: &str, count: usize) -> Self {
+        self.error_message = Some(message.to_string());
+        *self.error_count.lock().unwrap() = count;
+        self
+    }
+
+    /// Fail EVERY call with `message` (a permanently broken provider).
+    pub fn always_failing(self, message: &str) -> Self {
+        self.with_error(message, usize::MAX)
+    }
+
+    /// Number of calls made to this provider, including failed ones.
+    pub fn call_count(&self) -> usize {
+        *self.call_count.lock().unwrap()
+    }
+
+    /// Take an error for this call if the injected error budget is not spent.
+    fn take_error(&self) -> Option<anyhow::Error> {
+        *self.call_count.lock().unwrap() += 1;
+        let message = self.error_message.as_ref()?;
+        let mut remaining = self.error_count.lock().unwrap();
+        if *remaining == 0 {
+            return None;
+        }
+        if *remaining != usize::MAX {
+            *remaining -= 1;
+        }
+        Some(anyhow::anyhow!("{}", message))
+    }
+
     /// Get all requests that were made to this provider
     pub fn get_requests(&self) -> Vec<CompletionRequest> {
         self.requests.lock().unwrap().clone()
@@ -430,6 +481,10 @@ impl Default for MockProvider {
 #[async_trait::async_trait]
 impl LLMProvider for MockProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+
         // Record the request
         self.requests.lock().unwrap().push(request);
 
@@ -450,6 +505,14 @@ impl LLMProvider for MockProvider {
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<CompletionStream> {
+        // Fail BEFORE recording the request: a provider that rejected the call
+        // never saw it, so `get_requests()` stays an accurate record of what was
+        // actually accepted. Tests rely on that to prove which model served a
+        // turn. `call_count()` still counts the attempt.
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+
         // Record the request
         self.requests.lock().unwrap().push(request);
 

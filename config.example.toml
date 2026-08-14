@@ -20,6 +20,12 @@ default_provider = "anthropic.default"
 # coach = "anthropic.default"     # Provider for coach in autonomous mode
 # player = "anthropic.default"    # Provider for player in autonomous mode
 
+# Optional: model to borrow for ONE turn when the default model reports itself
+# overloaded. Inherits the default provider's config (key, caching, limits) and
+# changes only the model. Reverts on the next turn. Equivalent to
+# `--fallback-model=<MODEL>` on the command line.
+# fallback_model = "claude-opus-4-8"
+
 [providers.anthropic.default]
 api_key = "your-anthropic-api-key"
 model = "claude-sonnet-4-5"

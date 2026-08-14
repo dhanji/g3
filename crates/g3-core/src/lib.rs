@@ -818,6 +818,15 @@ impl<W: UiWriter> Agent<W> {
         self.providers.get(None)
     }
 
+    /// Read-only access to the provider registry.
+    ///
+    /// Exposed so tests (and any external UI) can inspect overload-fallback
+    /// state — which model a turn is currently bound to, and whether the
+    /// fallback is engaged.
+    pub fn provider_registry(&self) -> &ProviderRegistry {
+        &self.providers
+    }
+
     /// Get the current session ID for this agent
     pub fn get_session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -1049,6 +1058,14 @@ impl<W: UiWriter> Agent<W> {
         // Reset the JSON tool call filter state at the start of each new task
         // This prevents the filter from staying in suppression mode between user interactions
         self.ui_writer.reset_json_filter();
+
+        // Return to the default model. `--fallback-model` engages for ONE turn
+        // only; this is the single funnel every turn passes through, so this is
+        // the one place that guarantee can be enforced. Deliberately
+        // unconditional rather than inside an `if fallback_active` — a cheap
+        // idempotent store is preferable to a condition that could be missed on
+        // a future code path.
+        self.reset_fallback_for_new_turn();
 
         // Validate that the system prompt is the first message (critical invariant)
         self.validate_system_prompt_is_first();
@@ -2294,12 +2311,27 @@ Skip if nothing new. Be brief."#;
     /// Create tool definitions for native tool calling providers
 
     /// Helper method to stream with retry logic
+    ///
+    /// ## Overload fallback (`--fallback-model`)
+    ///
+    /// When the primary model reports itself overloaded and a fallback provider
+    /// is registered, this switches to the fallback and retries IMMEDIATELY
+    /// rather than sleeping out the backoff: the fallback is a different model
+    /// pool, so waiting for the congested one to drain is pointless.
+    ///
+    /// The switch is scoped to the current turn. It is NOT undone here, because
+    /// a single turn makes many provider calls (one per tool-loop iteration) and
+    /// flipping back mid-turn would send the next iteration straight back into
+    /// the congested pool. `execute_single_task` clears it at the start of every
+    /// turn instead — see `reset_fallback_for_new_turn`.
     async fn stream_with_retry(
         &self,
         request: &CompletionRequest,
         error_context: &error_handling::ErrorContext,
     ) -> Result<g3_providers::CompletionStream> {
-        use crate::error_handling::{calculate_retry_delay, classify_error, ErrorType};
+        use crate::error_handling::{
+            calculate_retry_delay, classify_error, ErrorType, RecoverableError,
+        };
 
         let mut attempt = 0;
         let max_attempts = if self.is_autonomous {
@@ -2307,6 +2339,16 @@ Skip if nothing new. Be brief."#;
         } else {
             self.config.agent.max_retry_attempts
         };
+
+        // Retries granted on top of `max_attempts` for switching models. A model
+        // switch is not a failed attempt against the same endpoint, so charging
+        // it to the normal budget would let one overload eat the retries the
+        // fallback then needs. At most 2 are ever granted (one switch, one
+        // revert), so this cannot loop forever.
+        let mut extra_attempts = 0;
+        // A revert is allowed only once, otherwise a fallback that always fails
+        // could ping-pong with a default that is always busy.
+        let mut reverted_from_fallback = false;
 
         loop {
             attempt += 1;
@@ -2326,25 +2368,99 @@ Skip if nothing new. Be brief."#;
                     );
                     return Ok(stream);
                 }
-                Err(e) if attempt < max_attempts => {
-                    if matches!(classify_error(&e), ErrorType::Recoverable(_)) {
-                        let delay = calculate_retry_delay(attempt, self.is_autonomous);
+                Err(e) => {
+                    let error_type = classify_error(&e);
+
+                    // ── The primary model is overloaded: switch to the fallback ──
+                    //
+                    // Guarded by !is_fallback_active() so that an overload on the
+                    // fallback itself does not "switch" again (it is already the
+                    // one being used) and instead falls through to normal backoff.
+                    if matches!(
+                        error_type,
+                        ErrorType::Recoverable(RecoverableError::ModelBusy)
+                    ) && !self.providers.is_fallback_active()
+                        && self.providers.activate_fallback()
+                    {
+                        let fallback_model =
+                            self.providers.fallback_model().unwrap_or("fallback");
                         warn!(
-                            "Recoverable error on attempt {}/{}: {}. Retrying in {:?}...",
-                            attempt, max_attempts, e, delay
+                            "Model overloaded ({}). Switching to fallback model '{}' for the \
+                             remainder of this turn.",
+                            e, fallback_model
                         );
-                        tokio::time::sleep(delay).await;
+                        self.ui_writer.print_context_status(&format!(
+                            "⚠️ Model overloaded — using fallback model {} for this turn",
+                            fallback_model
+                        ));
+                        extra_attempts += 1;
+                        continue; // Retry at once: different pool, no point waiting.
+                    }
+
+                    // ── The fallback is broken: go back to the default ──
+                    //
+                    // A non-recoverable error while on the fallback usually means
+                    // the fallback model name is wrong (404/400). Without this,
+                    // one typo in --fallback-model would convert every transient
+                    // overload into a hard turn failure — strictly worse than not
+                    // having the flag at all.
+                    if self.providers.is_fallback_active()
+                        && !reverted_from_fallback
+                        && matches!(error_type, ErrorType::NonRecoverable)
+                    {
+                        self.providers.deactivate_fallback();
+                        reverted_from_fallback = true;
+                        extra_attempts += 1;
+                        warn!(
+                            "Fallback model failed unrecoverably ({}). Reverting to the default \
+                             model and retrying.",
+                            e
+                        );
+                        self.ui_writer.print_context_status(
+                            "⚠️ Fallback model unusable — reverting to the default model",
+                        );
+                        continue;
+                    }
+
+                    if attempt < max_attempts + extra_attempts {
+                        if matches!(error_type, ErrorType::Recoverable(_)) {
+                            let delay = calculate_retry_delay(attempt, self.is_autonomous);
+                            warn!(
+                                "Recoverable error on attempt {}/{}: {}. Retrying in {:?}...",
+                                attempt,
+                                max_attempts + extra_attempts,
+                                e,
+                                delay
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            error_context.clone().log_error(&e);
+                            return Err(e);
+                        }
                     } else {
                         error_context.clone().log_error(&e);
                         return Err(e);
                     }
                 }
-                Err(e) => {
-                    error_context.clone().log_error(&e);
-                    return Err(e);
-                }
             }
         }
+    }
+
+    /// Return to the default model at the start of a turn.
+    ///
+    /// The fallback is deliberately a ONE-TURN measure: an overload is a
+    /// transient property of a model pool, so a session that switched once
+    /// should not stay degraded for the rest of its life. Called
+    /// unconditionally (it is a cheap idempotent store) from the single funnel
+    /// every turn passes through, so there is no path that starts a turn on the
+    /// fallback without a fresh overload to justify it.
+    fn reset_fallback_for_new_turn(&self) {
+        if self.providers.is_fallback_active() {
+            debug!("New turn: reverting from fallback model to the default model");
+            self.ui_writer
+                .print_context_status("↩️ Back on the default model");
+        }
+        self.providers.deactivate_fallback();
     }
 
     async fn stream_completion_with_tools(

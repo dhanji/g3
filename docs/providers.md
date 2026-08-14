@@ -18,6 +18,22 @@ This document describes the LLM providers supported by g3, their capabilities, a
 | **OpenAI-Compatible** | Cloud | Native | No | Varies | OpenRouter, Groq, Together, etc. |
 | **Embedded** | Local | JSON fallback | No | 4k-32k | Privacy, offline, cost savings |
 
+## Overload Fallback
+
+Any cloud provider can nominate a second model to borrow for a single turn when
+the primary one is overloaded:
+
+```bash
+g3 --fallback-model                  # claude-opus-4-8
+g3 --fallback-model=claude-sonnet-5
+```
+
+The fallback inherits the default provider's entire config (API key, caching,
+context beta, token limits) with only the model string changed, and is dropped
+at the start of the next turn. Not supported for `embedded.*` providers or
+OAuth-based Databricks. Full semantics in
+[configuration.md](configuration.md#overload-fallback-model).
+
 ## Anthropic
 
 **Location**: `crates/g3-providers/src/anthropic.rs`

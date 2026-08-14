@@ -54,6 +54,52 @@ default_provider = "anthropic.default"
 # player = "anthropic.default"    # Code implementer in autonomous mode
 ```
 
+### Overload Fallback Model
+
+When the default model reports itself overloaded (HTTP 529 / "Overloaded" /
+"capacity"), g3 can retry the **current turn** against a different model instead
+of sitting through exponential backoff on a congested pool.
+
+```toml
+[providers]
+default_provider = "anthropic.default"
+fallback_model = "claude-opus-4-8"   # Optional: model to borrow on overload
+```
+
+Or per-invocation:
+
+```bash
+g3 --fallback-model                       # uses claude-opus-4-8
+g3 --fallback-model=claude-sonnet-5       # pick your own
+```
+
+> **Note the `=`.** The value must be attached with `=`. `g3 --fallback-model
+> "my task"` treats `"my task"` as the *task*, not the model — which is the
+> point: a bare flag can be used safely alongside a positional task.
+
+**Semantics**
+
+| | |
+|---|---|
+| Scope | **Exactly one turn.** The next turn starts on the default model again. |
+| Trigger | Only "model overloaded/busy/capacity/unavailable" errors. |
+| Not triggered by | Rate limits (429 follows your API key, so switching model wouldn't help), timeouts, network errors, malformed requests. |
+| Retry timing | Immediate — no backoff, since it's a different pool. |
+| Retry budget | The switch gets its own extra attempt; it does not consume the normal retry budget. |
+| If the fallback is broken | g3 reverts to the default model and retries there, so a typo'd model name can't turn a transient overload into a failed turn. |
+
+**Capability parity.** The fallback is *not* a separate provider block. g3 clones
+the default provider's own config entry — same API key, `max_tokens`,
+`cache_config`, `enable_1m_context`, `thinking_budget_tokens`, base URL/host —
+and substitutes only the model string. It is registered internally as
+`<default_provider>#fallback`.
+
+**Unsupported defaults** (warn and continue, never a startup failure):
+
+- `embedded.*` — the "model" is a multi-GB local file, and local inference doesn't return "overloaded".
+- `databricks.*` using OAuth — the OAuth constructor needs a network round trip, which shouldn't be paid at startup for a provider that may never be used. Use a `token` instead.
+- A `fallback_model` equal to the default model, or blank — nothing to fall back to.
+
 ### Anthropic Configuration
 
 ```toml
