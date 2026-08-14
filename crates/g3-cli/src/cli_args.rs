@@ -101,6 +101,25 @@ pub struct Cli {
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
 
+    /// On a "model overloaded" error, retry the current turn with this model
+    /// instead, then revert to the default model on the very next turn.
+    ///
+    /// Bare `--fallback-model` uses claude-opus-4-8. Pass a specific model with
+    /// `--fallback-model=<MODEL>`.
+    ///
+    /// NOTE the `require_equals`: without it, clap would treat `g3
+    /// --fallback-model "do the thing"` as *model = "do the thing"* and silently
+    /// eat the positional task argument. Requiring `=` makes the bare flag
+    /// unambiguous.
+    #[arg(
+        long,
+        value_name = "MODEL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = g3_config::DEFAULT_FALLBACK_MODEL
+    )]
+    pub fallback_model: Option<String>,
+
     /// Disable session log file creation (no .g3/sessions/ or error logs)
     #[arg(long)]
     pub quiet: bool,
@@ -200,5 +219,94 @@ impl Cli {
             resume: self.resume.clone(),
             stream_events: self.stream_events.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod fallback_model_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Parse an argv (without the binary name) as a `Cli`.
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec!["g3"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn test_flag_absent_means_no_fallback() {
+        let cli = parse(&[]).expect("bare g3 should parse");
+        assert_eq!(cli.fallback_model, None);
+    }
+
+    #[test]
+    fn test_bare_flag_uses_default_model() {
+        let cli = parse(&["--fallback-model"]).expect("bare flag should parse");
+        assert_eq!(
+            cli.fallback_model.as_deref(),
+            Some(g3_config::DEFAULT_FALLBACK_MODEL)
+        );
+    }
+
+    #[test]
+    fn test_explicit_model_overrides_default() {
+        let cli = parse(&["--fallback-model=claude-sonnet-5"]).expect("should parse");
+        assert_eq!(cli.fallback_model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    /// THE REGRESSION THIS FLAG SHAPE EXISTS TO PREVENT.
+    ///
+    /// Without `require_equals`, clap binds the next token to the optional
+    /// value, so `g3 --fallback-model "do the thing"` would set
+    /// fallback_model = "do the thing" and leave `task` as None — the task
+    /// silently vanishes and g3 drops into interactive mode instead of running
+    /// it. Assert the task survives AND the fallback is the default.
+    #[test]
+    fn test_bare_flag_does_not_swallow_positional_task() {
+        let cli = parse(&["--fallback-model", "do the thing"]).expect("should parse");
+        assert_eq!(
+            cli.task.as_deref(),
+            Some("do the thing"),
+            "positional task must not be consumed as the fallback model value"
+        );
+        assert_eq!(
+            cli.fallback_model.as_deref(),
+            Some(g3_config::DEFAULT_FALLBACK_MODEL)
+        );
+    }
+
+    /// Space-separated values are rejected outright rather than mis-bound.
+    #[test]
+    fn test_space_separated_value_is_not_accepted_as_model() {
+        let cli = parse(&["--fallback-model", "claude-sonnet-5"]).expect("should parse");
+        // "claude-sonnet-5" lands in the positional task slot, NOT the model.
+        assert_eq!(
+            cli.fallback_model.as_deref(),
+            Some(g3_config::DEFAULT_FALLBACK_MODEL)
+        );
+        assert_eq!(cli.task.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn test_empty_explicit_value_parses_as_empty_string() {
+        // Boundary: `--fallback-model=` is degenerate but must not panic.
+        let cli = parse(&["--fallback-model="]).expect("should parse");
+        assert_eq!(cli.fallback_model.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_flag_coexists_with_model_and_provider_overrides() {
+        let cli = parse(&[
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-opus-5",
+            "--fallback-model=claude-opus-4-8",
+        ])
+        .expect("should parse");
+        assert_eq!(cli.provider.as_deref(), Some("anthropic"));
+        assert_eq!(cli.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(cli.fallback_model.as_deref(), Some("claude-opus-4-8"));
     }
 }

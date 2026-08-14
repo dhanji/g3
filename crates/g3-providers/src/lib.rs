@@ -9,6 +9,19 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Suffix appended to the default provider's name to form the registry key of
+/// its overload fallback (e.g. `anthropic.default` -> `anthropic.default#fallback`).
+///
+/// `#` is chosen because provider references are parsed by splitting on `.`,
+/// so a suffix containing a dot would be read as a *config name* and every
+/// config lookup (max_tokens, cache, 1M-context beta) would miss and silently
+/// fall back to defaults. `#` cannot appear in a TOML bare key, so it also
+/// cannot collide with a real user-defined provider name.
+///
+/// `g3_core::provider_config::parse_provider_ref` strips this suffix, which is
+/// what makes the fallback inherit the default provider's configuration.
+pub const FALLBACK_PROVIDER_SUFFIX: &str = "#fallback";
+
 /// Trait for LLM providers
 #[async_trait::async_trait]
 pub trait LLMProvider: Send + Sync {
@@ -395,6 +408,19 @@ impl Message {
 pub struct ProviderRegistry {
     providers: HashMap<String, Box<dyn LLMProvider>>,
     default_provider: String,
+    /// Registry key of the overload fallback provider, if one was registered
+    /// (`--fallback-model`). `None` means the feature is off and this type
+    /// behaves exactly as it did before it existed.
+    fallback_provider: Option<String>,
+    /// Whether the fallback is currently standing in for the default.
+    ///
+    /// An `AtomicBool` rather than a plain `bool` because activation happens
+    /// deep inside the streaming retry loop, which holds only `&self` — the
+    /// alternative was threading `&mut` through a dozen call sites (`get(None)`
+    /// is called from 17 places) purely to flip one flag. `Relaxed` is
+    /// sufficient: the flag is set and read from the same task, and no other
+    /// memory ordering depends on it.
+    fallback_active: std::sync::atomic::AtomicBool,
 }
 
 impl ProviderRegistry {
@@ -402,6 +428,8 @@ impl ProviderRegistry {
         Self {
             providers: HashMap::new(),
             default_provider: String::new(),
+            fallback_provider: None,
+            fallback_active: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -414,6 +442,71 @@ impl ProviderRegistry {
         }
     }
 
+    /// Register `provider` as the overload fallback for the default provider.
+    ///
+    /// The provider is stored in the same map as everything else, so it remains
+    /// addressable by name; what makes it special is that [`Self::get`] will
+    /// return it in place of the default while the fallback is active.
+    ///
+    /// Note this does NOT set `default_provider` even if the registry was empty
+    /// — a fallback must never become the default, or an overload would become
+    /// permanent instead of lasting one turn.
+    pub fn register_fallback<P: LLMProvider + 'static>(&mut self, provider: P) {
+        let name = provider.name().to_string();
+        // NOTE: deliberately inserts into the map directly instead of calling
+        // `register()`. `register()` implements "the first provider registered
+        // becomes the default", so routing the fallback through it would make
+        // the fallback the permanent default whenever it happened to be
+        // registered first — converting a one-turn degradation into a
+        // forever one. Covered by
+        // `test_fallback_registered_first_does_not_become_default`.
+        self.providers.insert(name.clone(), Box::new(provider));
+        self.fallback_provider = Some(name);
+    }
+
+    /// Whether a fallback provider is available at all.
+    pub fn has_fallback(&self) -> bool {
+        self.fallback_provider.is_some()
+    }
+
+    /// Registry key of the fallback provider, if registered.
+    pub fn fallback_name(&self) -> Option<&str> {
+        self.fallback_provider.as_deref()
+    }
+
+    /// Model string of the fallback provider, if registered.
+    pub fn fallback_model(&self) -> Option<&str> {
+        let name = self.fallback_provider.as_deref()?;
+        self.providers.get(name).map(|p| p.model())
+    }
+
+    /// Route `get(None)` to the fallback provider.
+    ///
+    /// Returns `false` (and changes nothing) when no fallback is registered, so
+    /// callers can use the return value to decide whether to tell the user
+    /// anything. Idempotent.
+    pub fn activate_fallback(&self) -> bool {
+        if self.fallback_provider.is_none() {
+            return false;
+        }
+        self.fallback_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    /// Route `get(None)` back to the default provider. Idempotent, and safe to
+    /// call unconditionally — which is exactly how the per-turn reset uses it.
+    pub fn deactivate_fallback(&self) {
+        self.fallback_active
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the fallback is currently standing in for the default.
+    pub fn is_fallback_active(&self) -> bool {
+        self.fallback_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn set_default(&mut self, provider_name: &str) -> Result<()> {
         if !self.providers.contains_key(provider_name) {
             anyhow::bail!("Provider '{}' not found", provider_name);
@@ -422,12 +515,38 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Resolve a provider.
+    ///
+    /// `Some(name)` is an explicit request and is ALWAYS honoured verbatim —
+    /// fallback state is ignored — so a caller that deliberately addressed one
+    /// model cannot be silently handed another.
+    ///
+    /// `None` means "the current provider", which is the fallback while it is
+    /// active and the default otherwise.
     pub fn get(&self, provider_name: Option<&str>) -> Result<&dyn LLMProvider> {
-        let name = provider_name.unwrap_or(&self.default_provider);
+        let name = match provider_name {
+            Some(explicit) => explicit,
+            None => self.current_provider_name(),
+        };
         self.providers
             .get(name)
             .map(|p| p.as_ref())
             .ok_or_else(|| anyhow::anyhow!("Provider '{}' not found", name))
+    }
+
+    /// Name of the provider `get(None)` currently resolves to.
+    pub fn current_provider_name(&self) -> &str {
+        if self.is_fallback_active() {
+            if let Some(fallback) = self.fallback_provider.as_deref() {
+                return fallback;
+            }
+        }
+        &self.default_provider
+    }
+
+    /// Name of the configured default provider, regardless of fallback state.
+    pub fn default_provider_name(&self) -> &str {
+        &self.default_provider
     }
 
     pub fn list_providers(&self) -> Vec<&str> {
@@ -622,6 +741,176 @@ mod tests {
         assert!(
             msg.id.contains('-'),
             "Message ID should contain hyphen separator"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fallback_registry_tests {
+    use super::*;
+    use crate::mock::MockProvider;
+
+    /// Registry holding a default provider and (optionally) a fallback.
+    fn registry_with_fallback() -> ProviderRegistry {
+        let mut registry = ProviderRegistry::new();
+        registry.register(
+            MockProvider::new()
+                .with_name("anthropic.default")
+                .with_model("claude-opus-5"),
+        );
+        registry.register_fallback(
+            MockProvider::new()
+                .with_name("anthropic.default#fallback")
+                .with_model("claude-opus-4-8"),
+        );
+        registry
+    }
+
+    fn registry_without_fallback() -> ProviderRegistry {
+        let mut registry = ProviderRegistry::new();
+        registry.register(
+            MockProvider::new()
+                .with_name("anthropic.default")
+                .with_model("claude-opus-5"),
+        );
+        registry
+    }
+
+    #[test]
+    fn test_activate_routes_get_none_to_fallback() {
+        let registry = registry_with_fallback();
+
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-5");
+        assert!(registry.activate_fallback());
+        assert!(registry.is_fallback_active());
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-4-8");
+        assert_eq!(
+            registry.current_provider_name(),
+            "anthropic.default#fallback"
+        );
+    }
+
+    #[test]
+    fn test_deactivate_returns_to_default() {
+        let registry = registry_with_fallback();
+        registry.activate_fallback();
+        registry.deactivate_fallback();
+
+        assert!(!registry.is_fallback_active());
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-5");
+        assert_eq!(registry.current_provider_name(), "anthropic.default");
+    }
+
+    /// Negative: with the feature off, activation is a no-op rather than an
+    /// error or a panic, and resolution is unchanged.
+    #[test]
+    fn test_activate_without_fallback_is_a_noop() {
+        let registry = registry_without_fallback();
+
+        assert!(!registry.has_fallback());
+        assert!(
+            !registry.activate_fallback(),
+            "activate must report false so callers do not announce a switch that did not happen"
+        );
+        assert!(!registry.is_fallback_active());
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-5");
+    }
+
+    /// Negative: even if the flag were somehow set with no fallback registered,
+    /// resolution must not break.
+    #[test]
+    fn test_active_flag_without_fallback_still_resolves_default() {
+        let registry = registry_without_fallback();
+        registry
+            .fallback_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(registry.current_provider_name(), "anthropic.default");
+        assert!(registry.get(None).is_ok());
+    }
+
+    /// An explicit request is never redirected — otherwise a caller that
+    /// deliberately named a model could silently get a different one.
+    #[test]
+    fn test_explicit_get_is_unaffected_by_fallback_state() {
+        let registry = registry_with_fallback();
+        registry.activate_fallback();
+
+        assert_eq!(
+            registry.get(Some("anthropic.default")).unwrap().model(),
+            "claude-opus-5"
+        );
+        assert_eq!(
+            registry
+                .get(Some("anthropic.default#fallback"))
+                .unwrap()
+                .model(),
+            "claude-opus-4-8"
+        );
+    }
+
+    #[test]
+    fn test_activate_and_deactivate_are_idempotent() {
+        let registry = registry_with_fallback();
+
+        assert!(registry.activate_fallback());
+        assert!(registry.activate_fallback());
+        assert!(registry.is_fallback_active());
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-4-8");
+
+        registry.deactivate_fallback();
+        registry.deactivate_fallback();
+        assert!(!registry.is_fallback_active());
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-5");
+    }
+
+    /// BOUNDARY / the nastiest case: if the fallback is registered FIRST (empty
+    /// registry), the "first registration becomes the default" rule would make
+    /// the fallback the permanent default — turning a one-turn degradation into
+    /// a forever one. register_fallback must refuse to claim the default slot.
+    #[test]
+    fn test_fallback_registered_first_does_not_become_default() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_fallback(
+            MockProvider::new()
+                .with_name("anthropic.default#fallback")
+                .with_model("claude-opus-4-8"),
+        );
+        registry.register(
+            MockProvider::new()
+                .with_name("anthropic.default")
+                .with_model("claude-opus-5"),
+        );
+
+        assert_eq!(
+            registry.default_provider_name(),
+            "anthropic.default",
+            "the fallback must never be installed as the default provider"
+        );
+        assert_eq!(registry.get(None).unwrap().model(), "claude-opus-5");
+    }
+
+    #[test]
+    fn test_fallback_name_and_model_accessors() {
+        let registry = registry_with_fallback();
+        assert_eq!(registry.fallback_name(), Some("anthropic.default#fallback"));
+        assert_eq!(registry.fallback_model(), Some("claude-opus-4-8"));
+
+        let bare = registry_without_fallback();
+        assert_eq!(bare.fallback_name(), None);
+        assert_eq!(bare.fallback_model(), None);
+    }
+
+    /// The default provider itself is still reported correctly while the
+    /// fallback is active — needed so the retry path can name both models.
+    #[test]
+    fn test_default_provider_name_survives_activation() {
+        let registry = registry_with_fallback();
+        registry.activate_fallback();
+        assert_eq!(registry.default_provider_name(), "anthropic.default");
+        assert_eq!(
+            registry.current_provider_name(),
+            "anthropic.default#fallback"
         );
     }
 }

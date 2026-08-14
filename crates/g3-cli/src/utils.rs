@@ -102,6 +102,17 @@ pub fn load_config_with_cli_overrides(cli: &Cli) -> Result<Config> {
         cli.model.clone(),
     )?;
 
+    // Apply the fallback-model override.
+    //
+    // Applied AFTER load_with_overrides so that `--model X --fallback-model=X`
+    // is detected against the *effective* default model (the one --model just
+    // installed), not the one in the config file. Registration treats
+    // fallback == default as "no fallback", so this is what makes that check
+    // meaningful.
+    if let Some(fallback) = cli.fallback_model.clone() {
+        config.providers.fallback_model = Some(fallback);
+    }
+
     // Apply webdriver flag override
     if cli.webdriver {
         config.webdriver.enabled = true;

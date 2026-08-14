@@ -293,6 +293,58 @@ auto_compact = true
         assert_eq!(config.agent.compaction_threshold_percent, 80.0);
     }
 
+    /// A config file written before `fallback_model` existed must still load.
+    /// This is the whole point of `#[serde(default)]` on the field — without it
+    /// every existing g3 install would fail to start after the upgrade.
+    #[test]
+    fn test_fallback_model_absent_deserializes_as_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let config_content = format!(r#"
+[providers]
+default_provider = "databricks.default"
+
+[providers.databricks.default]
+host = "https://test.databricks.com"
+token = "test-token"
+model = "test-model"
+{}"#, test_config_footer());
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.providers.fallback_model, None,
+            "absent fallback_model must disable the feature, not default it on"
+        );
+    }
+
+    /// It can also be set persistently in the config file, not only via the flag.
+    #[test]
+    fn test_fallback_model_is_read_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let config_content = format!(r#"
+[providers]
+default_provider = "anthropic.default"
+fallback_model = "claude-opus-4-8"
+
+[providers.anthropic.default]
+api_key = "test-key"
+model = "claude-opus-5"
+{}"#, test_config_footer());
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.providers.fallback_model.as_deref(),
+            Some("claude-opus-4-8")
+        );
+    }
+
     #[test]
     fn test_compaction_threshold_is_read_from_config() {
         let temp_dir = TempDir::new().unwrap();

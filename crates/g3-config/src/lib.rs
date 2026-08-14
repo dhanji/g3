@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Model used by a bare `--fallback-model` (no `=MODEL`).
+///
+/// Deliberately a same-tier Claude rather than a cheaper/faster one: the point
+/// of the fallback is to get *this* turn finished when the primary pool is
+/// congested, and agent turns mutate files and send mail. Silently demoting
+/// capability mid-turn is a worse failure than the wait it avoids. Opus 4.8 is
+/// a previous-generation, separately-provisioned pool, so it is unlikely to be
+/// saturated at the same moment as the current default.
+pub const DEFAULT_FALLBACK_MODEL: &str = "claude-opus-4-8";
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -31,6 +41,22 @@ pub struct ProvidersConfig {
 
     /// Provider for player in autonomous mode (optional, falls back to default_provider)
     pub player: Option<String>,
+
+    /// Model to fall back to for a SINGLE turn when the default model reports
+    /// itself overloaded/busy (`--fallback-model`).
+    ///
+    /// This names a *model*, not a provider reference: the fallback reuses the
+    /// default provider's own config entry (api key, cache settings, context
+    /// beta, temperature) with only the model string substituted. That keeps
+    /// capability parity by construction — a fallback that quietly dropped
+    /// prompt caching or the 1M-context beta would change behaviour in ways
+    /// far more surprising than the model swap itself.
+    ///
+    /// `None` (the default, and the state for every config written before this
+    /// field existed) disables the feature entirely: no extra provider is
+    /// registered and the retry path is untouched.
+    #[serde(default)]
+    pub fallback_model: Option<String>,
 
     /// Named Anthropic provider configs
     #[serde(default)]
@@ -270,6 +296,7 @@ impl Default for Config {
                 planner: None,
                 coach: None,
                 player: None,
+                fallback_model: None,
                 anthropic: HashMap::new(),
                 openai: HashMap::new(),
                 databricks: databricks_configs,

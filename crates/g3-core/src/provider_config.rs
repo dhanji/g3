@@ -13,7 +13,20 @@ pub const SUMMARY_MIN_TOKENS: u32 = 1000;
 /// Parse a provider reference into (provider_type, config_name).
 /// Format: "provider_type.config_name" (e.g., "anthropic.default")
 /// Falls back to (provider_name, "default") for simple names.
+///
+/// A trailing [`FALLBACK_PROVIDER_SUFFIX`] is stripped first, so the overload
+/// fallback provider `anthropic.default#fallback` resolves to the *same*
+/// config entry as `anthropic.default`. That is the mechanism by which the
+/// fallback inherits max_tokens, temperature, cache settings, the thinking
+/// budget and the 1M-context beta — differing from the default in the model
+/// string alone. Without this strip, every one of those lookups would miss the
+/// HashMap and quietly return a hardcoded default, so a fallback turn would
+/// lose prompt caching and (worse) be accounted against a 200k window while
+/// the API still allowed 1M.
 pub fn parse_provider_ref(provider_name: &str) -> (&str, &str) {
+    let provider_name = provider_name
+        .strip_suffix(g3_providers::FALLBACK_PROVIDER_SUFFIX)
+        .unwrap_or(provider_name);
     let parts: Vec<&str> = provider_name.split('.').collect();
     if parts.len() == 2 {
         (parts[0], parts[1])
@@ -319,5 +332,84 @@ mod tests {
         assert!(is_1m_context_enabled(&config, "anthropic.bigctx"));
         // ...and the absent "default" entry is still false
         assert!(!is_1m_context_enabled(&config, "anthropic.default"));
+    }
+
+    // ── #fallback suffix stripping ─────────────────────────────────────
+    //
+    // The fallback provider is registered under the default provider's name
+    // plus "#fallback". Every config lookup in this module goes through
+    // parse_provider_ref, so stripping the suffix here is what gives the
+    // fallback capability parity with the default.
+
+    #[test]
+    fn test_parse_provider_ref_strips_fallback_suffix() {
+        let (ptype, name) = parse_provider_ref("anthropic.default#fallback");
+        assert_eq!(ptype, "anthropic");
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn test_parse_provider_ref_strips_fallback_suffix_custom_name() {
+        let (ptype, name) = parse_provider_ref("openai.gpt4#fallback");
+        assert_eq!(ptype, "openai");
+        assert_eq!(name, "gpt4");
+    }
+
+    /// Boundary: bare provider name plus the suffix still resolves to "default".
+    #[test]
+    fn test_parse_provider_ref_bare_name_with_fallback_suffix() {
+        let (ptype, name) = parse_provider_ref("anthropic#fallback");
+        assert_eq!(ptype, "anthropic");
+        assert_eq!(name, "default");
+    }
+
+    /// Negative: only a TRAILING suffix is stripped. A '#' appearing elsewhere
+    /// must be left alone rather than mangling the reference.
+    #[test]
+    fn test_parse_provider_ref_hash_not_at_end_is_untouched() {
+        let (ptype, name) = parse_provider_ref("anthropic.we#fallbackird");
+        assert_eq!(ptype, "anthropic");
+        assert_eq!(name, "we#fallbackird");
+    }
+
+    /// Negative: a similar-looking but different suffix is not stripped.
+    #[test]
+    fn test_parse_provider_ref_similar_suffix_not_stripped() {
+        let (ptype, name) = parse_provider_ref("anthropic.default#fallbacks");
+        assert_eq!(ptype, "anthropic");
+        assert_eq!(name, "default#fallbacks");
+    }
+
+    /// The whole point, end to end: the fallback provider name resolves to the
+    /// SAME config values as the default it was cloned from.
+    #[test]
+    fn test_fallback_provider_inherits_default_config_lookups() {
+        let mut config = config_with_anthropic("default", Some(true));
+        // Give the entry distinctive values we can detect.
+        if let Some(entry) = config.providers.anthropic.get_mut("default") {
+            entry.max_tokens = Some(54321);
+            entry.thinking_budget_tokens = Some(9000);
+        }
+
+        let default_ref = "anthropic.default";
+        let fallback_ref = "anthropic.default#fallback";
+
+        assert_eq!(
+            get_max_tokens(&config, fallback_ref),
+            get_max_tokens(&config, default_ref)
+        );
+        assert_eq!(get_max_tokens(&config, fallback_ref), Some(54321));
+        assert_eq!(
+            get_thinking_budget_tokens(&config, fallback_ref),
+            Some(9000)
+        );
+        assert!(
+            is_1m_context_enabled(&config, fallback_ref),
+            "fallback must inherit the 1M-context beta, or context accounting diverges from the API"
+        );
+        assert_eq!(
+            resolve_max_tokens(&config, fallback_ref),
+            resolve_max_tokens(&config, default_ref)
+        );
     }
 }
