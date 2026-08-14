@@ -167,6 +167,57 @@ impl ContextWindow {
         );
     }
 
+    /// Backfill stable ids onto any message that lacks one.
+    ///
+    /// `Message.id` is persisted, but sessions written before that change have
+    /// no `id` field, and `#[serde(default)]` yields `""`. Call this after
+    /// loading so downstream consumers can rely on "every message has an id"
+    /// rather than each having to handle the empty case.
+    ///
+    /// Idempotent: a message that already has an id keeps it, so ids assigned
+    /// once stay put across reloads. Only the empty ones are filled, which is
+    /// what makes this safe to call on every load.
+    ///
+    /// Returns the number of ids assigned (0 for an already-migrated session),
+    /// so callers can log a one-time migration rather than guess.
+    pub fn hydrate_message_ids(&mut self) -> usize {
+        let mut assigned = 0;
+        for m in self.conversation_history.iter_mut() {
+            if m.id.is_empty() {
+                m.id = Message::generate_id_public();
+                assigned += 1;
+            }
+        }
+        assigned
+    }
+
+    /// Position of `id` in `conversation_history`, if it is still present.
+    ///
+    /// This is the cursor primitive: "resume after message X". Returns `None`
+    /// when the id is unknown — which is a REAL and expected outcome, not an
+    /// error, because summarizing compaction deletes messages outright. Callers
+    /// must have a resync path for `None` rather than falling back to a stored
+    /// offset, since an offset into a rewritten history is exactly the bug this
+    /// replaces: thinning and compaction change indices while ids stay put.
+    pub fn index_of_message_id(&self, id: &str) -> Option<usize> {
+        if id.is_empty() {
+            return None;
+        }
+        self.conversation_history.iter().position(|m| m.id == id)
+    }
+
+    /// The id of the last message currently in history, if any.
+    ///
+    /// Intended for capturing a boundary ("everything up to here is what the
+    /// client already has") that stays valid across thinning and across
+    /// messages being appended afterwards.
+    pub fn last_message_id(&self) -> Option<String> {
+        self.conversation_history
+            .last()
+            .map(|m| m.id.clone())
+            .filter(|id| !id.is_empty())
+    }
+
     /// Clear the conversation history while preserving system messages.
     /// Used by /clear command to start fresh.
     pub fn clear_conversation(&mut self) {
@@ -412,6 +463,16 @@ Format this as a detailed but concise summary that can be used to resume the con
 
         // Add the latest user message if provided
         if let Some(user_msg) = latest_user_message {
+            // NOTE: this mints a NEW id — the original message's identity is not
+            // threaded through CompactionConfig (it carries only the text).
+            //
+            // That is acceptable but must not be forgotten: summarizing
+            // compaction genuinely DELETES messages, so any consumer using
+            // `Message.id` as a resume cursor has to treat "id no longer present
+            // in history" as a real, expected outcome — not corruption. It means
+            // "everything you knew about was summarized away", and the honest
+            // response is to resync from the current history rather than to
+            // guess an offset.
             self.add_message(Message::new(MessageRole::User, user_msg));
         }
 

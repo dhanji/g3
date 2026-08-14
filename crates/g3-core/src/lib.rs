@@ -2154,6 +2154,20 @@ Skip if nothing new. Be brief."#;
                             self.context_window.recalculate_tokens();
                         }
 
+                        // Backfill ids on messages written before ids were
+                        // persisted. Done here, at the same funnel point as the
+                        // trim, so every restore path gets it: consumers can
+                        // then rely on "every message has an id" and use it as
+                        // a resume cursor instead of an array index, which
+                        // compaction invalidates.
+                        let hydrated = self.context_window.hydrate_message_ids();
+                        if hydrated > 0 {
+                            debug!(
+                                "Assigned ids to {} legacy message(s) in resumed session {}",
+                                hydrated, continuation.session_id
+                            );
+                        }
+
                         // Continue IN PLACE: adopt the resumed session's id so
                         // this turn rewrites that session dir instead of
                         // minting a new one. Without this, execute_task() sees

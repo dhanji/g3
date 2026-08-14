@@ -111,7 +111,19 @@ pub struct Message {
     pub content: String,
     #[serde(skip)]
     pub images: Vec<ImageContent>,
-    #[serde(skip)]
+    /// Stable per-message identity, PERSISTED.
+    ///
+    /// This used to be `#[serde(skip)]`, which meant identity existed only in
+    /// memory and was thrown away at the persistence boundary — every reload
+    /// produced `""`. Consumers that needed to say "resume after this message"
+    /// were forced to use an ARRAY INDEX instead, which is not stable: context
+    /// compaction rewrites `conversation_history` in place and shorter, so a
+    /// previously-valid index silently points somewhere else (or past the end).
+    ///
+    /// Persisting it makes "everything after message X" expressible in a way
+    /// that survives compaction. `default` so sessions written before this
+    /// change still load; `hydrate_message_ids()` backfills them.
+    #[serde(default)]
     pub id: String,
     #[serde(skip)]
     pub kind: MessageKind,
@@ -272,14 +284,21 @@ pub use gemini::GeminiProvider;
 pub use openai::OpenAIProvider;
 
 impl Message {
-    /// Generate a unique message ID in format HHMMSS-XXX
-    /// where XXX are 3 random alphanumeric characters (upper and lowercase)
+    /// Generate a unique message ID in format HHMMSS-XXXXXX
+    /// where the suffix is 6 random alphanumeric characters.
+    ///
+    /// Now that this id is PERSISTED and used as a resume cursor, uniqueness is
+    /// load-bearing rather than cosmetic. The old format used a 3-char suffix
+    /// (~140k combinations) inside a 1-second bucket, and a tool loop can append
+    /// many messages within the same second — a collision there would make
+    /// "resume after message X" ambiguous, silently replaying or skipping a
+    /// span. 6 chars is ~19 billion per second, which retires the concern.
     fn generate_id() -> String {
         let now = chrono::Local::now();
         let timestamp = now.format("%H%M%S").to_string();
 
         let mut rng = rand::thread_rng();
-        let random_chars: String = (0..3)
+        let random_chars: String = (0..6)
             .map(|_| {
                 let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
                 let idx = rng.gen_range(0..chars.len());
@@ -288,6 +307,12 @@ impl Message {
             .collect();
 
         format!("{}-{}", timestamp, random_chars)
+    }
+
+    /// Public wrapper so other crates can mint ids for messages that predate
+    /// id persistence (see `ContextWindow::hydrate_message_ids`).
+    pub fn generate_id_public() -> String {
+        Self::generate_id()
     }
 
     /// Create a new message with optional cache control
@@ -517,7 +542,7 @@ mod tests {
 
         // Check format: HHMMSS-XXX
         let parts: Vec<&str> = msg.id.split('-').collect();
-        assert_eq!(parts.len(), 2, "Message ID should have format HHMMSS-XXX");
+        assert_eq!(parts.len(), 2, "Message ID should have format HHMMSS-XXXXXX");
 
         // Check timestamp part is 6 digits
         assert_eq!(parts[0].len(), 6, "Timestamp should be 6 digits (HHMMSS)");
@@ -526,8 +551,9 @@ mod tests {
             "Timestamp should be all digits"
         );
 
-        // Check random part is 3 alpha characters
-        assert_eq!(parts[1].len(), 3, "Random part should be 3 characters");
+        // Check random part is 6 alpha characters. Widened from 3 when the id
+        // became a persisted resume cursor — see generate_id().
+        assert_eq!(parts[1].len(), 6, "Random part should be 6 characters");
         assert!(
             parts[1].chars().all(|c| c.is_ascii_alphabetic()),
             "Random part should be all alphabetic characters"
@@ -545,15 +571,40 @@ mod tests {
     }
 
     #[test]
-    fn test_message_id_not_serialized() {
+    fn test_message_id_is_persisted_and_round_trips() {
+        // Inverted deliberately (2026-08-14). This test used to assert the id
+        // was NOT serialized. That contract is what forced consumers to use
+        // array indices to say "resume after this message", which breaks the
+        // moment context compaction rewrites history shorter. The id is now the
+        // cursor, so persistence is the contract.
         let msg = Message::new(MessageRole::User, "Hello".to_string());
         let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"id\""), "id must be serialized: {}", json);
 
-        println!("Message JSON: {}", json);
-        assert!(
-            !json.contains("\"id\""),
-            "JSON should not contain 'id' field"
-        );
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, msg.id, "id must survive a round trip unchanged");
+        assert!(!back.id.is_empty());
+    }
+
+    #[test]
+    fn test_message_without_id_field_deserializes_to_empty() {
+        // Sessions written before ids were persisted have no `id` key at all.
+        // They must LOAD (not error), yielding an empty id for
+        // ContextWindow::hydrate_message_ids to backfill.
+        let json = r#"{"role":"user","content":"legacy"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.id, "", "missing id should default to empty, not fail");
+        assert_eq!(msg.content, "legacy");
+    }
+
+    #[test]
+    fn test_generated_ids_are_unique_within_the_same_second() {
+        // The id is a resume cursor now, so a collision would make "everything
+        // after X" ambiguous. A tool loop can append many messages inside one
+        // timestamp bucket, so uniqueness must not rely on the clock.
+        use std::collections::HashSet;
+        let ids: HashSet<String> = (0..2000).map(|_| Message::generate_id()).collect();
+        assert_eq!(ids.len(), 2000, "generated ids collided within one second");
     }
 
     #[test]
