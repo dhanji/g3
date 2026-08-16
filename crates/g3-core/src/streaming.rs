@@ -12,6 +12,79 @@ use tracing::{debug, error};
 
 pub const MAX_ITERATIONS: usize = 400;
 
+/// Mid-stream retries allowed per TURN before a streaming failure becomes fatal.
+///
+/// # Why this exists at all
+///
+/// `Agent::stream_with_retry` already retries, but ONLY the act of *opening* a
+/// stream (`provider.stream()` returning `Err`). Once bytes are flowing, a
+/// connection reset, a mid-stream 529, or a silently truncated response landed
+/// in a branch that did `return Err(e)` unconditionally — fatal, with no
+/// classification, for the single most transient class of failure there is.
+///
+/// That window is entered once per tool-loop iteration, so turn survival was
+/// `(1 - p)^N` in the number of tool calls. Measured over 144 real butler
+/// conversations (644 turns): turns with 0 tool calls died 0% of the time,
+/// 1-5 calls 5.1%, 6-15 8.9%, 31-60 10.8%, and 60+ calls **26.1%**. That
+/// monotonic curve is the exponent, not a bug in any individual tool — `shell`
+/// accounted for 76% of deaths and 74% of all calls, i.e. exactly its share.
+///
+/// # Why 3
+///
+/// Matches `default_max_retry_attempts` in g3-config, so the mid-stream and
+/// stream-open paths give up after comparable effort. The failures this absorbs
+/// are near-instantaneous (a reset connection, an overload rejection), so the
+/// cost of the budget is seconds, while the cost of NOT having it was a dead
+/// turn and a human typing "continue".
+pub const MAX_STREAM_RETRIES_PER_TURN: u32 = 3;
+
+/// What to do about a stream that failed partway through an iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFailureAction {
+    /// Transient and we still have budget: re-run this iteration from the top.
+    /// Safe because no user message is re-added and every tool_use issued in
+    /// previous iterations has already been answered (see the eager-save
+    /// comment at the loop head).
+    RetryIteration,
+    /// Either the error is not transient, or the per-turn budget is spent.
+    Fail,
+}
+
+/// Decide whether a mid-stream failure is worth retrying.
+///
+/// Split out as a pure function on purpose: the policy is the part that can be
+/// wrong, and inlining it in a 900-line streaming loop makes it reachable only
+/// by a live provider failing at exactly the right moment. Here it is directly
+/// exercisable, so the "we retry 503 but not 400" claim is checked by tests
+/// rather than asserted by a comment.
+///
+/// `retries_used` is the count already consumed THIS TURN (see
+/// `MAX_STREAM_RETRIES_PER_TURN` for why the budget is per-turn).
+pub fn classify_stream_failure(
+    error: &anyhow::Error,
+    retries_used: u32,
+    max_retries: u32,
+) -> StreamFailureAction {
+    use crate::error_handling::{classify_error, ErrorType};
+
+    if retries_used >= max_retries {
+        return StreamFailureAction::Fail;
+    }
+
+    match classify_error(error) {
+        // Size errors are "recoverable" in name only: they are deterministic in
+        // the request, so re-sending the identical oversized request cannot
+        // succeed. The turn has a compaction path for these; spending the
+        // retry budget here would delay that and change nothing.
+        ErrorType::Recoverable(
+            crate::error_handling::RecoverableError::ContextLengthExceeded
+            | crate::error_handling::RecoverableError::TokenLimit,
+        ) => StreamFailureAction::Fail,
+        ErrorType::Recoverable(_) => StreamFailureAction::RetryIteration,
+        _ => StreamFailureAction::Fail,
+    }
+}
+
 /// State tracked across streaming iterations
 pub struct StreamingState {
     pub full_response: String,
@@ -23,6 +96,15 @@ pub struct StreamingState {
     pub auto_summary_attempts: usize,
     pub assistant_message_added: bool,
     pub turn_accumulated_usage: Option<g3_providers::Usage>,
+    /// Mid-stream retries consumed so far, counted across the WHOLE turn.
+    ///
+    /// Deliberately per-turn, not per-iteration. A turn is an agentic loop that
+    /// routinely runs 60-180 tool calls (measured on real butler sessions), and
+    /// each iteration is a separate provider round trip. A per-iteration budget
+    /// of 3 would therefore authorise 540 retries in one turn — that is not a
+    /// budget, it is an infinite loop with extra steps. One shared pot means a
+    /// persistently failing provider gives up while an isolated blip is absorbed.
+    pub stream_retries_used: u32,
 }
 
 impl StreamingState {
@@ -37,6 +119,7 @@ impl StreamingState {
             auto_summary_attempts: 0,
             assistant_message_added: false,
             turn_accumulated_usage: None,
+            stream_retries_used: 0,
         }
     }
 

@@ -56,6 +56,16 @@ pub struct MockChunk {
     pub tool_calls: Option<Vec<ToolCall>>,
     pub stop_reason: Option<String>,
     pub tool_call_streaming: Option<String>,
+    /// If set, the stream yields `Err(this)` INSTEAD of this chunk and stops.
+    ///
+    /// Distinct from `MockProvider::with_error`, which fails when the stream is
+    /// OPENED. That is a different code path in the agent: `stream_with_retry`
+    /// guards establishment, but a failure after bytes have flowed lands in the
+    /// chunk-processing match, which had no retry at all. A mock that can only
+    /// fail at establishment can therefore only exercise the path that was
+    /// already protected — it would test the easy case while appearing to cover
+    /// the hard one.
+    pub stream_error: Option<String>,
 }
 
 impl MockChunk {
@@ -67,6 +77,7 @@ impl MockChunk {
             tool_calls: None,
             stop_reason: None,
             tool_call_streaming: None,
+            stream_error: None,
         }
     }
 
@@ -78,6 +89,7 @@ impl MockChunk {
             tool_calls: None,
             stop_reason: Some(stop_reason.to_string()),
             tool_call_streaming: None,
+            stream_error: None,
         }
     }
 
@@ -93,6 +105,7 @@ impl MockChunk {
             }]),
             stop_reason: None,
             tool_call_streaming: None,
+            stream_error: None,
         }
     }
 
@@ -104,6 +117,24 @@ impl MockChunk {
             tool_calls: None,
             stop_reason: None,
             tool_call_streaming: Some(tool_name.to_string()),
+            stream_error: None,
+        }
+    }
+
+    /// A mid-stream failure: the stream yields `Err(message)` at this position
+    /// and terminates. The message is classified by
+    /// `g3_core::error_handling::classify_error` exactly as a real provider
+    /// error would be, so "503 server error" produces
+    /// `RecoverableError::ServerError` while "invalid request" is
+    /// non-recoverable.
+    pub fn stream_error(message: &str) -> Self {
+        Self {
+            content: String::new(),
+            finished: false,
+            tool_calls: None,
+            stop_reason: None,
+            tool_call_streaming: None,
+            stream_error: Some(message.to_string()),
         }
     }
 }
@@ -316,6 +347,12 @@ impl MockResponse {
 ///
 /// The provider maintains a queue of responses that are returned in order.
 /// It also tracks all requests made for verification in tests.
+///
+/// `Clone` SHARES all mutable state (every field that can change is behind an
+/// `Arc<Mutex<_>>`). That is deliberate: a test hands the provider to the
+/// registry, which takes ownership, and still needs to interrogate
+/// `call_count()` afterwards. A deep copy would silently report zero.
+#[derive(Clone)]
 pub struct MockProvider {
     name: String,
     model: String,
@@ -526,6 +563,14 @@ impl LLMProvider for MockProvider {
         // Spawn a task to send chunks
         tokio::spawn(async move {
             for (i, chunk) in response.chunks.into_iter().enumerate() {
+                // A mid-stream failure: emit the error in place of this chunk and
+                // stop. Anything already sent stays sent, which is the whole point
+                // — the agent has partial state to reconcile, exactly as it would
+                // after a real connection reset.
+                if let Some(message) = chunk.stream_error {
+                    let _ = tx.send(Err(anyhow::anyhow!(message))).await;
+                    break;
+                }
                 let is_last = chunk.finished;
                 let completion_chunk = CompletionChunk {
                     content: chunk.content,

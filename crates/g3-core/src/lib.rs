@@ -2492,7 +2492,9 @@ Skip if nothing new. Be brief."#;
         self.ensure_context_capacity(&mut request).await?;
 
         // --- Phase 2: Main Streaming Loop ---
-        loop {
+        // Labelled so a mid-stream retry deep inside the chunk-processing match
+        // can re-enter the ITERATION rather than the chunk loop.
+        'stream_iteration: loop {
             state.iteration_count += 1;
             debug!("Starting iteration {}", state.iteration_count);
             if state.iteration_count > streaming::MAX_ITERATIONS {
@@ -3126,11 +3128,51 @@ Skip if nothing new. Be brief."#;
                                         &iter.raw_chunks,
                                     );
 
-                                    // No response received - this is an error condition
+                                    // The stream ended cleanly having produced NOTHING:
+                                    // no text, no tool call. This is a provider-side
+                                    // anomaly, and the most transient condition in the
+                                    // whole loop — yet it used to return Err on first
+                                    // sight. Every one of the 28 recorded butler
+                                    // stream_completion errors has raw_response: null,
+                                    // i.e. arrived through exactly here.
+                                    //
+                                    // Note this check sits BEFORE the any_tool_executed
+                                    // branch below, so it also killed turns that had
+                                    // already done real work — which is why dead butler
+                                    // transcripts characteristically end on a tool
+                                    // result with the model never speaking again.
+                                    //
+                                    // Retrying is safe: an empty stream added no
+                                    // message, so the context window is byte-identical
+                                    // to the top of this iteration.
                                     warn!("Stream finished without any content or tool calls");
                                     warn!("Chunks received: {}", iter.chunks_received);
+                                    if state.stream_retries_used
+                                        < streaming::MAX_STREAM_RETRIES_PER_TURN
+                                    {
+                                        state.stream_retries_used += 1;
+                                        let delay = error_handling::calculate_retry_delay(
+                                            state.stream_retries_used,
+                                            self.is_autonomous,
+                                        );
+                                        warn!(
+                                            "Empty stream on iteration {}. Retrying in {:.1}s ({}/{})",
+                                            state.iteration_count,
+                                            delay.as_secs_f64(),
+                                            state.stream_retries_used,
+                                            streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                        );
+                                        self.ui_writer.print_context_status(&format!(
+                                            "⚠️ Empty response — retrying ({}/{})",
+                                            state.stream_retries_used,
+                                            streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                        ));
+                                        tokio::time::sleep(delay).await;
+                                        continue 'stream_iteration;
+                                    }
                                     return Err(anyhow::anyhow!(
-                                        "No response received from the model. The model may be experiencing issues or the request may have been malformed."
+                                        "No response received from the model after {} attempts. The model may be experiencing issues or the request may have been malformed.",
+                                        streaming::MAX_STREAM_RETRIES_PER_TURN + 1
                                     ));
                                 }
 
@@ -3219,12 +3261,59 @@ Skip if nothing new. Be brief."#;
                             warn!("Stream error after tool execution, attempting to continue");
                             break; // Break to outer loop to start new stream
                         } else {
-                            // Log raw chunks before failing
-                            error!("Fatal streaming error. Raw chunks received before error:");
-                            for chunk_str in iter.raw_chunks.iter().take(10) {
-                                error!("  {}", chunk_str);
+                            // The model was mid-sentence when the stream broke and
+                            // no tool ran, so there is nothing partial to salvage:
+                            // this iteration produced nothing. Historically this
+                            // returned Err unconditionally — fatal even for a 529
+                            // — which is what killed long turns, because the window
+                            // is re-entered once per tool-loop iteration. See
+                            // MAX_STREAM_RETRIES_PER_TURN for the measured shape.
+                            //
+                            // Retrying HERE is safe, and is the only safe place:
+                            // `continue` re-enters the outer loop, which re-reads
+                            // the context window as it stands. No user message is
+                            // re-added (that happens once, in execute_single_task)
+                            // and every tool_use from earlier iterations already
+                            // has its tool_result, so the request stays valid.
+                            match streaming::classify_stream_failure(
+                                &e,
+                                state.stream_retries_used,
+                                streaming::MAX_STREAM_RETRIES_PER_TURN,
+                            ) {
+                                streaming::StreamFailureAction::RetryIteration => {
+                                    state.stream_retries_used += 1;
+                                    let delay = error_handling::calculate_retry_delay(
+                                        state.stream_retries_used,
+                                        self.is_autonomous,
+                                    );
+                                    warn!(
+                                        "Mid-stream failure on iteration {} ({}). Retrying in {:.1}s ({}/{})",
+                                        state.iteration_count,
+                                        error_msg,
+                                        delay.as_secs_f64(),
+                                        state.stream_retries_used,
+                                        streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                    );
+                                    self.ui_writer.print_context_status(&format!(
+                                        "⚠️ Stream dropped — retrying ({}/{})",
+                                        state.stream_retries_used,
+                                        streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                    ));
+                                    tokio::time::sleep(delay).await;
+                                    // Re-run this iteration. iteration_count is NOT
+                                    // rolled back: it guards MAX_ITERATIONS, and a
+                                    // retry really is another provider round trip.
+                                    continue 'stream_iteration;
+                                }
+                                streaming::StreamFailureAction::Fail => {
+                                    // Log raw chunks before failing
+                                    error!("Fatal streaming error. Raw chunks received before error:");
+                                    for chunk_str in iter.raw_chunks.iter().take(10) {
+                                        error!("  {}", chunk_str);
+                                    }
+                                    return Err(e);
+                                }
                             }
-                            return Err(e);
                         }
                     }
                 }
