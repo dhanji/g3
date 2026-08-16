@@ -307,3 +307,45 @@ fn the_per_turn_budget_is_small_enough_to_bound_a_long_turn() {
     // Pinning the constant makes that change visible in review.
     assert_eq!(MAX_STREAM_RETRIES_PER_TURN, 3);
 }
+
+// ── Why the retry is NOT at turn level ──────────────────────────────────────
+
+/// CHARACTERIZATION — this test documents a hazard, not a desired behaviour.
+///
+/// The obvious fix for dying turns was to wrap `agent.execute_task(...)` in
+/// `g3_cli::task_execution::execute_task_with_retry`, which already exists and
+/// is already wired into the terminal REPL. `agent_mode.rs` (the path
+/// butler.app spawns) instead does a bare `?`, so it looked like a one-line
+/// omission.
+///
+/// It is not. `execute_single_task` adds the user message to the context window
+/// unconditionally, at the top of every call. So re-invoking it for the same
+/// user input appends that input a SECOND time — and on a turn that had already
+/// run tool calls, it would also re-run them against the accumulated history.
+/// That converts a lost turn into a corrupted transcript, which is strictly
+/// worse than the problem being solved.
+///
+/// Note the duplication does NOT depend on tool count: it happens even when
+/// zero tools ran, because the failed attempt's user message is still in
+/// history when the retry adds its own. An earlier draft of this fix proposed
+/// gating turn-level retry on "no tools executed yet"; this test is what
+/// disproved that.
+///
+/// If someone later wires turn-level retry in anyway, this test fails and
+/// points at the reason.
+#[tokio::test]
+async fn calling_execute_task_twice_duplicates_the_user_message() {
+    let provider = base_provider().with_default_response(MockResponse::text("ok"));
+    let mut agent = agent_with(provider).await;
+
+    // Exactly what a turn-level retry loop does: same input, second call.
+    agent.execute_task("the one user message", None, false).await.unwrap();
+    agent.execute_task("the one user message", None, false).await.unwrap();
+
+    assert_eq!(
+        user_message_count(&agent),
+        2,
+        "documents the hazard: re-invoking a turn re-adds the user message, \
+         which is why the retry lives inside the streaming loop instead",
+    );
+}
