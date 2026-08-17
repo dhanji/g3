@@ -114,6 +114,7 @@ use crate::{
     streaming::{
         decode_utf8_streaming, make_final_chunk, make_final_chunk_with_reason, make_text_chunk,
         make_tool_chunk, make_tool_streaming_active, make_tool_streaming_hint,
+        make_upstream_ping_chunk,
     },
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
     MessageRole, Tool, ToolCall, Usage,
@@ -694,6 +695,19 @@ impl AnthropicProvider {
                             "content_block_stop" => state.handle_block_stop(),
                             "message_delta" => { state.handle_message_delta(&event); vec![] }
                             "message_stop" => state.handle_message_stop(),
+                            // The upstream's own keep-alive. Anthropic sends this
+                            // every 30.0s while the model is thinking (measured
+                            // 2026-08-17: 3 consecutive intervals of exactly
+                            // 30.00s across a 129.5s opus-5 request whose first
+                            // text_delta landed at 85.4s).
+                            //
+                            // It used to fall into the `_ =>` catch-all below and
+                            // vanish, which made the "including pings" comment on
+                            // notify_sse_received() false: no chunk was produced,
+                            // so nothing downstream ever learned the upstream was
+                            // alive. That silence is what let a healthy 141.3s
+                            // post-tool gap look identical to a wedged process.
+                            "ping" => vec![Ok(make_upstream_ping_chunk())],
                             "error" => {
                                 if let Some(error) = event.error {
                                     error!("Anthropic API error: {:?}", error);

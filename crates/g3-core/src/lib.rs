@@ -2648,6 +2648,24 @@ Skip if nothing new. Be brief."#;
                         // Notify UI about SSE received (including pings)
                         self.ui_writer.notify_sse_received();
 
+                        // An upstream keep-alive. Surfaced as its own signal
+                        // because it is the ONLY evidence of liveness that does
+                        // not originate inside this process: butler.app can
+                        // otherwise only observe our pid (true even under
+                        // SIGSTOP) and our events-file size (flat during a long
+                        // think). See UiWriter::notify_upstream_ping.
+                        //
+                        // `continue` rather than falling through: a ping chunk is
+                        // empty by construction, so every stage below is a no-op
+                        // on it, but skipping them keeps it out of
+                        // `chunks_received`, out of `raw_chunks`, and away from
+                        // first_token_time — i.e. a keep-alive can never be
+                        // mistaken for the model producing output.
+                        if chunk.upstream_ping {
+                            self.ui_writer.notify_upstream_ping();
+                            continue;
+                        }
+
                         // Capture usage data if available
                         if let Some(ref usage) = chunk.usage {
                             iter.accumulated_usage = Some(usage.clone());

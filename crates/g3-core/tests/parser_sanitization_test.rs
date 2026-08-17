@@ -355,6 +355,7 @@ mod streaming_repro {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         }
     }
 
@@ -448,6 +449,7 @@ fn test_inline_json_not_detected_at_stream_end() {
             usage: None,
             stop_reason: if finished { Some("end_turn".to_string()) } else { None },
             tool_call_streaming: None,
+            upstream_ping: false,
         }
     }
     

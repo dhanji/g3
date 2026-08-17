@@ -329,6 +329,19 @@ impl<W: UiWriter> UiWriter for EventStreamWriter<W> {
     fn notify_sse_received(&self) {
         self.inner.notify_sse_received();
     }
+    fn notify_upstream_ping(&self) {
+        // Emitted, unlike print_tool_streaming_active's blink ticks, because this
+        // one carries information nothing else can supply: the upstream is still
+        // working. butler.app uses it to RE-ARM its post-tool stall clock, so a
+        // long think survives while a genuine wedge (which produces no pings)
+        // still dies on the same 90s fuse.
+        //
+        // Cheap by nature: Anthropic's cadence is 30s, so this is <=2 records per
+        // minute of thinking — against 12,664 tool_output_line records in the
+        // local corpus, it is noise-free.
+        self.emit("upstream_ping", json!({}));
+        self.inner.notify_upstream_ping();
+    }
     fn print_tool_streaming_hint(&self, tool_name: &str) {
         self.emit("tool_streaming_hint", json!({ "name": tool_name }));
         self.inner.print_tool_streaming_hint(tool_name);

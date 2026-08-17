@@ -246,6 +246,7 @@ async fn test_parser_directly_with_inline_json_chunks() {
         finished: false,
         stop_reason: None,
         tool_call_streaming: None,
+        upstream_ping: false,
         usage: None,
     };
     
@@ -255,6 +256,7 @@ async fn test_parser_directly_with_inline_json_chunks() {
         finished: false,
         stop_reason: None,
         tool_call_streaming: None,
+        upstream_ping: false,
         usage: None,
     };
     

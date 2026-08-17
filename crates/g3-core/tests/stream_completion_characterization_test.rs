@@ -47,6 +47,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
 
         let tools = parser.process_chunk(&chunk);
@@ -69,6 +70,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
         let tools1 = parser.process_chunk(&chunk1);
         assert!(tools1.is_empty(), "No tool call yet");
@@ -81,6 +83,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
         let tools2 = parser.process_chunk(&chunk2);
         assert_eq!(tools2.len(), 1, "Should detect tool call");
@@ -105,6 +108,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
 
         parser.process_chunk(&chunk);
@@ -127,6 +131,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
 
         // Process but don't execute
@@ -150,6 +155,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
 
         let _tools = parser.process_chunk(&chunk);
@@ -175,6 +181,7 @@ mod streaming_parser_characterization {
             usage: None,
             stop_reason: None,
             tool_call_streaming: None,
+            upstream_ping: false,
         };
 
         parser.process_chunk(&chunk);

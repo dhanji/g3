@@ -114,6 +114,23 @@ pub trait UiWriter: Send + Sync {
     /// Notify that an SSE event was received (including pings)
     fn notify_sse_received(&self);
 
+    /// An upstream keep-alive frame arrived (Anthropic's SSE `ping`).
+    ///
+    /// This is the ONLY liveness signal in the system that originates OUTSIDE
+    /// this process, which is precisely what makes it worth surfacing. Every
+    /// other signal butler.app has is something it can observe about itself:
+    /// `pid_alive()` reports true for a SIGSTOPed process forever, and events-
+    /// file byte growth is zero during a long think (measured: zero records
+    /// written inside all 11 real post-tool gaps over 60s). A ping proves the
+    /// HTTP stream is open and the inference is still in flight — a wedged or
+    /// disconnected g3 cannot manufacture one.
+    ///
+    /// Defaulted to a no-op deliberately: the console and planner writers must
+    /// stay silent (one line every 30s of a long think is noise), and only the
+    /// NDJSON event stream overrides it. Defaulting also means adding this did
+    /// not touch the other UiWriter impls at all.
+    fn notify_upstream_ping(&self) {}
+
     /// Print a hint that a tool call is being streamed (show indicator immediately)
     /// This is called when the provider starts receiving a tool call but args are still streaming
     fn print_tool_streaming_hint(&self, tool_name: &str);

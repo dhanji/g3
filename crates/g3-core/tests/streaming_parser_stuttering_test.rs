@@ -27,6 +27,7 @@ fn chunk(content: &str, finished: bool) -> CompletionChunk {
         usage: None,
         stop_reason: None,
         tool_call_streaming: None,
+        upstream_ping: false,
     }
 }
 

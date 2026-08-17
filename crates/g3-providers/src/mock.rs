@@ -56,6 +56,12 @@ pub struct MockChunk {
     pub tool_calls: Option<Vec<ToolCall>>,
     pub stop_reason: Option<String>,
     pub tool_call_streaming: Option<String>,
+    /// An upstream keep-alive (Anthropic's SSE `ping`) rather than output.
+    ///
+    /// Present so a test can exercise the ping path at all. Same reasoning as
+    /// `stream_error` below: a fake that cannot PRODUCE the signal under test
+    /// silently tests nothing while looking green.
+    pub upstream_ping: bool,
     /// If set, the stream yields `Err(this)` INSTEAD of this chunk and stops.
     ///
     /// Distinct from `MockProvider::with_error`, which fails when the stream is
@@ -78,6 +84,7 @@ impl MockChunk {
             stop_reason: None,
             tool_call_streaming: None,
             stream_error: None,
+            upstream_ping: false,
         }
     }
 
@@ -90,6 +97,7 @@ impl MockChunk {
             stop_reason: Some(stop_reason.to_string()),
             tool_call_streaming: None,
             stream_error: None,
+            upstream_ping: false,
         }
     }
 
@@ -106,6 +114,7 @@ impl MockChunk {
             stop_reason: None,
             tool_call_streaming: None,
             stream_error: None,
+            upstream_ping: false,
         }
     }
 
@@ -118,6 +127,22 @@ impl MockChunk {
             stop_reason: None,
             tool_call_streaming: Some(tool_name.to_string()),
             stream_error: None,
+            upstream_ping: false,
+        }
+    }
+
+    /// An upstream keep-alive frame. Carries no content and must never be
+    /// mistaken for output — it exists purely so that "the upstream is still
+    /// working" is observable during a long think.
+    pub fn upstream_ping() -> Self {
+        Self {
+            content: String::new(),
+            finished: false,
+            tool_calls: None,
+            stop_reason: None,
+            tool_call_streaming: None,
+            stream_error: None,
+            upstream_ping: true,
         }
     }
 
@@ -135,6 +160,7 @@ impl MockChunk {
             stop_reason: None,
             tool_call_streaming: None,
             stream_error: Some(message.to_string()),
+            upstream_ping: false,
         }
     }
 }
@@ -579,6 +605,7 @@ impl LLMProvider for MockProvider {
                     usage: if is_last { Some(usage.clone()) } else { None },
                     stop_reason: chunk.stop_reason,
                     tool_call_streaming: chunk.tool_call_streaming,
+                    upstream_ping: chunk.upstream_ping,
                 };
 
                 if tx.send(Ok(completion_chunk)).await.is_err() {

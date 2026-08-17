@@ -267,6 +267,21 @@ pub struct CompletionChunk {
     pub stop_reason: Option<String>,
     /// Tool call currently being streamed (name only, for UI hint)
     pub tool_call_streaming: Option<String>,
+    /// An upstream keep-alive frame (Anthropic's SSE `ping`) — carries no
+    /// content, and exists ONLY to prove the connection is still live.
+    ///
+    /// Measured 2026-08-17: Anthropic sends `ping` every 30.0s during a long
+    /// think. A 129.5s request emitted its first text at 85.4s, so the wire was
+    /// demonstrably active across a silence that looked, to anything downstream,
+    /// identical to a wedge.
+    ///
+    /// A ping chunk is otherwise EMPTY by construction (`content: ""`,
+    /// `tool_calls: None`, `finished: false`, `usage: None`) so it cannot be
+    /// mistaken for output: it does not set `first_token_time`, does not satisfy
+    /// the `has_text_response` check that governs the empty-stream retry, and is
+    /// a no-op through `StreamingParser::process_chunk`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upstream_ping: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

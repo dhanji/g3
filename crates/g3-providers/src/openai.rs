@@ -159,6 +159,7 @@ impl OpenAIProvider {
                                         usage: accumulated_usage.clone(),
                                         stop_reason: None, // TODO: Extract from OpenAI response
                                         tool_call_streaming: None,
+                                        upstream_ping: false,
                                     };
                                     let _ = tx.send(Ok(final_chunk)).await;
                                 }
