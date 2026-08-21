@@ -342,6 +342,18 @@ impl<W: UiWriter> UiWriter for EventStreamWriter<W> {
         self.emit("upstream_ping", json!({}));
         self.inner.notify_upstream_ping();
     }
+    fn notify_tool_heartbeat(&self, elapsed_secs: u64) {
+        // The companion to the ping above, covering the window it leaves dark:
+        // a ping needs a request in flight, and during tool execution there is
+        // none. Same economics — one record per 30s, so even the 20-minute
+        // `research` cap yields 40 records.
+        //
+        // butler.app consumes this as file GROWTH rather than by type, which is
+        // why the payload can stay this small: the record existing IS the
+        // signal. elapsed_secs is for humans reading the file.
+        self.emit("tool_heartbeat", json!({ "elapsed_secs": elapsed_secs }));
+        self.inner.notify_tool_heartbeat(elapsed_secs);
+    }
     fn print_tool_streaming_hint(&self, tool_name: &str) {
         self.emit("tool_streaming_hint", json!({ "name": tool_name }));
         self.inner.print_tool_streaming_hint(tool_name);

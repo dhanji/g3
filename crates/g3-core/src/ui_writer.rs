@@ -131,6 +131,25 @@ pub trait UiWriter: Send + Sync {
     /// not touch the other UiWriter impls at all.
     fn notify_upstream_ping(&self) {}
 
+    /// A running TOOL reported that it is still executing.
+    ///
+    /// The companion to `notify_upstream_ping`, covering the window that one
+    /// leaves dark. A ping only exists while a request to Anthropic is in
+    /// flight; during tool execution there is no request, so the keep-alive
+    /// stops entirely (measured: 434 pings between tool calls, 50 during one,
+    /// with 43% of all wall time inside tools). A silent `cargo test` was
+    /// therefore byte-identical to a wedged process.
+    ///
+    /// Emitted from the same `select!` loop that reads the child's stdout
+    /// (`g3_execution::OutputReceiver::on_heartbeat`), so it cannot fire unless
+    /// that task is being polled — a wedged runtime or a SIGSTOPed process
+    /// correctly produces silence.
+    ///
+    /// Defaulted to a no-op for the same reason as the ping above: only the
+    /// NDJSON event stream wants it, and defaulting means the console, planner
+    /// and Null writers needed no changes.
+    fn notify_tool_heartbeat(&self, _elapsed_secs: u64) {}
+
     /// Print a hint that a tool call is being streamed (show indicator immediately)
     /// This is called when the provider starts receiving a tool call but args are still streaming
     fn print_tool_streaming_hint(&self, tool_name: &str);

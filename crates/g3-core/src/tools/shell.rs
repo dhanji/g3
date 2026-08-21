@@ -96,6 +96,9 @@ pub async fn execute_shell<W: UiWriter>(tool_call: &ToolCall, ctx: &ToolContext<
         fn on_output_line(&self, line: &str) {
             self.ui_writer.update_tool_output_line(line);
         }
+        fn on_heartbeat(&self, elapsed_secs: u64) {
+            self.ui_writer.notify_tool_heartbeat(elapsed_secs);
+        }
     }
 
     let receiver = ToolOutputReceiver {

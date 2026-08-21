@@ -17,8 +17,24 @@ fn expand_tilde(path: &str) -> String {
 }
 
 pub struct CodeExecutor {
-    // Future: add configuration for execution limits, sandboxing, etc.
+    /// How often `on_heartbeat` fires during a silent command.
+    ///
+    /// A field rather than a bare constant purely so tests can drive it at
+    /// millisecond speed. Nothing in production sets it — `new()` uses
+    /// HEARTBEAT_INTERVAL, and a test asserting the real 30s cadence would
+    /// take a minute to prove one beat.
+    heartbeat_interval: std::time::Duration,
 }
+
+/// How often a running command reports that it is still running.
+///
+/// Matches Anthropic's SSE keep-alive cadence (measured 30.0s) on purpose: a
+/// consumer watching the events file for liveness then sees the SAME rhythm
+/// whether g3 is thinking or running a tool, and needs one threshold rather
+/// than two. butler.app's `G3_MAX_IDLE_SEC` is sized against this and nothing
+/// else — notably NOT against how long a tool may run, which is what coupled
+/// it to the per-tool timeout before this existed.
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
@@ -30,7 +46,17 @@ pub struct ExecutionResult {
 
 impl CodeExecutor {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            heartbeat_interval: HEARTBEAT_INTERVAL,
+        }
+    }
+
+    /// A executor whose heartbeat fires at `interval`. Tests only — see the
+    /// field's comment for why this exists rather than a global.
+    pub fn with_heartbeat_interval(interval: std::time::Duration) -> Self {
+        Self {
+            heartbeat_interval: interval,
+        }
     }
 
     /// Extract code blocks from LLM response and execute them
@@ -256,6 +282,37 @@ impl Default for CodeExecutor {
 pub trait OutputReceiver: Send + Sync {
     /// Called when a new line of output is available
     fn on_output_line(&self, line: &str);
+
+    /// Called periodically while a command runs but produces NO output.
+    ///
+    /// # Why this exists
+    ///
+    /// butler.app decides whether to kill a wedged g3 by watching its NDJSON
+    /// events file grow. Anthropic's SSE keep-alive (`upstream_ping`) covers a
+    /// long THINK, but it stops dead during tool execution — there is no
+    /// request in flight while a subprocess runs. Measured: 434 pings between
+    /// tool calls vs 50 during one, with 43% of wall time inside tools.
+    ///
+    /// So a silent `cargo test` looked byte-identical to a hung process, and
+    /// the only way to avoid killing it was to set the idle budget above the
+    /// longest tool that could ever run — coupling an unrelated constant to
+    /// g3's 8-minute (20 for `research`) tool cap.
+    ///
+    /// ⚠️ THE BEAT IS ONLY HONEST BECAUSE OF WHERE IT IS CALLED FROM: the same
+    /// `select!` loop that reads the child's stdout. It therefore cannot fire
+    /// unless that task is being polled, which means a wedged runtime, a
+    /// SIGSTOPed process or a starved future all correctly produce silence. A
+    /// detached timer task would beat happily through all three and would be
+    /// worse than nothing — evidence the server manufactures about itself.
+    ///
+    /// It DOES keep beating while the child subprocess itself hangs, and that
+    /// is correct rather than a gap: `sleep 600` is indistinguishable from a
+    /// slow build from the outside, and g3's own per-tool timeout owns that
+    /// case. This answers exactly one question — "is g3 still a live,
+    /// scheduling process?" — which is what `pid_alive()` cannot answer.
+    ///
+    /// Default is a no-op so non-streaming receivers need no changes.
+    fn on_heartbeat(&self, _elapsed_secs: u64) {}
 }
 
 impl CodeExecutor {
@@ -379,9 +436,25 @@ impl CodeExecutor {
         let mut stdout_output = Vec::new();
         let mut stderr_output = Vec::new();
 
+        // Heartbeat while the command runs. See OutputReceiver::on_heartbeat for
+        // why this lives INSIDE the same select! that reads stdout, and why a
+        // detached timer task would be actively harmful.
+        //
+        // `interval` fires immediately on first tick, so that one is consumed up
+        // front: a beat at t=0 says nothing (we already know the tool started)
+        // and would put a record in the events file for every trivial command.
+        let exec_start = std::time::Instant::now();
+        let mut beat = tokio::time::interval(self.heartbeat_interval);
+        beat.tick().await; // discard the immediate first tick
+
         // Read output lines as they come
         loop {
             tokio::select! {
+                _ = beat.tick() => {
+                    // Only reached when neither reader had a line ready, i.e.
+                    // exactly the silent stretch this exists to cover.
+                    receiver.on_heartbeat(exec_start.elapsed().as_secs());
+                }
                 line = stdout_lines.next_line() => {
                     match line {
                         Ok(Some(line)) => {
