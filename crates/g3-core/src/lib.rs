@@ -3275,9 +3275,66 @@ Skip if nothing new. Be brief."#;
                         }
 
                         if iter.tool_executed {
+                            // A mid-stream failure AFTER a tool ran. Breaking
+                            // here re-enters 'stream_iteration, which opens a
+                            // fresh stream over the accumulated context — so
+                            // this is a retry, and recovery is why it exists.
+                            //
+                            // ⚠️ BUT IT USED TO BE FREE AND UNCLASSIFIED, which
+                            // are two different bugs (2026-08-21):
+                            //
+                            //   1. It never consulted classify_stream_failure,
+                            //      so a DETERMINISTIC failure — a malformed
+                            //      request, an unsupported parameter — retried
+                            //      on every iteration. Re-sending an identical
+                            //      bad request cannot succeed; it just fails
+                            //      again, forever.
+                            //   2. It never touched stream_retries_used, so the
+                            //      only bound was MAX_ITERATIONS: up to 400
+                            //      provider round trips, holding the chat lock,
+                            //      with no error surfaced to anyone. An
+                            //      unbounded spin is a WORSE failure than a dead
+                            //      turn, because nothing ever times out.
+                            //
+                            // Sharing the per-turn budget with the sibling arm
+                            // below is deliberate: they are the same failure
+                            // (a dropped stream) differing only in whether a
+                            // tool happened to run first, so they must not have
+                            // independent allowances.
                             error!("{}", error_details);
-                            warn!("Stream error after tool execution, attempting to continue");
-                            break; // Break to outer loop to start new stream
+                            match streaming::classify_stream_failure(
+                                &e,
+                                state.stream_retries_used,
+                                streaming::MAX_STREAM_RETRIES_PER_TURN,
+                            ) {
+                                streaming::StreamFailureAction::RetryIteration => {
+                                    state.stream_retries_used += 1;
+                                    warn!(
+                                        "Stream error after tool execution on iteration {} ({}). \
+                                         Continuing ({}/{})",
+                                        state.iteration_count,
+                                        error_msg,
+                                        state.stream_retries_used,
+                                        streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                    );
+                                    self.ui_writer.print_context_status(&format!(
+                                        "⚠️ Stream dropped after a tool — retrying ({}/{})",
+                                        state.stream_retries_used,
+                                        streaming::MAX_STREAM_RETRIES_PER_TURN,
+                                    ));
+                                    break; // Break to outer loop to start new stream
+                                }
+                                streaming::StreamFailureAction::Fail => {
+                                    error!(
+                                        "Unrecoverable stream error after tool execution \
+                                         on iteration {} ({}); {} retries used",
+                                        state.iteration_count,
+                                        error_msg,
+                                        state.stream_retries_used,
+                                    );
+                                    return Err(e);
+                                }
+                            }
                         } else {
                             // The model was mid-sentence when the stream broke and
                             // no tool ran, so there is nothing partial to salvage:

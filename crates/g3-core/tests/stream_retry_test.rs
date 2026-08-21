@@ -349,3 +349,150 @@ async fn calling_execute_task_twice_duplicates_the_user_message() {
          which is why the retry lives inside the streaming loop instead",
     );
 }
+
+// ── The silent break after a tool ran (2026-08-21) ──────────────────────────
+//
+// THE DEFECT. The retry added above lives in the `else` arm of a branch that
+// asks "did a tool execute in THIS iteration?":
+//
+//     if iter.tool_executed {
+//         warn!("Stream error after tool execution, attempting to continue");
+//         break;                        // <-- no retry, no error, no signal
+//     } else {
+//         match classify_stream_failure(...) { ... }
+//     }
+//
+// So the protection covers a mid-stream failure only when NO tool ran. When a
+// tool HAS run — i.e. every iteration of a working agentic turn — the same
+// transient 503 instead breaks out of the stream loop, falls through to
+// finalization, and the turn ends. Exit code 0, session stamped "completed",
+// nothing in the transcript to say anything went wrong.
+//
+// That is precisely the corpse signature Dhanji reports as "butler froze":
+// the transcript ends on a tool result, the model never speaks again, and
+// there is no error anywhere to explain it.
+//
+// Measured in the local corpus: 0 `context_status` retry markers across 14
+// event streams that contained 3 dead turns. The retry was never firing,
+// because the deaths were all taking this door.
+
+/// A response that runs a tool, then dies mid-stream on the NEXT chunk.
+///
+/// The tool call is what routes the failure into the `tool_executed` branch —
+/// the whole point. A `dies_midway()` response cannot reach it, which is why
+/// the existing tests all passed while this path stayed broken.
+fn tool_then_dies(error: &str) -> MockResponse {
+    MockResponse {
+        chunks: vec![
+            MockChunk::tool_streaming("shell"),
+            MockChunk::tool_call("shell", serde_json::json!({"command": "echo hi"})),
+            MockChunk::stream_error(error),
+        ],
+        usage: zero_usage(),
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_after_a_tool_ran_is_retried_not_silently_dropped() {
+    // THE REGRESSION TEST for the silent break.
+    //
+    // Before the fix the first response's 503 broke out of the loop and the
+    // turn finalized as a success with no answer — so `result.is_ok()` was
+    // TRUE and only the missing text revealed the loss. Assert on the TEXT,
+    // not on ok-ness: a test keying on is_ok() passes against the bug.
+    let provider = base_provider()
+        .with_response(tool_then_dies("503 server error"))
+        .with_response(MockResponse::text("here is the answer after the tool"));
+    let mut agent = agent_with(provider).await;
+
+    let result = agent.execute_task("run a tool then answer", None, false).await;
+
+    assert!(
+        result.is_ok(),
+        "a transient drop after a tool call must not fail the turn: {:?}",
+        result.err(),
+    );
+    let text = assistant_text(&agent);
+    assert!(
+        text.contains("here is the answer after the tool"),
+        "the turn ended without the model's answer — the mid-stream failure \
+         after a tool call was swallowed by the silent break. history: {text:?}",
+    );
+}
+
+#[tokio::test]
+async fn a_non_recoverable_failure_after_a_tool_ran_still_fails() {
+    // Negative: the fix must not become "retry everything, forever". A
+    // malformed-request error after a tool call has to surface, not spin.
+    let provider = base_provider()
+        .with_response(tool_then_dies("invalid request: unsupported parameter"))
+        .with_response(MockResponse::text("should never be reached"));
+    let mut agent = agent_with(provider).await;
+
+    let result = agent.execute_task("run a tool then answer", None, false).await;
+
+    assert!(
+        result.is_err(),
+        "a non-recoverable error after a tool call must still fail the turn",
+    );
+}
+
+#[tokio::test]
+async fn repeated_failures_after_tool_calls_give_up_rather_than_looping() {
+    // Boundary: the per-turn budget still bounds this path. Without a shared
+    // budget, a provider failing after every tool call would retry forever —
+    // an infinite loop is a worse failure than a dead turn, because nothing
+    // times out and the chat lock is held the whole time.
+    let mut provider = base_provider();
+    for _ in 0..(MAX_STREAM_RETRIES_PER_TURN + 3) {
+        provider = provider.with_response(tool_then_dies("503 server error"));
+    }
+    let mut agent = agent_with(provider).await;
+
+    let result = agent.execute_task("run a tool then answer", None, false).await;
+
+    assert!(
+        result.is_err(),
+        "a persistently failing provider must exhaust the budget and stop",
+    );
+    assert_eq!(
+        user_message_count(&agent),
+        1,
+        "retries must never duplicate the user message, even on this path",
+    );
+}
+
+/// BOUNDARY — the cost of bounding the after-a-tool path.
+///
+/// Before 2026-08-21 that path retried without touching the budget, so it could
+/// not exhaust one. Giving it the SHARED per-turn pot bounds an infinite spin,
+/// but it also means a long turn with a flaky provider can now die where it
+/// previously ground on. That tradeoff was accepted on measurement, and this
+/// test pins the measurement so it cannot rot silently.
+///
+/// Corpus (.g3/butler.app/events, 2026-08-21): 748 tool-call iterations, ZERO
+/// mid-stream drops — so the per-iteration drop rate is below 1/748 ≈ 0.0013.
+/// With a shared pot of 3, a turn dies only on the 4th drop; at p = 0.0013 even
+/// a 233-iteration turn (the longest observed) exhausts it with probability
+/// well under 1%.
+///
+/// If MAX_STREAM_RETRIES_PER_TURN is ever LOWERED, that arithmetic changes and
+/// this is the test that should make someone redo it.
+#[test]
+fn the_shared_budget_still_clears_the_longest_observed_turn() {
+    let longest_observed_turn_iterations = 233u32;
+    let measured_drop_rate = 1.0 / 748.0;
+
+    // Expected drops across the longest turn we have ever seen.
+    let expected_drops = longest_observed_turn_iterations as f64 * measured_drop_rate;
+
+    assert!(
+        (MAX_STREAM_RETRIES_PER_TURN as f64) > expected_drops * 3.0,
+        "budget of {} leaves too little headroom over the {:.2} drops expected \
+         in a {}-iteration turn at the measured rate of {:.4}/iteration",
+        MAX_STREAM_RETRIES_PER_TURN,
+        expected_drops,
+        longest_observed_turn_iterations,
+        measured_drop_rate,
+    );
+}
