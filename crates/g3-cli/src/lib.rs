@@ -191,8 +191,15 @@ async fn run_console_mode(
         .await?
     };
 
+    // `--auto-memory` opts IN to the reminder turn (console mode default is off);
+    // `--no-auto-memory` additionally strips the standing "call `remember`"
+    // directive from the system prompt. Console mode never sent the reminder, but
+    // it DID carry the directive — which is how butler's duties kept appending to
+    // tier-1 memory while nothing appeared to have enabled auto-memory.
     if cli.auto_memory {
         agent.set_auto_memory(true);
+    } else if cli.no_auto_memory {
+        agent.set_auto_memory(false);
     }
     // Keep the write path (remember) pointed at the same file the read path
     // loaded from above. If this is ever dropped, memory forks silently.

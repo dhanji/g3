@@ -102,6 +102,8 @@ facts:
 - Use `null` to explicitly assert absence (for `not_exists` predicates)
 - `write_envelope` verifies facts against `analysis/rulespec.yaml` (if present) and `plan_verify()` confirms the envelope was written
 
+<!-- BEGIN AUTO-MEMORY -->
 # Workspace Memory
 
 Memory is auto-loaded at startup. Call `remember` at end of turn when you discover code locations worth noting.
+<!-- END AUTO-MEMORY -->

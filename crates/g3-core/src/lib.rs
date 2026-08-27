@@ -60,7 +60,10 @@ mod tilde_expansion_tests;
 
 #[cfg(test)]
 mod error_handling_test;
-mod prompts;
+// `pub` so integration tests (and the CLI) can assert on prompt assembly —
+// notably crates/g3-core/tests/auto_memory_directive_test.rs, which pins that
+// --no-auto-memory strips the standing "call `remember`" directive.
+pub mod prompts;
 
 use anyhow::Result;
 use g3_config::Config;
@@ -317,6 +320,8 @@ impl<W: UiWriter> Agent<W> {
         );
 
         // Add system prompt
+        // Markers left in place on purpose — see the note in the sibling
+        // constructor; they are resolved once auto-memory is known.
         let system_prompt = get_system_prompt_for_native();
         let system_message = Message::new(MessageRole::System, system_prompt);
         context_window.add_message(system_message);
@@ -396,6 +401,18 @@ impl<W: UiWriter> Agent<W> {
                 get_system_prompt_for_non_native()
             }
         };
+
+        // NOTE: the AUTO-MEMORY markers are deliberately LEFT IN PLACE here.
+        //
+        // Removing them at construction time destroys the very anchors that
+        // `set_auto_memory(false)` needs to find the directive — and it is called
+        // AFTER the Agent is built, from every entry point. Doing it here made
+        // --no-auto-memory a silent no-op: the markers were gone, `find()` returned
+        // None, and the strip quietly did nothing while every unit test still
+        // passed (they call apply_auto_memory directly and never see this order).
+        //
+        // The markers are cleaned up in `finalize_system_prompt()`, which runs once
+        // the auto-memory setting is known — i.e. at first use, not at construction.
 
         let system_message = Message::new(MessageRole::System, system_prompt);
         context_window.add_message(system_message);
@@ -1066,6 +1083,14 @@ impl<W: UiWriter> Agent<W> {
         // idempotent store is preferable to a condition that could be missed on
         // a future code path.
         self.reset_fallback_for_new_turn();
+
+        // Resolve the AUTO-MEMORY markers now that the auto-memory setting is known.
+        // This CANNOT be done in the constructor: set_auto_memory() runs after the
+        // Agent is built, and removing the markers early deletes the anchors the
+        // strip needs — which made --no-auto-memory a silent no-op (the flag was
+        // honoured for the reminder turn but not the prompt). Idempotent, so running
+        // it on every turn is free.
+        self.sync_auto_memory_prompt();
 
         // Validate that the system prompt is the first message (critical invariant)
         self.validate_system_prompt_is_first();
@@ -1750,6 +1775,41 @@ impl<W: UiWriter> Agent<W> {
             "Auto-memory reminders: {}",
             if enabled { "enabled" } else { "disabled" }
         );
+        self.sync_auto_memory_prompt();
+    }
+
+    /// Bring the system prompt into line with `self.auto_memory`.
+    ///
+    /// WHY THIS IS DRIVEN OFF STATE AND NOT DONE AT THE CALL SITES
+    /// -----------------------------------------------------------
+    /// The auto-memory setting has TWO effects: the end-of-turn reminder turn
+    /// (`send_auto_memory_reminder`) and the standing "call `remember`" directive
+    /// in the system prompt. Those lived in different places and drifted: the flag
+    /// silenced the reminder while the prompt kept asking, every turn, forever.
+    ///
+    /// There are several entry points (agent mode, console mode, autonomous,
+    /// accumulative, butler.app) and asking each to remember a second call is how
+    /// the drift happened in the first place. Hanging it off the setter means the
+    /// prompt cannot disagree with the flag by construction.
+    fn sync_auto_memory_prompt(&mut self) {
+        let Some(msg) = self
+            .context_window
+            .conversation_history
+            .iter_mut()
+            .find(|m| matches!(m.role, MessageRole::System))
+        else {
+            return;
+        };
+        // Only ever REMOVES. Re-adding a stripped directive would mean carrying the
+        // canonical text in two places, and a setter called twice (or called before
+        // the prompt is built) would silently resurrect it in the wrong shape. So
+        // the enabled case is a no-op beyond dropping the markers, and callers who
+        // want the directive simply never disable it.
+        if !self.auto_memory {
+            msg.content = crate::prompts::strip_auto_memory_directive(&msg.content);
+        } else {
+            msg.content = crate::prompts::remove_auto_memory_markers(&msg.content);
+        }
     }
 
     /// Enable or disable aggressive context dehydration (ACD)

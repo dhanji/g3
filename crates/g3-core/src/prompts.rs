@@ -117,6 +117,73 @@ write_file(\"helper.rs\", \"...\")
 use crate::skills::{Skill, generate_skills_prompt};
 use crate::toolsets::generate_toolsets_prompt;
 
+/// Markers delimiting the auto-memory directive in `prompts/system/native.md`.
+///
+/// WHY THE PROMPT IS EDITED AND NOT JUST THE REMINDER
+/// --------------------------------------------------
+/// `--no-auto-memory` used to gate only `send_auto_memory_reminder()` — the extra
+/// end-of-turn LLM round trip. But the system prompt *also* carries a standing
+/// "call `remember` at end of turn when you discover code locations worth noting"
+/// directive, which survived the flag. An agent that had been told never to
+/// auto-capture was still being instructed to capture, every single turn, by the
+/// prompt underneath it. For butler that meant tier-1 memory filling up with
+/// engineering notes (65% of a 12k budget) while the flag reported success.
+///
+/// One switch must govern both, so the flag means what its name says.
+const AUTO_MEMORY_BEGIN: &str = "<!-- BEGIN AUTO-MEMORY -->";
+const AUTO_MEMORY_END: &str = "<!-- END AUTO-MEMORY -->";
+
+/// Strip the auto-memory directive from an assembled prompt.
+///
+/// Removes everything between the markers inclusive. The `remember` TOOL stays
+/// registered either way: disabling the *nag* must not remove the *ability*, so
+/// an agent (or a human asking directly) can still capture deliberately.
+///
+/// If the markers are absent — a hand-edited or older prompt file — the prompt is
+/// returned unchanged rather than mangled. A silent no-op is the right failure
+/// here; a partial strip would be worse than none.
+pub fn strip_auto_memory_directive(prompt: &str) -> String {
+    let (Some(start), Some(end)) = (prompt.find(AUTO_MEMORY_BEGIN), prompt.find(AUTO_MEMORY_END))
+    else {
+        return prompt.to_string();
+    };
+    if end < start {
+        return prompt.to_string();
+    }
+    let mut out = String::with_capacity(prompt.len());
+    out.push_str(&prompt[..start]);
+    out.push_str(&prompt[end + AUTO_MEMORY_END.len()..]);
+    out.trim_end().to_string()
+}
+
+/// Remove only the marker comments, keeping the directive they wrap.
+///
+/// Call this on the auto-memory-ENABLED path so the markers never reach the
+/// model. They are bookkeeping for `strip_auto_memory_directive`, not content.
+pub fn remove_auto_memory_markers(prompt: &str) -> String {
+    prompt
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t != AUTO_MEMORY_BEGIN && t != AUTO_MEMORY_END
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Apply the auto-memory setting to an assembled system prompt.
+///
+/// This is the single place that decides whether the standing "call `remember`"
+/// directive is present, so the prompt and `send_auto_memory_reminder()` cannot
+/// drift apart again.
+pub fn apply_auto_memory(prompt: &str, auto_memory: bool) -> String {
+    if auto_memory {
+        remove_auto_memory_markers(prompt)
+    } else {
+        strip_auto_memory_directive(prompt)
+    }
+}
+
 /// System prompt for providers with native tool calling (Anthropic, OpenAI, etc.)
 /// Uses include_str! to embed the prompt at compile time.
 pub fn get_system_prompt_for_native() -> String {
@@ -322,5 +389,86 @@ mod tests {
         let prompt = get_agent_system_prompt_with_skills("Custom agent", true, &skills);
         assert!(prompt.contains("Custom agent"));
         assert!(prompt.contains("<name>agent-skill</name>"));
+    }
+
+    // ================================================================
+    // AUTO-MEMORY DIRECTIVE GATING
+    //
+    // `--no-auto-memory` gated only the end-of-turn reminder turn; the standing
+    // "call `remember`" directive in the system prompt survived it. butler ran
+    // with the flag set for months and still filled 65% of its 12k tier-1 memory
+    // budget with engineering notes, because the prompt kept asking.
+    // ================================================================
+
+    /// HAPPY: with auto-memory off, no directive to call `remember` survives.
+    #[test]
+    fn test_auto_memory_directive_stripped_when_disabled() {
+        let prompt = apply_auto_memory(&get_system_prompt_for_native(), false);
+        assert!(
+            !prompt.contains("Call `remember` at end of turn"),
+            "the standing remember directive must be gone when auto-memory is off"
+        );
+        assert!(
+            !prompt.contains("# Workspace Memory"),
+            "the whole Workspace Memory section is the directive; it must go too"
+        );
+    }
+
+    /// NEGATIVE: the flag must not silently disable auto-memory for everyone.
+    /// This is the mutation that matters — a strip applied unconditionally would
+    /// pass the happy test above and break every other g3 agent.
+    #[test]
+    fn test_auto_memory_directive_retained_when_enabled() {
+        let prompt = apply_auto_memory(&get_system_prompt_for_native(), true);
+        assert!(
+            prompt.contains("Call `remember` at end of turn"),
+            "default (auto-memory on) must still instruct the model to remember"
+        );
+        assert!(prompt.contains("# Workspace Memory"));
+    }
+
+    /// BOUNDARY: the marker comments are bookkeeping and must never reach the
+    /// model on EITHER path, or the prompt leaks HTML comments at the model.
+    #[test]
+    fn test_auto_memory_markers_never_reach_the_model() {
+        for enabled in [true, false] {
+            let prompt = apply_auto_memory(&get_system_prompt_for_native(), enabled);
+            assert!(
+                !prompt.contains("BEGIN AUTO-MEMORY") && !prompt.contains("END AUTO-MEMORY"),
+                "marker leaked with auto_memory={}",
+                enabled
+            );
+        }
+    }
+
+    /// BOUNDARY: a prompt without markers (hand-edited, or older file) must be
+    /// returned unchanged rather than truncated. A partial strip is worse than none.
+    #[test]
+    fn test_strip_is_noop_without_markers() {
+        let plain = "# Some Prompt\n\nNo markers here.";
+        assert_eq!(strip_auto_memory_directive(plain), plain);
+        assert_eq!(remove_auto_memory_markers(plain), plain);
+    }
+
+    /// BOUNDARY: markers in the wrong order must not produce a garbled slice.
+    #[test]
+    fn test_strip_is_noop_when_markers_inverted() {
+        let inverted = format!("head {} middle {} tail", AUTO_MEMORY_END, AUTO_MEMORY_BEGIN);
+        assert_eq!(strip_auto_memory_directive(&inverted), inverted);
+    }
+
+    /// BOUNDARY: disabling the NAG must not remove the ABILITY. The `remember`
+    /// tool stays registered so deliberate capture still works.
+    #[test]
+    fn test_agent_prompt_still_usable_with_auto_memory_off() {
+        let prompt = apply_auto_memory(
+            &get_agent_system_prompt("You are butler.", true),
+            false,
+        );
+        assert!(prompt.contains("You are butler."));
+        assert!(
+            prompt.contains("Use tools to accomplish tasks"),
+            "stripping the directive must not damage the rest of the prompt"
+        );
     }
 }
