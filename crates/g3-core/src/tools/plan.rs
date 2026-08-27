@@ -547,13 +547,44 @@ pub fn verify_test_reference(
     };
     
     // Look for the test function
-    // For Rust: look for `fn test_name` or `fn test_name(`
-    // TODO: Add support for other languages (Python: def test_name, JS: test('name', etc.)
-    let rust_pattern = format!("fn {}", test_name);
-    let rust_pattern_with_paren = format!("fn {}(", test_name);
-    
-    if content.contains(&rust_pattern) || content.contains(&rust_pattern_with_paren) {
+    //
+    // Rust was the only language handled here, which meant every Python and
+    // JS test reference in a plan raised a "not found" warning for a test that
+    // was sitting right there in the file. A checker that cries wolf on
+    // correct evidence trains the reader to ignore it, which is strictly worse
+    // than not checking at all -- so each supported language gets its own
+    // definition form.
+    //
+    // Matching is deliberately narrow: a DEFINITION, not a mention. Requiring
+    // the open paren is what stops `def test_foo_bar` from verifying a claim
+    // about `test_foo`, and stops a call site or a docstring from passing as a
+    // definition.
+    let definition_patterns = [
+        format!("fn {}(", test_name),        // Rust
+        format!("def {}(", test_name),       // Python
+        format!("function {}(", test_name),  // JS/TS function declaration
+        format!("{} = function", test_name), // JS function expression
+        format!("{} = (", test_name),        // JS arrow function
+        format!("{}: (", test_name),         // TS method signature / object member
+        format!("func {}(", test_name),      // Go
+        format!("void {}(", test_name),      // Java/C/C++
+    ];
+
+    if definition_patterns.iter().any(|p| content.contains(p.as_str())) {
         return VerificationStatus::Verified;
+    }
+
+    // Test frameworks that name a case with a STRING rather than an
+    // identifier: `test('does the thing', ...)`, `it("...")`, `describe(...)`.
+    // Here the name is data, so the quotes are what make it a declaration and
+    // not a passing reference.
+    for keyword in ["test", "it", "describe", "bench"] {
+        for quote in ['\'', '"', '`'] {
+            let pattern = format!("{}({}{}{}", keyword, quote, test_name, quote);
+            if content.contains(&pattern) {
+                return VerificationStatus::Verified;
+            }
+        }
     }
     
     // Check for #[test] attribute near the function name as a fallback
@@ -1638,5 +1669,100 @@ items:\n\
         let temp_dir = tempfile::tempdir().unwrap();
         let dirty = get_dirty_files(Some(temp_dir.path().to_str().unwrap()));
         assert!(dirty.is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // verify_test_reference: a plan's test evidence, across languages.
+    //
+    // This only ever understood Rust's `fn name`, so every Python test named
+    // as evidence in a plan produced a "not found" warning for a function
+    // sitting plainly in the file. A checker that cries wolf on CORRECT
+    // evidence is worse than no checker: the reader learns to skip its output,
+    // and a real rotted reference then hides among the noise.
+    // ---------------------------------------------------------------------
+
+    fn write_and_verify(name: &str, filename: &str, body: &str) -> VerificationStatus {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(filename);
+        std::fs::write(&path, body).unwrap();
+        verify_test_reference(path.to_str().unwrap(), name, None)
+    }
+
+    fn is_verified(status: &VerificationStatus) -> bool {
+        matches!(status, VerificationStatus::Verified)
+    }
+
+    #[test]
+    fn test_verify_test_reference_finds_a_python_def() {
+        let src = "import unittest\n\n\
+                   class T(unittest.TestCase):\n\
+                   \x20   def test_the_thing(self):\n\
+                   \x20       self.assertTrue(True)\n";
+        assert!(is_verified(&write_and_verify("test_the_thing", "t.py", src)));
+    }
+
+    #[test]
+    fn test_verify_test_reference_finds_definitions_in_every_supported_language() {
+        let cases = [
+            ("t.rs", "fn test_a() { assert!(true); }", "test_a"),
+            ("t.py", "def test_a():\n    pass\n", "test_a"),
+            ("t.js", "function test_a() { return 1; }", "test_a"),
+            ("t.js", "const test_a = function () { return 1; };", "test_a"),
+            ("t.js", "const test_a = (x) => x;", "test_a"),
+            ("t.go", "func test_a(t *testing.T) {}", "test_a"),
+            ("T.java", "public void test_a() {}", "test_a"),
+            // String-named cases: the name is data, so the quotes are what
+            // distinguish a declaration from a passing mention.
+            ("t.js", "test('test_a', () => { expect(1).toBe(1); });", "test_a"),
+            ("t.js", "it(\"test_a\", async () => {});", "test_a"),
+            ("t.ts", "describe(`test_a`, () => {});", "test_a"),
+        ];
+        for (filename, body, name) in cases {
+            let status = write_and_verify(name, filename, body);
+            assert!(is_verified(&status), "{}: {:?} -> {:?}", filename, body, status);
+        }
+    }
+
+    #[test]
+    fn test_verify_test_reference_warns_when_the_test_is_absent() {
+        // The discriminating half. Without this, "everything verifies" would
+        // pass every case above -- which is exactly the failure mode of a
+        // checker loosened until it stops complaining.
+        let src = "def test_something_else():\n    pass\n";
+        let status = write_and_verify("test_the_thing", "t.py", src);
+        assert!(matches!(status, VerificationStatus::Warning(_)),
+                "an absent test verified anyway: {:?}", status);
+    }
+
+    #[test]
+    fn test_verify_test_reference_does_not_accept_a_mere_mention() {
+        // A call site, a comment or a string is not a definition. Accepting
+        // one would let a DELETED test keep verifying from the docstring that
+        // still names it.
+        let src = "# see test_the_thing for the real check\n\
+                   def other():\n    test_the_thing()\n";
+        let status = write_and_verify("test_the_thing", "t.py", src);
+        assert!(matches!(status, VerificationStatus::Warning(_)),
+                "a bare mention passed as a definition: {:?}", status);
+    }
+
+    #[test]
+    fn test_verify_test_reference_does_not_match_a_longer_name() {
+        // `def test_foo_bar(` must NOT verify a claim about `test_foo`: the
+        // open paren is what makes the match a whole name. This is the boundary
+        // that a naive `contains(name)` gets wrong, silently, forever.
+        let src = "def test_foo_bar():\n    pass\n";
+        let status = write_and_verify("test_foo", "t.py", src);
+        assert!(matches!(status, VerificationStatus::Warning(_)),
+                "test_foo_bar verified a claim about test_foo: {:?}", status);
+    }
+
+    #[test]
+    fn test_verify_test_reference_errors_on_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.py");
+        let status = verify_test_reference(path.to_str().unwrap(), "test_a", None);
+        assert!(matches!(status, VerificationStatus::Error(_)),
+                "a missing file was not an error: {:?}", status);
     }
 }
