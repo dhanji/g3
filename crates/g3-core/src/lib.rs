@@ -517,6 +517,81 @@ impl<W: UiWriter> Agent<W> {
             .count()
     }
 
+    /// Maximum number of cache_control breakpoints Anthropic allows per request.
+    const MAX_CACHE_CONTROLS: usize = 4;
+
+    /// Make room for a new cache_control breakpoint by sliding the window forward.
+    ///
+    /// Anthropic caches only up to the last breakpoint, so a long agent session
+    /// needs its breakpoints to keep advancing toward the growing tail. Once the
+    /// 4-breakpoint cap is reached the breakpoints were append-only, which froze
+    /// the last one early and left the tail re-sent uncached every turn.
+    ///
+    /// When already at the cap, this clears the oldest *movable* breakpoint so a
+    /// fresh one can be placed near the stable tail. The very first breakpoint is
+    /// kept as a stable anchor for the large prefix (system + tools + first user
+    /// turn); the oldest tool-result breakpoint after it is the one recycled.
+    /// Returns true if there is room for a new breakpoint (either there already
+    /// was, or one was evicted).
+    fn ensure_cache_control_slot(&mut self) -> bool {
+        if self.count_cache_controls_in_history() < Self::MAX_CACHE_CONTROLS {
+            return true;
+        }
+
+        // Find the oldest breakpoint after the first (anchor) one and clear it.
+        let oldest_movable = self
+            .context_window
+            .conversation_history
+            .iter()
+            .enumerate()
+            .filter(|(_, msg)| msg.cache_control.is_some())
+            .map(|(idx, _)| idx)
+            .nth(1);
+
+        if let Some(idx) = oldest_movable {
+            self.context_window.conversation_history[idx].cache_control = None;
+            true
+        } else {
+            // Only the anchor breakpoint exists at the cap (shouldn't happen with
+            // MAX_CACHE_CONTROLS > 1); leave it in place rather than dropping it.
+            false
+        }
+    }
+
+    /// Build a tool-result user message, attaching a cache_control breakpoint when
+    /// `cadence_hit` is true and the provider supports caching. When the breakpoint
+    /// cap is already reached, the window slides forward so the new breakpoint lands
+    /// near the tail instead of being dropped.
+    fn build_tool_result_message(
+        &mut self,
+        content: String,
+        cadence_hit: bool,
+    ) -> Result<Message> {
+        let should_cache = cadence_hit && self.ensure_cache_control_slot();
+        if should_cache {
+            if let Some(cache_config) = self.get_provider_cache_control() {
+                let provider = self.providers.get(None)?;
+                return Ok(Message::with_cache_control_validated(
+                    MessageRole::User,
+                    content,
+                    cache_config,
+                    provider,
+                ));
+            }
+        }
+        Ok(Message::new(MessageRole::User, content))
+    }
+
+    /// Test-only: drive a single tool-result placement through the real
+    /// breakpoint logic and append it to the context window. Lets tests exercise
+    /// the sliding-window behavior without standing up the full streaming loop.
+    #[doc(hidden)]
+    pub fn push_tool_result_for_test(&mut self, content: &str, cadence_hit: bool) -> Result<()> {
+        let message = self.build_tool_result_message(content.to_string(), cadence_hit)?;
+        self.context_window.add_message(message);
+        Ok(())
+    }
+
     /// Get the cache control config for the current provider (if Anthropic with cache enabled).
     fn get_provider_cache_control(&self) -> Option<CacheControl> {
         let provider = self.providers.get(None).ok()?;
@@ -1145,11 +1220,13 @@ impl<W: UiWriter> Agent<W> {
                         .await
                         .unwrap_or_else(|e| format!("Error: {}", e));
 
-                    // Add cache_control to the last user message if provider supports it (anthropic)
+                    // Add cache_control to the last user message if provider supports it (anthropic).
+                    // Slide the window forward when the 4-breakpoint cap is reached so the
+                    // breakpoint lands near the tail rather than being dropped.
                     let is_last = idx == message_count - 1;
                     let result_message = if supports_cache
                         && is_last
-                        && self.count_cache_controls_in_history() < 4
+                        && self.ensure_cache_control_slot()
                     {
                         Message::with_cache_control(
                             MessageRole::User,
@@ -3008,26 +3085,12 @@ Skip if nothing new. Be brief."#;
                             let mut result_message = {
                                 let content = format!("Tool result: {}", tool_result);
 
-                                // Apply cache control every 10 tool calls (max 4 annotations)
-                                let should_cache = self.tool_call_count > 0
-                                    && self.tool_call_count % 10 == 0
-                                    && self.count_cache_controls_in_history() < 4;
-
-                                if should_cache {
-                                    let provider = self.providers.get(None)?;
-                                    if let Some(cache_config) = self.get_provider_cache_control() {
-                                        Message::with_cache_control_validated(
-                                            MessageRole::User,
-                                            content,
-                                            cache_config,
-                                            provider,
-                                        )
-                                    } else {
-                                        Message::new(MessageRole::User, content)
-                                    }
-                                } else {
-                                    Message::new(MessageRole::User, content)
-                                }
+                                // Apply cache control every 10 tool calls, sliding the
+                                // breakpoint window forward once the 4-breakpoint cap is
+                                // reached (see build_tool_result_message).
+                                let cadence_hit =
+                                    self.tool_call_count > 0 && self.tool_call_count % 10 == 0;
+                                self.build_tool_result_message(content, cadence_hit)?
                             };
 
                             // Link the tool result to the tool_use ID so providers can
