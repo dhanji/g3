@@ -26,7 +26,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 use super::invariants::{
-    read_envelope, read_rulespec,
+    get_envelope_path, read_envelope, read_rulespec,
     write_envelope, ActionEnvelope, Rulespec,
 };
 use super::datalog::{
@@ -328,6 +328,8 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
 
     // Stage 1: envelope written
     stages.push(("✎".into(), "envelope written".into()));
+    let envelope_path = get_envelope_path(session_id);
+    let path_display = envelope_path.display();
 
     // Read rulespec from analysis/rulespec.yaml
     let rulespec = match read_rulespec(working_dir) {
@@ -337,7 +339,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
             return VerifyResult {
                 stages,
                 passed: None, total: None, failed: 0,
-                llm_summary: "Envelope written. No rulespec — skipping verification.".into(),
+                llm_summary: format!("Envelope written to: {}\nNo rulespec — skipping verification.", path_display),
             };
         }
         Err(e) => {
@@ -345,7 +347,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
             return VerifyResult {
                 stages,
                 passed: None, total: None, failed: 0,
-                llm_summary: format!("Envelope written. Failed to read rulespec: {}", e),
+                llm_summary: format!("Envelope written to: {}\nFailed to read rulespec: {}", path_display, e),
             };
         }
     };
@@ -358,7 +360,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
             return VerifyResult {
                 stages,
                 passed: None, total: None, failed: 0,
-                llm_summary: format!("Envelope written. Failed to compile rulespec: {}", e),
+                llm_summary: format!("Envelope written to: {}\nFailed to compile rulespec: {}", path_display, e),
             };
         }
     };
@@ -368,7 +370,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
         return VerifyResult {
             stages,
             passed: None, total: None, failed: 0,
-            llm_summary: "Envelope written. Rulespec has no predicates.".into(),
+            llm_summary: format!("Envelope written to: {}\nRulespec has no predicates.", path_display),
         };
     }
 
@@ -383,7 +385,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
             return VerifyResult {
                 stages,
                 passed: None, total: None, failed: 0,
-                llm_summary: "Envelope written but could not be re-read for verification.".into(),
+                llm_summary: format!("Envelope written to: {}\nCould not be re-read for verification.", path_display),
             };
         }
         Err(e) => {
@@ -391,7 +393,7 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
             return VerifyResult {
                 stages,
                 passed: None, total: None, failed: 0,
-                llm_summary: format!("Envelope written but failed to re-read: {}", e),
+                llm_summary: format!("Envelope written to: {}\nFailed to re-read: {}", path_display, e),
             };
         }
     };
@@ -438,10 +440,19 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
     }
 
     // LLM summary (token value intentionally omitted)
+    //
+    // The path IS included. Without it, callers had no reliable way to find
+    // their own envelope file -- observed 2026-08-30: a duty guessed
+    // `ls -t .g3/sessions/ | head -1` ("most recently modified session dir")
+    // to locate it for the subsequent `email_sender.py send --envelope`
+    // call. That guess is wrong under any concurrency: a DIFFERENT session
+    // touching its own dir more recently makes this resolve to somebody
+    // else's envelope, silently. The path is deterministic and already
+    // known here -- there is no reason to make the caller reconstruct it.
     let llm_summary = if failed == 0 {
-        format!("Envelope written. Verification: {}/{} passed.", passed, total)
+        format!("Envelope written to: {}\nVerification: {}/{} passed.", path_display, passed, total)
     } else {
-        format!("Envelope written. Verification: {}/{} passed, {} failed.", passed, total, failed)
+        format!("Envelope written to: {}\nVerification: {}/{} passed, {} failed.", path_display, passed, total, failed)
     };
 
     VerifyResult {
@@ -484,6 +495,73 @@ fn stamp_envelope(
 mod tests {
     use super::*;
     use serde_yaml::Value as YamlValue;
+
+    // ── verify_envelope: the summary must name the envelope's own path ─────
+    //
+    // 2026-08-30: a duty guessed the path of its OWN just-written envelope
+    // via `ls -t .g3/sessions/ | head -1`, because verify_envelope's summary
+    // never said where the file was. That guess resolves to the wrong
+    // session under any concurrency. These pin the fix at the seam most
+    // likely to regress: whatever function assembles `llm_summary`.
+
+    #[test]
+    fn test_verify_envelope_summary_contains_session_path_on_pass() {
+        use tempfile::TempDir;
+        use crate::paths::ensure_session_dir;
+        let tmp = TempDir::new().unwrap();
+        // A REAL rulespec.yaml on disk, so this exercises the full
+        // compile+evaluate+stamp path -- the branch the original bug
+        // actually hit (verification passed, THEN the caller couldn't find
+        // the file). The "no rulespec" test below covers the early-return
+        // branch separately; conflating them would leave the pass path
+        // unpinned.
+        let analysis_dir = tmp.path().join("analysis");
+        std::fs::create_dir_all(&analysis_dir).unwrap();
+        std::fs::write(
+            analysis_dir.join("rulespec.yaml"),
+            "claims:\n  - name: caps\n    selector: feature.capabilities\n\
+             predicates:\n  - claim: caps\n    rule: exists\n    source: task_prompt\n",
+        ).unwrap();
+
+        let session_id = "test-session-path-happy";
+        ensure_session_dir(session_id).unwrap();
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "feature",
+            serde_yaml::from_str("capabilities: [a, b]").unwrap(),
+        );
+        write_envelope(session_id, &envelope).unwrap();
+
+        let vr = verify_envelope(session_id, tmp.path());
+        assert_eq!(vr.failed, 0, "fixture rulespec should pass cleanly");
+        let expected_path = get_envelope_path(session_id);
+        assert!(
+            vr.llm_summary.contains(&expected_path.display().to_string()),
+            "llm_summary must contain the envelope's own path so a caller \
+             never has to guess it: got {:?}",
+            vr.llm_summary
+        );
+    }
+
+    #[test]
+    fn test_verify_envelope_summary_path_survives_no_rulespec() {
+        // Boundary: the "no rulespec found" branch is a DIFFERENT early
+        // return than the full-verification path -- must carry the path too,
+        // or a workspace without analysis/rulespec.yaml regresses silently.
+        use tempfile::TempDir;
+        use crate::paths::ensure_session_dir;
+        let tmp = TempDir::new().unwrap(); // empty dir, no analysis/
+        let session_id = "test-session-path-no-rulespec";
+        ensure_session_dir(session_id).unwrap();
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", YamlValue::String("x".into()));
+        write_envelope(session_id, &envelope).unwrap();
+
+        let vr = verify_envelope(session_id, tmp.path());
+        assert!(vr.llm_summary.contains("No rulespec"));
+        let expected_path = get_envelope_path(session_id);
+        assert!(vr.llm_summary.contains(&expected_path.display().to_string()));
+    }
 
     fn make_test_key() -> Vec<u8> {
         vec![1u8; VERIFICATION_KEY_LEN]
