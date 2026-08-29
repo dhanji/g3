@@ -517,6 +517,54 @@ impl<W: UiWriter> Agent<W> {
             .count()
     }
 
+    /// Clear every rolling cache_control breakpoint in `conversation_history`.
+    ///
+    /// A `cache_control` marker caches the ENTIRE prefix up to and including
+    /// that block — so once a newer breakpoint is placed further along the
+    /// same growing transcript, an older one adds nothing: everything it
+    /// covered is already covered by the new one. Keeping it around only
+    /// spends one of the 4 API-wide breakpoints for no benefit.
+    ///
+    /// Previously the code placed a breakpoint every 10 tool calls and left
+    /// all of them in place. After the 3rd rolling breakpoint (4th counting
+    /// the system block — see `max_rolling_cache_breakpoints`) the budget was
+    /// exhausted and caching silently STOPPED for the remainder of the
+    /// session: a 471-turn session (observed 2026-08-27) would have cached
+    /// only its first ~30 tool calls and paid full uncached price for the
+    /// other 441. Sliding the single rolling breakpoint forward instead means
+    /// caching never runs out mid-session.
+    fn clear_rolling_cache_breakpoints(&mut self) {
+        for msg in self.context_window.conversation_history.iter_mut() {
+            msg.cache_control = None;
+        }
+    }
+
+    /// How many rolling cache_control breakpoints are allowed in
+    /// `conversation_history`, given the API's hard cap of 4 per request.
+    ///
+    /// When caching is configured, `AnthropicProvider::create_request_body`
+    /// (g3-providers/src/anthropic.rs) unconditionally wraps the system prompt
+    /// in its own cached block — that consumes ONE of the 4 breakpoints on
+    /// every single request. `count_cache_controls_in_history()` cannot see
+    /// that block: it lives on the provider's request, not on a `Message` in
+    /// `conversation_history`. Left at 4, a long session eventually combines
+    /// its own 4 rolling breakpoints with the system block's 1 and the
+    /// Anthropic API rejects the request outright ("A maximum of 4 blocks
+    /// with cache_control may be provided. Found 5.") — CONFIRMED live against
+    /// the API on 2026-08-29, not a theoretical limit.
+    ///
+    /// So: 3 rolling breakpoints when caching is on (leaving room for the
+    /// system block), 4 when it's off (there is no system block to compete
+    /// with, so the historical ceiling still applies, though nothing will
+    /// ever be written in that case).
+    fn max_rolling_cache_breakpoints(&self) -> usize {
+        if self.get_provider_cache_control().is_some() {
+            3
+        } else {
+            4
+        }
+    }
+
     /// Get the cache control config for the current provider (if Anthropic with cache enabled).
     fn get_provider_cache_control(&self) -> Option<CacheControl> {
         let provider = self.providers.get(None).ok()?;
@@ -1149,7 +1197,8 @@ impl<W: UiWriter> Agent<W> {
                     let is_last = idx == message_count - 1;
                     let result_message = if supports_cache
                         && is_last
-                        && self.count_cache_controls_in_history() < 4
+                        && self.count_cache_controls_in_history()
+                            < self.max_rolling_cache_breakpoints()
                     {
                         Message::with_cache_control(
                             MessageRole::User,
@@ -3009,9 +3058,19 @@ Skip if nothing new. Be brief."#;
                                 let content = format!("Tool result: {}", tool_result);
 
                                 // Apply cache control every 10 tool calls (max 4 annotations)
-                                let should_cache = self.tool_call_count > 0
-                                    && self.tool_call_count % 10 == 0
-                                    && self.count_cache_controls_in_history() < 4;
+                                // Every 10 tool calls, SLIDE the one rolling
+                                // breakpoint forward rather than accumulating
+                                // a new one each time. An old breakpoint is
+                                // fully subsumed by a newer one on the same
+                                // growing transcript, so keeping both wastes
+                                // budget that would otherwise let caching run
+                                // for the whole session instead of stopping
+                                // after ~30-40 tool calls.
+                                let should_cache =
+                                    self.tool_call_count > 0 && self.tool_call_count % 10 == 0;
+                                if should_cache {
+                                    self.clear_rolling_cache_breakpoints();
+                                }
 
                                 if should_cache {
                                     let provider = self.providers.get(None)?;
@@ -3689,6 +3748,124 @@ impl<W: UiWriter> Drop for Agent<W> {
                 debug!("Attempted to clean up safaridriver process on Agent drop");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_breakpoint_budget_tests {
+    //! `count_cache_controls_in_history() < 4` was wrong the moment the system
+    //! prompt became cacheable (2026-08-29): the system block consumes one of
+    //! the API's 4 cache_control slots WITHOUT living in `conversation_history`,
+    //! so the true rolling budget is 3, not 4. CONFIRMED against the live API:
+    //! a request with the system block plus 4 history breakpoints is rejected
+    //! with "A maximum of 4 blocks with cache_control may be provided. Found 5."
+    //!
+    //! Separately: the old code left every 10th-tool-call breakpoint in place
+    //! forever. A newer breakpoint fully subsumes an older one on the same
+    //! growing transcript (cache_control caches the whole prefix up to that
+    //! point), so keeping stale ones only burns the budget faster — a long
+    //! session would exhaust all 4 by tool call ~40 and cache nothing for the
+    //! rest. `clear_rolling_cache_breakpoints` fixes that by sliding the single
+    //! useful breakpoint forward instead of accumulating.
+    use super::*;
+    use crate::ui_writer::NullUiWriter;
+    use g3_providers::mock::MockProvider;
+    use g3_providers::{CacheControl, Message, MessageRole, ProviderRegistry};
+
+    async fn agent_with_cache_config(cache_config: Option<&str>) -> Agent<NullUiWriter> {
+        // Name the mock like an anthropic provider ref so
+        // `get_provider_cache_control()` — which keys off `provider_type` from
+        // the NAME, not the concrete type — finds the config below. This tests
+        // the budget arithmetic without needing real API credentials.
+        let provider = MockProvider::new().with_name("anthropic.default");
+        let mut registry = ProviderRegistry::new();
+        registry.register(provider);
+
+        let mut config = g3_config::Config::default();
+        config.providers.default_provider = "anthropic.default".to_string();
+        config.providers.anthropic.insert(
+            "default".to_string(),
+            g3_config::AnthropicConfig {
+                api_key: "test".to_string(),
+                model: "claude-opus-5".to_string(),
+                max_tokens: None,
+                temperature: None,
+                cache_config: cache_config.map(|s| s.to_string()),
+                enable_1m_context: None,
+                thinking_budget_tokens: None,
+            },
+        );
+
+        Agent::new_for_test(config, NullUiWriter, registry)
+            .await
+            .expect("agent construction")
+    }
+
+    #[tokio::test]
+    async fn budget_is_3_when_caching_on_4_when_off() {
+        let cached = agent_with_cache_config(Some("1hour")).await;
+        assert_eq!(
+            cached.max_rolling_cache_breakpoints(),
+            3,
+            "with caching on, the system block eats one of the API's 4 slots — \
+             the rolling budget must leave room for it"
+        );
+
+        let uncached = agent_with_cache_config(None).await;
+        assert_eq!(
+            uncached.max_rolling_cache_breakpoints(),
+            4,
+            "with caching off there is no system block competing for slots"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_cache_config_degrades_to_uncached_budget() {
+        // A typo in cache_config must not be able to shrink the budget it
+        // never earned, nor crash. See parse_cache_control's own warning path.
+        let typo = agent_with_cache_config(Some("1 hour")).await;
+        assert_eq!(typo.max_rolling_cache_breakpoints(), 4);
+    }
+
+    #[tokio::test]
+    async fn clear_rolling_cache_breakpoints_removes_all_of_them() {
+        let mut window = crate::context_window::ContextWindow::with_threshold(200_000, 90.0);
+        window.add_message(Message::new(MessageRole::System, "sys".to_string()));
+        window.add_message(Message::with_cache_control(
+            MessageRole::User,
+            "old breakpoint 1".to_string(),
+            CacheControl::ephemeral(),
+        ));
+        window.add_message(Message::new(MessageRole::Assistant, "reply".to_string()));
+        window.add_message(Message::with_cache_control(
+            MessageRole::User,
+            "old breakpoint 2".to_string(),
+            CacheControl::ephemeral(),
+        ));
+
+        let config = g3_config::Config::default();
+        let mut registry = ProviderRegistry::new();
+        registry.register(MockProvider::new());
+        let mut agent = Agent::new_for_test_with_project_context(
+            config, NullUiWriter, registry, None,
+        )
+        .await
+        .unwrap();
+        agent.context_window = window;
+
+        assert_eq!(agent.count_cache_controls_in_history(), 2);
+        agent.clear_rolling_cache_breakpoints();
+        assert_eq!(
+            agent.count_cache_controls_in_history(),
+            0,
+            "every marker must be cleared, not just the most recent one, or a \
+             long session accumulates breakpoints it never frees"
+        );
+
+        // Boundary: clearing an empty/no-breakpoint history must not panic and
+        // must remain a no-op.
+        agent.clear_rolling_cache_breakpoints();
+        assert_eq!(agent.count_cache_controls_in_history(), 0);
     }
 }
 

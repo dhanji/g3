@@ -120,8 +120,26 @@ use crate::{
     MessageRole, Tool, ToolCall, Usage,
 };
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// The Messages endpoint, overridable via `ANTHROPIC_BASE_URL` for local
+/// observation.
+///
+/// g3 reads `cache_read_input_tokens` off the wire and then discards it — it
+/// reaches no log, no UI and no session file. That makes "is prompt caching
+/// working?" unfalsifiable from inside: a cached run and an uncached run look
+/// identical from here. Pointing this at a local proxy is the only way to see
+/// the number that answers it.
+///
+/// Defaults to the real API, so an unset variable changes nothing.
+fn anthropic_api_url() -> String {
+    match std::env::var("ANTHROPIC_BASE_URL") {
+        Ok(base) if !base.trim().is_empty() => {
+            format!("{}/v1/messages", base.trim_end_matches('/'))
+        }
+        _ => "https://api.anthropic.com/v1/messages".to_string(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -131,7 +149,6 @@ pub struct AnthropicProvider {
     model: String,
     max_tokens: u32,
     temperature: f32,
-    #[allow(dead_code)]
     cache_config: Option<String>,
     enable_1m_context: bool,
     thinking_budget_tokens: Option<u32>,
@@ -329,7 +346,7 @@ impl AnthropicProvider {
     fn create_request_builder(&self, streaming: bool) -> RequestBuilder {
         let mut builder = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(anthropic_api_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
@@ -346,6 +363,29 @@ impl AnthropicProvider {
     }
 
     // Anthropic uses the same CacheControl format — no conversion needed, just clone at call sites.
+
+    /// The configured cache policy, parsed from the provider's `cache_config`
+    /// string, or `None` when caching is off.
+    ///
+    /// The accepted spellings match `g3-core`'s `parse_cache_control()` exactly.
+    /// An unrecognised value yields `None` — caching simply does not engage,
+    /// which is the same behaviour as leaving it unset. That is deliberate: a
+    /// typo in a cost optimisation must never take the agent down.
+    fn parsed_cache_control(&self) -> Option<crate::CacheControl> {
+        match self.cache_config.as_deref()?.trim() {
+            "ephemeral" => Some(crate::CacheControl::ephemeral()),
+            "5minute" => Some(crate::CacheControl::five_minute()),
+            "1hour" => Some(crate::CacheControl::one_hour()),
+            other => {
+                tracing::warn!(
+                    "Invalid cache_config '{}' (expected: ephemeral, 5minute, 1hour). \
+                     Prompt caching is DISABLED for this provider.",
+                    other
+                );
+                None
+            }
+        }
+    }
 
     fn convert_tools(&self, tools: &[Tool]) -> Vec<AnthropicTool> {
         tools
@@ -590,6 +630,24 @@ impl AnthropicProvider {
 
         // Convert tools if provided
         let anthropic_tools = tools.map(|t| self.convert_tools(t));
+
+        // Wrap the system prompt in a cached content block when caching is
+        // configured. This prefix (agent prompt + skills + memory + facts) is
+        // byte-identical on every call of a session and is the largest reusable
+        // span in the request, so it is the highest-value breakpoint available
+        // — and, being a fixed prefix, also the safest.
+        let system = system.map(|text| match self.parsed_cache_control() {
+            // An empty prompt gets no block: a zero-length cached segment is
+            // below the API's minimum cacheable length, and caching nothing
+            // spends one of only four breakpoints for no gain.
+            Some(cc) if !text.trim().is_empty() => {
+                SystemPrompt::Blocks(vec![AnthropicContent::Text {
+                    text,
+                    cache_control: Some(cc),
+                }])
+            }
+            _ => SystemPrompt::Text(text),
+        });
 
         // Add thinking configuration if budget_tokens is set AND max_tokens is sufficient AND not explicitly disabled
         // Anthropic requires: max_tokens > thinking.budget_tokens
@@ -938,12 +996,34 @@ struct AnthropicRequest {
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<SystemPrompt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+}
+
+/// The `system` field, in either shape the Anthropic API accepts.
+///
+/// It was a bare `String` until 2026-08-29, which meant the system prompt was
+/// **structurally impossible to cache**: `cache_control` is a property of a
+/// content *block*, and a JSON string has nowhere to hang one. For butler that
+/// was the single largest recurring cost in the product — a ~34k-char prefix
+/// (agent prompt + skill catalogue + workspace memory + facts) re-billed at the
+/// full input rate on every one of ~66,000 API calls, because the one part of
+/// the request guaranteed never to change was the one part that could not be
+/// marked reusable.
+///
+/// `Text` keeps the old wire format exactly, so providers and tests that never
+/// cache serialize byte-for-byte as before.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum SystemPrompt {
+    /// `"system": "..."` — unchanged legacy shape, used when caching is off.
+    Text(String),
+    /// `"system": [{"type":"text","text":"...","cache_control":{...}}]`
+    Blocks(Vec<AnthropicContent>),
 }
 
 #[derive(Debug, Serialize)]
@@ -1209,6 +1289,162 @@ mod tests {
             "Streaming AnthropicRequest JSON must NOT contain a 'temperature' \
              field (Anthropic API rejects it on newer models). Got: {}",
             json_stream
+        );
+    }
+
+    /// The system prompt must be CACHEABLE when caching is configured.
+    ///
+    /// Until 2026-08-29 `AnthropicRequest.system` was a bare `String`, so the
+    /// largest fixed span in every request — agent prompt, skill catalogue,
+    /// workspace memory, facts; ~34k chars for butler — could not carry a
+    /// `cache_control` marker and was re-billed at the full input rate on
+    /// every call. The bug was invisible: requests succeeded, and the only
+    /// evidence was the invoice.
+    ///
+    /// These assertions are on the SERIALIZED JSON rather than the Rust type,
+    /// because the wire format is the thing Anthropic bills on. A struct that
+    /// looks right and serializes wrong costs real money.
+    #[test]
+    fn test_system_prompt_is_cacheable_when_cache_configured() {
+        let messages = vec![
+            Message::new(MessageRole::System, "You are a helpful agent.".to_string()),
+            Message::new(MessageRole::User, "Hi".to_string()),
+        ];
+
+        // WITH caching: system must serialize as an ARRAY carrying cache_control.
+        let cached = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            None,
+            None,
+            Some("1hour".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        let body = cached
+            .create_request_body(&messages, None, false, 1000, false)
+            .unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        let system = json.get("system").expect("system field must be present");
+        assert!(
+            system.is_array(),
+            "With cache_config set, `system` must serialize as an array of content \
+             blocks — a JSON string has nowhere to hang cache_control, so a string \
+             here means the prefix is silently uncacheable. Got: {}",
+            system
+        );
+        let block = &system[0];
+        assert_eq!(block["type"], "text");
+        assert_eq!(block["text"], "You are a helpful agent.");
+        assert_eq!(
+            block["cache_control"]["type"], "ephemeral",
+            "system block must carry cache_control"
+        );
+        assert_eq!(
+            block["cache_control"]["ttl"], "1h",
+            "cache_config = \"1hour\" must map to the API's \"1h\" TTL"
+        );
+
+        // WITHOUT caching: the legacy string shape, byte for byte. A provider
+        // that never caches must not start emitting a new wire format.
+        let plain = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(
+            &plain
+                .create_request_body(&messages, None, false, 1000, false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json["system"], "You are a helpful agent.",
+            "With caching off, `system` must remain a plain string"
+        );
+        assert!(
+            !serde_json::to_string(&json).unwrap().contains("cache_control"),
+            "No cache_control may appear anywhere when caching is unconfigured"
+        );
+
+        // A GARBAGE cache_config must degrade to no-cache, never panic. A typo
+        // in a cost setting must not be able to take the agent down.
+        let typo = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            None,
+            None,
+            Some("1 hour".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(
+            &typo
+                .create_request_body(&messages, None, false, 1000, false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json["system"], "You are a helpful agent.",
+            "An unrecognised cache_config must fall back to the uncached string \
+             form, not error and not emit a malformed block"
+        );
+    }
+
+    /// An EMPTY system prompt must not produce a cached block.
+    ///
+    /// Boundary case with teeth: only four cache breakpoints exist per request,
+    /// and a zero-length segment is below the API's minimum cacheable length —
+    /// so caching an empty prompt spends a scarce breakpoint to cache nothing,
+    /// and may be rejected outright.
+    #[test]
+    fn test_empty_system_prompt_is_not_cached() {
+        let provider = AnthropicProvider::new(
+            "test-key".to_string(),
+            None,
+            None,
+            None,
+            Some("1hour".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let messages = vec![
+            Message::new(MessageRole::System, "   \n  ".to_string()),
+            Message::new(MessageRole::User, "Hi".to_string()),
+        ];
+        let json = serde_json::to_value(
+            &provider
+                .create_request_body(&messages, None, false, 1000, false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            json["system"].is_string(),
+            "A whitespace-only system prompt must stay a plain string, not become \
+             an empty cached block. Got: {}",
+            json["system"]
+        );
+
+        // No system message at all: the field must be omitted entirely.
+        let no_system = vec![Message::new(MessageRole::User, "Hi".to_string())];
+        let json = serde_json::to_value(
+            &provider
+                .create_request_body(&no_system, None, false, 1000, false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            json.get("system").is_none(),
+            "With no system message the `system` field must be absent"
         );
     }
 
