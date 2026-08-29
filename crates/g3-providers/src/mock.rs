@@ -385,6 +385,12 @@ pub struct MockProvider {
     max_tokens: u32,
     temperature: f32,
     native_tool_calling: bool,
+    /// Whether `supports_cache_control()` reports true. Defaults to `false`
+    /// (the trait default) so existing tests are unaffected; a test that
+    /// needs `Message::with_cache_control_validated` to actually attach a
+    /// marker (rather than silently degrading and warning) must opt in via
+    /// `with_cache_control_support(true)`.
+    cache_control_support: bool,
     /// Queue of responses to return (FIFO)
     responses: Arc<Mutex<Vec<MockResponse>>>,
     /// All requests received (for verification)
@@ -415,6 +421,7 @@ impl MockProvider {
             max_tokens: 4096,
             temperature: 0.7,
             native_tool_calling: false,
+            cache_control_support: false,
             responses: Arc::new(Mutex::new(Vec::new())),
             requests: Arc::new(Mutex::new(Vec::new())),
             default_response: None,
@@ -451,6 +458,15 @@ impl MockProvider {
     /// Enable native tool calling
     pub fn with_native_tool_calling(mut self, enabled: bool) -> Self {
         self.native_tool_calling = enabled;
+        self
+    }
+
+    /// Report `supports_cache_control() == true`. Needed for any test that
+    /// exercises `get_provider_cache_control()` / `with_cache_control_validated`
+    /// end-to-end — without it the mock behaves like a non-Anthropic provider
+    /// and every cache_control request silently degrades with a warning.
+    pub fn with_cache_control_support(mut self, enabled: bool) -> Self {
+        self.cache_control_support = enabled;
         self
     }
 
@@ -633,6 +649,10 @@ impl LLMProvider for MockProvider {
 
     fn has_native_tool_calling(&self) -> bool {
         self.native_tool_calling
+    }
+
+    fn supports_cache_control(&self) -> bool {
+        self.cache_control_support
     }
 
     fn max_tokens(&self) -> u32 {

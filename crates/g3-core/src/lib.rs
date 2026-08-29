@@ -1150,11 +1150,30 @@ impl<W: UiWriter> Agent<W> {
 
         // Add user message to context window
         let mut user_message = {
-            let provider = self.providers.get(None)?;
             let content = description.to_string();
 
-            // Apply cache control if provider supports it
+            // Apply cache control if provider supports it — but respect the
+            // same rolling-breakpoint budget the tool loop enforces
+            // (max_rolling_cache_breakpoints(), which already reserves one
+            // slot for the system block). Every *new user turn* used to stamp
+            // an UNCONDITIONAL cache_control here with no count check and no
+            // slide-forward, so a chat sent 9 times (a few "continue"s and
+            // clarifying replies) accumulated 9 rolling breakpoints — on top
+            // of the system block — and every subsequent send 400'd against
+            // Anthropic ("A maximum of 4 blocks with cache_control may be
+            // provided. Found 9."). Confirmed live 2026-08-29 on session
+            // butler_ed85ce50451a4380, which is now permanently poisoned
+            // (the bad marker is baked into session.json and replays on every
+            // resume). Slide the breakpoint forward exactly like the tool
+            // loop and the discovery-playback path do. The clear must happen
+            // BEFORE grabbing the provider ref below, or the mutable borrow
+            // of `self` conflicts with the immutable one the provider holds.
             if let Some(cache_config) = self.get_provider_cache_control() {
+                if self.count_cache_controls_in_history() >= self.max_rolling_cache_breakpoints()
+                {
+                    self.clear_rolling_cache_breakpoints();
+                }
+                let provider = self.providers.get(None)?;
                 Message::with_cache_control_validated(
                     MessageRole::User,
                     content,
@@ -2188,6 +2207,19 @@ Skip if nothing new. Be brief."#;
         if self.session_id.is_none() {
             self.session_id = Some(self.generate_session_id(description));
         }
+    }
+
+    /// Test-only accessor for `count_cache_controls_in_history` — an
+    /// integration test in a different crate cannot see a private method,
+    /// and the rolling-breakpoint budget is exactly the invariant the
+    /// 2026-08-29 "Found 9" regression test needs to observe from outside.
+    pub fn count_cache_controls_in_history_for_test(&self) -> usize {
+        self.count_cache_controls_in_history()
+    }
+
+    /// Test-only accessor for `max_rolling_cache_breakpoints`. See above.
+    pub fn max_rolling_cache_breakpoints_for_test(&self) -> usize {
+        self.max_rolling_cache_breakpoints()
     }
 
     /// Clear session state and continuation artifacts (for /clear command)
