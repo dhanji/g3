@@ -244,28 +244,50 @@ impl ContextWindow {
     /// Update token usage from provider response.
     ///
     /// NOTE: This only updates cumulative_tokens (total API usage tracking).
-    /// Calibrates `used_tokens` from the provider's actual token count when
-    /// available.  Our heuristic estimation (chars/3 or chars/4) drifts
-    /// over long sessions because it doesn't account for tool definitions
-    /// (~4000 tokens) sent alongside the conversation history.
+    /// Calibrates `used_tokens` from the provider's actual token counts when
+    /// available. Our heuristic estimation (chars/3 or chars/4) drifts over
+    /// long sessions because it doesn't account for tool definitions (~4000
+    /// tokens) sent alongside the conversation history.
     ///
-    /// `prompt_tokens` is the ground-truth count of every token the API
-    /// received (system prompt + conversation history + tool definitions).
-    /// By snapping `used_tokens` to this value after each API call, we
-    /// eliminate accumulated drift and ensure `should_compact()` triggers
-    /// at the right time.
+    /// `prompt_tokens + cache_read_tokens + cache_creation_tokens` is the
+    /// ground-truth count of every token the API received (system prompt +
+    /// conversation history + tool definitions), whether served fresh, read
+    /// from cache, or just written to cache. **`prompt_tokens` ALONE is only
+    /// the cache-MISS remainder once caching is enabled** — Anthropic reports
+    /// the cached portion in the other two fields, and a request that is
+    /// mostly cache hits can look almost empty by `prompt_tokens` alone while
+    /// carrying the full conversation. By snapping `used_tokens` to the sum
+    /// after each API call, we eliminate accumulated drift and ensure
+    /// `should_compact()` triggers at the right time regardless of caching.
     ///
     /// When `prompt_tokens` is 0 (some providers don't report it), we leave
     /// `used_tokens` unchanged and fall back to the heuristic estimate.
     pub fn update_usage_from_response(&mut self, usage: &Usage) {
         self.cumulative_tokens += usage.total_tokens;
 
-        // Calibrate used_tokens from the provider's actual prompt token count.
-        // prompt_tokens = all tokens sent to the API (system + history + tools).
-        // This is the ground truth — use it to correct heuristic drift.
+        // 🚨 `prompt_tokens` ALONE UNDERCOUNTS BY UP TO ~25x ONCE PROMPT
+        // CACHING IS ON (found 2026-09-03: butler.app's context bar reading
+        // 0% on a ~1M-char, 1035-message session). Anthropic's `input_tokens`
+        // on a cached request reports ONLY the tokens that missed the cache —
+        // the tokens served FROM cache are billed and counted separately as
+        // `cache_read_input_tokens` / `cache_creation_input_tokens`. Those
+        // fields flow into `Usage` (`anthropic.rs`) and were captured there
+        // for cost telemetry, but this calibration ignored them, so
+        // `used_tokens` silently tracked only the cache-miss remainder rather
+        // than the whole prompt — worse the longer a session runs and the
+        // MORE of it is cached, which is exactly backwards.
+        //
+        // The true prompt size or a cached call is the SUM of all three: the
+        // portion Anthropic re-read from cache, the portion it just cached,
+        // and the portion that was never cacheable. All bill against — and
+        // count toward — the same context window either way. `cache_config`
+        // being unset is the `0, 0` case, so this generalises the old
+        // uncached formula rather than special-casing it.
         if usage.prompt_tokens > 0 {
             let old = self.used_tokens;
-            self.used_tokens = usage.prompt_tokens;
+            self.used_tokens = usage.prompt_tokens
+                + usage.cache_read_tokens
+                + usage.cache_creation_tokens;
             debug!(
                 "Calibrated used_tokens from API: {} -> {} (drift was {} tokens)",
                 old, self.used_tokens, (self.used_tokens as i64 - old as i64).abs()
@@ -1430,5 +1452,105 @@ mod tests {
 
         assert_eq!(cw.used_tokens, tokens_after_add,
             "recalculate_tokens should produce same result as add_message for tool_call messages");
+    }
+
+    // ── Calibration must include cached tokens (2026-09-03) ──────────────
+    //
+    // Bug: `update_usage_from_response` snapped `used_tokens` to
+    // `prompt_tokens` alone. Anthropic's `input_tokens` on a CACHED request
+    // reports only the cache-MISS remainder — the cached portion is billed
+    // and counted separately as `cache_creation_input_tokens` /
+    // `cache_read_input_tokens`. So a long butler.app session with prompt
+    // caching enabled (`cache_config = "1hour"`) calibrated `used_tokens` to
+    // ~14.6k against an actual ~360k-token, 1035-message conversation — the
+    // context bar read 0%/1% instead of ~36%.
+
+    #[test]
+    fn test_calibration_includes_cache_read_tokens() {
+        // A fully cache-HIT call: almost nothing is "new" by prompt_tokens
+        // alone, but the whole prior conversation was re-read from cache and
+        // still counts against the context window.
+        let mut cw = ContextWindow::new(1_000_000);
+        let usage = Usage {
+            prompt_tokens: 500,      // the cache-miss remainder (new turn)
+            completion_tokens: 100,
+            total_tokens: 600,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 300_000, // the whole prior history, read from cache
+        };
+        cw.update_usage_from_response(&usage);
+        assert_eq!(cw.used_tokens, 500 + 300_000,
+            "used_tokens must include cache_read_tokens, not just prompt_tokens");
+    }
+
+    #[test]
+    fn test_calibration_includes_cache_creation_tokens() {
+        // A cache-WRITE call: the first turn to populate the cache reports
+        // the newly-cached portion separately too.
+        let mut cw = ContextWindow::new(1_000_000);
+        let usage = Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 50,
+            total_tokens: 1_050,
+            cache_creation_tokens: 50_000,
+            cache_read_tokens: 0,
+        };
+        cw.update_usage_from_response(&usage);
+        assert_eq!(cw.used_tokens, 1_000 + 50_000,
+            "used_tokens must include cache_creation_tokens too");
+    }
+
+    #[test]
+    fn test_calibration_uncached_call_is_unaffected() {
+        // The pre-existing, no-caching behaviour must be exactly preserved:
+        // both cache fields are 0, so the sum degrades to plain prompt_tokens.
+        let mut cw = ContextWindow::new(200_000);
+        let usage = Usage {
+            prompt_tokens: 42_000,
+            completion_tokens: 500,
+            total_tokens: 42_500,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+        };
+        cw.update_usage_from_response(&usage);
+        assert_eq!(cw.used_tokens, 42_000);
+    }
+
+    #[test]
+    fn test_calibration_ignores_a_zero_prompt_tokens_response() {
+        // Some providers don't report prompt_tokens at all — the existing
+        // "leave used_tokens unchanged" fallback must still hold even when
+        // cache fields are (nonsensically) non-zero, since a 0 prompt_tokens
+        // response carries no reliable usage data at all.
+        let mut cw = ContextWindow::new(200_000);
+        cw.used_tokens = 12_345;
+        let usage = Usage {
+            prompt_tokens: 0,
+            completion_tokens: 10,
+            total_tokens: 10,
+            cache_creation_tokens: 999,
+            cache_read_tokens: 999,
+        };
+        cw.update_usage_from_response(&usage);
+        assert_eq!(cw.used_tokens, 12_345, "a 0 prompt_tokens response must not overwrite used_tokens");
+    }
+
+    #[test]
+    fn test_calibration_drives_should_compact_on_a_heavily_cached_session() {
+        // The end-to-end version of the bug: a session whose real size is
+        // well past the compaction threshold, but which would have read as
+        // nearly empty under the old (prompt_tokens-only) calibration.
+        let mut cw = ContextWindow::new(1_000_000); // buffered total: 990_000
+        let usage = Usage {
+            prompt_tokens: 200,        // tiny cache-miss remainder
+            completion_tokens: 50,
+            total_tokens: 250,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 850_000, // the bulk of a long conversation
+        };
+        cw.update_usage_from_response(&usage);
+        assert!(cw.should_compact(),
+            "a heavily-cached session past threshold must still trigger compaction, \
+             used={} total={} pct={:.1}%", cw.used_tokens, cw.total_tokens, cw.percentage_used());
     }
 }
