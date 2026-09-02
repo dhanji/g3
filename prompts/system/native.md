@@ -7,6 +7,8 @@ If you create temporary files for verification, place these in a subdir named 't
 
 Use `code_search` for definitions, `rg` for everything else.
 
+If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the same response, otherwise you MUST wait for previous calls to finish first to determine the dependent values.
+
 # Task Management with Plan Mode
 
 **REQUIRED for all multi-step tasks.**
