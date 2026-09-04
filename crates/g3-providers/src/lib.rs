@@ -138,7 +138,22 @@ pub struct Message {
     /// change still load; `hydrate_message_ids()` backfills them.
     #[serde(default)]
     pub id: String,
-    #[serde(skip)]
+    /// Context-management classification (ACD stubs, summaries, rehydrated
+    /// content).
+    ///
+    /// This was `#[serde(skip)]`, which silently broke `--resume` for ACD:
+    /// session state is persisted to `.g3/sessions/<id>/session.json`, so every
+    /// message came back as `Regular`. `dehydrate_context()` locates
+    /// already-dehydrated content with
+    /// `rposition(|m| m.is_dehydrated_stub())`; after a resume that returned
+    /// `None`, `dehydrate_start` fell back to 0, and the agent re-dehydrated
+    /// content that was already a stub — producing fragments whose payload was
+    /// mostly a previous fragment's stub, nesting deeper on every resume.
+    ///
+    /// `default` (not `skip`) so sessions written before this change still
+    /// load; they deserialize as `Regular`, which is the pre-existing
+    /// behaviour and therefore not a regression.
+    #[serde(default)]
     pub kind: MessageKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,

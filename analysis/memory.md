@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-05-02T05:35:05Z | Size: 26.4k chars
+> Updated: 2026-09-02T11:28:53Z | Size: 30.0k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5686]
@@ -425,3 +425,40 @@ Anthropic's API rejects the `temperature` field for newer models (e.g. extended-
 - `crates/g3-providers/src/openai.rs:84-87` - OpenAI also strips temperature ('seem to fail') — likely similar issue for o-series models
 - `crates/g3-core/src/streaming.rs:301-305` - error log labels temperature as "request-level, may be stripped per-provider"
 - **Other providers send temperature normally**: Databricks (line 934), Gemini (line 529), Embedded (line 361)
+
+### ACD Cost Analysis (cache-aware, measured over 94 real sessions)
+- `analysis/acd_cost_analysis.md` - full verdict, tables, design, limitations
+- `analysis/acd/sweep.py` - cache-aware cost sweep over `.g3/sessions/*/session.json`
+- `analysis/acd/results.md` - generated output
+- `crates/g3-core/tests/acd_cost_model_test.rs` - 11 property tests for the cost model
+- `crates/g3-core/tests/acd_fidelity_characterization_test.rs` - 16 defect regression tests
+
+**Key measured facts:**
+- Prefix amplification median **37.3x** (max 139x). Cost = message size x number of subsequent requests containing it. A 55k final prefix can bill 3.9M input tokens.
+- Spend breakdown: tool results 39.0%, tool_call inputs 35.0%, system prompt 23.9%, assistant prose 1.4%, user 0.7%.
+- Turn-aligned ACD saves **26.4% aggregate**; ceiling is 38.2% (it only fires at user-turn boundaries).
+- **ACD is NEGATIVE on single-turn sessions (-0.4% median)**; 24/94 sessions zero-or-negative, worst -4.9%. Long autonomous runs are single-turn = the case ACD helps least.
+- **Eager per-tool-call pruning is net-NEGATIVE (-3.7% aggregate), worse than doing nothing in 61/94 sessions.** Each eviction invalidates the cached prefix -> forced 1.25x cache re-write exceeds the 0.1x saving.
+- Cache-aligned pruning evicts the SAME set (eviction is idempotent) but defers to the breakpoint slide -> cheaper in 92/94 sessions.
+- ACD + cache-aligned pruning together = **35.4% aggregate** (they attack disjoint regions).
+
+**Pricing model**: fresh 1.0x, cache read 0.1x, cache write 1.25x. g3 slides its rolling cache breakpoint every 10 tool calls (`lib.rs` tool loop).
+
+### ACD Fidelity Defects (all fixed)
+- `crates/g3-core/src/acd.rs:208` `extract_tool_call_summary()` - now reads BOTH `msg.tool_calls` (structured) and inline JSON, no double-counting. Previously only inline JSON -> **every stub said "no tool calls"** with native providers (the default).
+- `crates/g3-providers/src/lib.rs:156` `Message.kind` - changed `#[serde(skip)]` -> `#[serde(default)]`. Previously stubs reloaded as `Regular` on `--resume`, so `rposition(is_dehydrated_stub)` returned None, `dehydrate_start` reset to 0, and already-dehydrated content was re-dehydrated into **nested stubs**.
+- `crates/g3-core/src/lib.rs:2009` - `dehydrate_start = (idx + 2).min(history_len)`. The `+2` assumes a Summary always follows the stub, but it's only appended when non-empty; overshoot silently dehydrated nothing.
+- `crates/g3-core/src/acd.rs:288` `estimate_fragment_tokens()` - now matches `ContextWindow` (JSON/code len/3, prose len/4, +20/tool call). Was flat len/4 -> >20% undercount on JSON, so `execute_rehydrate()` capacity check would green-light an overflowing rehydration.
+
+### Context Management Mechanism Overlap (avoid double-pruning)
+Four overlapping mechanisms exist/proposed:
+| mechanism | trigger | action |
+|---|---|---|
+| `thin_context()` thinnify | every 10% context growth | large tool results in first third -> file refs |
+| `thin_context_all()` skinnify | compaction fallback | same, entire context |
+| compaction | 80% of window | LLM summarises everything |
+| proposed pruning | every 10 tool calls | receipts for stale results, cache-aligned |
+
+Thinnify already does nearly what salience pruning would. The honest implementation is **make thinnify cache-aware + tool-call-cadence**, reusing `resolve_thinned_dir()` / `create_tool_result_modification()`, NOT a fourth mechanism.
+
+**Gotcha**: cost-per-session is a metric that IMPROVES when the agent gets dumber. Pruning cannot be enabled on cost evidence alone - needs re-read-rate metric + task-completion A/B first.

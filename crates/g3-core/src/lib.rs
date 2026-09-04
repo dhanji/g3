@@ -314,9 +314,10 @@ impl<W: UiWriter> Agent<W> {
         use g3_providers::{Message, MessageRole};
 
         let context_length = config.agent.max_context_length.unwrap_or(200_000);
-        let mut context_window = ContextWindow::with_threshold(
+        let mut context_window = ContextWindow::with_thresholds(
             context_length,
             config.agent.compaction_threshold_percent,
+            config.agent.thinning_floor_percent,
         );
 
         // Add system prompt
@@ -372,9 +373,10 @@ impl<W: UiWriter> Agent<W> {
         let mut context_warnings = Vec::new();
         let context_length =
             Self::get_configured_context_length(&config, &providers, &mut context_warnings)?;
-        let mut context_window = ContextWindow::with_threshold(
+        let mut context_window = ContextWindow::with_thresholds(
             context_length,
             config.agent.compaction_threshold_percent,
+            config.agent.thinning_floor_percent,
         );
 
         // Surface any context warnings to the user via UI
@@ -1996,8 +1998,17 @@ impl<W: UiWriter> Agent<W> {
         // Start index for messages to dehydrate:
         // - If there's a previous stub, start after the stub AND its following summary (stub + 2)
         // - Otherwise, start from the beginning (index 0)
+        //
+        // The `+ 2` assumes the stub is always followed by a Summary message,
+        // but that summary is appended only `if !summary_content.trim().is_empty()`.
+        // When a turn ends with an empty response (cancellation, or a
+        // tool-only final turn) the stub is the LAST message and `idx + 2`
+        // points past the end. Clamping keeps the subsequent
+        // `idx >= dehydrate_start` filter meaningful instead of silently
+        // selecting nothing and never dehydrating again.
+        let history_len = self.context_window.conversation_history.len();
         let dehydrate_start = match last_stub_index {
-            Some(idx) => idx + 2, // Skip the stub and the summary that follows it
+            Some(idx) => (idx + 2).min(history_len), // Skip the stub and the summary that follows it
             None => 0,
         };
 

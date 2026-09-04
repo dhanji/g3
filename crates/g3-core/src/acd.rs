@@ -193,12 +193,38 @@ fn generate_fragment_id() -> String {
 }
 
 /// Extract a summary of tool calls from messages.
+///
+/// Tool calls reach us in two forms and BOTH must be counted:
+///
+/// 1. **Structured** — `Message.tool_calls`, produced by every native
+///    tool-calling provider (Anthropic, OpenAI, Gemini). This is the default.
+/// 2. **Inline JSON** — embedded in `Message.content`, produced by the embedded
+///    provider and other non-native backends.
+///
+/// This function used to inspect only form (2). Since the default configuration
+/// produces form (1), every stub reported "no tool calls" — which is precisely
+/// the metadata the LLM uses to judge whether rehydrating a fragment is
+/// worthwhile. The stub was actively misinforming it.
 fn extract_tool_call_summary(messages: &[Message]) -> HashMap<String, usize> {
     let mut summary = HashMap::new();
 
     for msg in messages {
-        if matches!(msg.role, g3_providers::MessageRole::Assistant) {
-            // Try to parse tool calls from the message content
+        if !matches!(msg.role, g3_providers::MessageRole::Assistant) {
+            continue;
+        }
+
+        // Form 1: structured tool calls. A single assistant message may carry
+        // several, so count each rather than just the first.
+        let mut counted_structured = false;
+        for tc in &msg.tool_calls {
+            *summary.entry(tc.name.clone()).or_insert(0) += 1;
+            counted_structured = true;
+        }
+
+        // Form 2: inline JSON. Only consult this when there were no structured
+        // calls, otherwise a provider that emits both representations for the
+        // same call would be double-counted.
+        if !counted_structured {
             if let Some(tool_name) = extract_tool_name_from_content(&msg.content) {
                 *summary.entry(tool_name).or_insert(0) += 1;
             }
@@ -250,10 +276,37 @@ fn find_json_end(json_str: &str) -> Option<usize> {
 }
 
 /// Estimate token count for messages.
+///
+/// Must agree with `ContextWindow::estimate_message_tokens`, because
+/// `execute_rehydrate()` compares the value stored here against the remaining
+/// context to decide whether a fragment will fit. This used to be a flat
+/// `len/4 * 1.1` while `ContextWindow` uses `len/3 * 1.1` for anything
+/// containing `{`, ` ``` ` or `fn ` — i.e. for exactly the JSON and code that
+/// tool results are made of. The result was a >20% undercount on JSON-heavy
+/// fragments, so the capacity check would green-light a rehydration that
+/// overflowed the window.
 fn estimate_fragment_tokens(messages: &[Message]) -> u32 {
-    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-    // Use same heuristic as ContextWindow: ~4 chars per token with 10% buffer
-    ((total_chars as f32 / 4.0) * 1.1).ceil() as u32
+    messages
+        .iter()
+        .map(|m| {
+            let text = &m.content;
+            // Same discrimination as ContextWindow::estimate_tokens.
+            let base = if text.contains('{') || text.contains("```") || text.contains("fn ") {
+                (text.len() as f32 / 3.0).ceil()
+            } else {
+                (text.len() as f32 / 4.0).ceil()
+            };
+            let mut tokens = (base * 1.1).ceil() as u32;
+
+            // Structured tool calls are serialized onto the wire too, and are
+            // always JSON. Mirror ContextWindow's per-call overhead.
+            for tc in &m.tool_calls {
+                let input_len = tc.input.to_string().len();
+                tokens += ((input_len as f32 / 3.0).ceil() * 1.1).ceil() as u32 + 20;
+            }
+            tokens
+        })
+        .sum()
 }
 
 /// Extract topic hints from messages using heuristics.

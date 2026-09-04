@@ -84,6 +84,23 @@ fn default_compaction_threshold_percent() -> f32 {
     DEFAULT_COMPACTION_THRESHOLD_PERCENT
 }
 
+/// Default percentage at which incremental thinning first becomes eligible.
+/// Unchanged from the historical hardcoded value.
+pub const DEFAULT_THINNING_FLOOR_PERCENT: u32 = 50;
+
+/// `should_thin()` never fires above this percentage; compaction takes over.
+const THINNING_CEILING_PERCENT: u32 = 80;
+
+/// Clamp bounds for a configured thinning floor. Below 1% thinning would
+/// fire on nearly every tool call; the ceiling itself (80) is the natural
+/// upper bound — a floor above it could never fire at all.
+const MIN_THINNING_FLOOR_PERCENT: u32 = 1;
+const MAX_THINNING_FLOOR_PERCENT: u32 = THINNING_CEILING_PERCENT;
+
+fn default_thinning_floor_percent() -> u32 {
+    DEFAULT_THINNING_FLOOR_PERCENT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextWindow {
     pub used_tokens: u32,
@@ -101,6 +118,14 @@ pub struct ContextWindow {
     /// compacted at ~15% of the available window instead of 80%.
     #[serde(default = "default_compaction_threshold_percent")]
     pub compaction_threshold_percent: f32,
+    /// Percentage of `total_tokens` at which incremental thinning first
+    /// becomes eligible (before this, `should_thin()` always returns false).
+    /// Step size between successive thinning events equals the floor itself
+    /// (e.g. floor=5 thins at 5/10/15/.../80; floor=50 thins at 50/60/70/80,
+    /// unchanged from the historical hardcoded behaviour). Clamped to
+    /// 1..=80 — see `MIN_THINNING_FLOOR_PERCENT`/`THINNING_CEILING_PERCENT`.
+    #[serde(default = "default_thinning_floor_percent")]
+    pub thinning_floor_percent: u32,
 }
 
 impl ContextWindow {
@@ -111,7 +136,25 @@ impl ContextWindow {
     /// Create a context window with an explicit compaction threshold (percent
     /// of the buffered total). Values outside 10..=95 are clamped; non-finite
     /// values fall back to the default.
+    ///
+    /// Thinning floor defaults to `DEFAULT_THINNING_FLOOR_PERCENT` (50) — use
+    /// `with_thresholds` to also override it (e.g. scout's aggressive 5%).
     pub fn with_threshold(total_tokens: u32, compaction_threshold_percent: f32) -> Self {
+        Self::with_thresholds(
+            total_tokens,
+            compaction_threshold_percent,
+            DEFAULT_THINNING_FLOOR_PERCENT,
+        )
+    }
+
+    /// Create a context window with explicit compaction AND thinning-floor
+    /// thresholds. See field docs on `compaction_threshold_percent` and
+    /// `thinning_floor_percent` for the semantics of each.
+    pub fn with_thresholds(
+        total_tokens: u32,
+        compaction_threshold_percent: f32,
+        thinning_floor_percent: u32,
+    ) -> Self {
         // Apply a 1% safety buffer to absorb token estimation drift.
         // Our heuristic (chars/3 * 1.1 for code, chars/4 * 1.1 for text) slightly
         // undercounts over long sessions with hundreds of tool calls. Without this
@@ -130,6 +173,10 @@ impl ContextWindow {
             );
             DEFAULT_COMPACTION_THRESHOLD_PERCENT
         };
+        let thinning_floor = thinning_floor_percent.clamp(
+            MIN_THINNING_FLOOR_PERCENT,
+            MAX_THINNING_FLOOR_PERCENT,
+        );
         Self {
             used_tokens: 0,
             total_tokens: buffered_tokens,
@@ -137,6 +184,7 @@ impl ContextWindow {
             conversation_history: Vec::new(),
             last_thinning_percentage: 0,
             compaction_threshold_percent: threshold,
+            thinning_floor_percent: thinning_floor,
         }
     }
 
@@ -396,15 +444,29 @@ impl ContextWindow {
     }
 
     /// Check if we should trigger context thinning.
-    /// Triggers at 50%, 60%, 70%, and 80% thresholds.
+    ///
+    /// Eligible once usage reaches `thinning_floor_percent`, then re-fires on
+    /// every step after that up to `THINNING_CEILING_PERCENT` (80), where
+    /// compaction takes over. The step size is `min(floor, 10)`: floors at or
+    /// above 10 keep the historical fixed decade-stepping (default floor 50
+    /// reproduces the exact legacy sequence 50/60/70/80), while a floor below
+    /// 10 (e.g. 5, used by the `scout` research agent to discard webdriver
+    /// HTML aggressively) steps at its own finer size instead, firing at
+    /// 5/10/15/.../80.
     pub fn should_thin(&self) -> bool {
+        let floor = self.thinning_floor_percent.clamp(
+            MIN_THINNING_FLOOR_PERCENT,
+            MAX_THINNING_FLOOR_PERCENT,
+        );
+        let step = floor.min(10).max(1);
         let current_percentage = self.percentage_used() as u32;
-        if current_percentage < 50 {
+        if current_percentage < floor {
             return false;
         }
 
-        let current_threshold = (current_percentage / 10) * 10;
-        current_threshold > self.last_thinning_percentage && current_threshold <= 80
+        let current_threshold = (current_percentage / step) * step;
+        current_threshold > self.last_thinning_percentage
+            && current_threshold <= THINNING_CEILING_PERCENT
     }
 
     // ========================================================================
@@ -575,7 +637,12 @@ Format this as a detailed but concise summary that can be used to resume the con
 
         // Only update last_thinning_percentage for incremental thinning
         if scope == ThinScope::FirstThird {
-            let current_threshold = (current_percentage / 10) * 10;
+            let floor = self.thinning_floor_percent.clamp(
+                MIN_THINNING_FLOOR_PERCENT,
+                MAX_THINNING_FLOOR_PERCENT,
+            );
+            let step = floor.min(10).max(1);
+            let current_threshold = (current_percentage / step) * step;
             self.last_thinning_percentage = current_threshold;
         }
 
@@ -1145,6 +1212,77 @@ mod tests {
         // At 60% - should thin again
         cw.used_tokens = 60;
         assert!(cw.should_thin());
+    }
+
+    /// A resumed session whose serialized form predates the thinning-floor
+    /// field must deserialize to the default (50), not 0 (which would thin
+    /// on almost every tool call).
+    #[test]
+    fn test_deserialize_without_thinning_floor_field_uses_default() {
+        let json = r#"{
+            "used_tokens": 40000,
+            "total_tokens": 990000,
+            "cumulative_tokens": 40000,
+            "conversation_history": [],
+            "last_thinning_percentage": 0
+        }"#;
+        let cw: ContextWindow = serde_json::from_str(json).expect("legacy shape must deserialize");
+        assert_eq!(cw.thinning_floor_percent, DEFAULT_THINNING_FLOOR_PERCENT);
+    }
+
+    /// A low floor (scout's use case: 5) must fire at every 5% step, not
+    /// just at multiples of 10 — this is the whole point of a configurable
+    /// floor. Also confirms it still stops at the 80% ceiling.
+    #[test]
+    fn test_low_thinning_floor_steps_finely() {
+        let mut cw = ContextWindow::with_thresholds(100, 80.0, 5);
+
+        cw.used_tokens = 4;
+        assert!(!cw.should_thin(), "below the 5% floor must not thin");
+
+        cw.used_tokens = 5;
+        assert!(cw.should_thin(), "at the floor (5%) must thin");
+        cw.last_thinning_percentage = 5;
+
+        cw.used_tokens = 9;
+        assert!(!cw.should_thin(), "9% has not reached the next 5%-step (10)");
+
+        cw.used_tokens = 10;
+        assert!(cw.should_thin(), "10% is the next step after floor=5");
+        cw.last_thinning_percentage = 10;
+
+        cw.used_tokens = 80;
+        assert!(cw.should_thin(), "80% is still <= the ceiling");
+        cw.last_thinning_percentage = 80;
+
+        cw.used_tokens = 85;
+        assert!(!cw.should_thin(), "past the 80% ceiling, compaction takes over");
+    }
+
+    /// Out-of-range floors (0, and values above the 80% ceiling) must clamp
+    /// rather than panic, divide by zero, or permanently disable thinning.
+    #[test]
+    fn test_thinning_floor_is_clamped() {
+        let cw_zero = ContextWindow::with_thresholds(100, 80.0, 0);
+        assert_eq!(
+            cw_zero.thinning_floor_percent, MIN_THINNING_FLOOR_PERCENT,
+            "a zero floor must clamp up, not divide by zero in should_thin()"
+        );
+
+        let cw_over = ContextWindow::with_thresholds(100, 80.0, 200);
+        assert_eq!(
+            cw_over.thinning_floor_percent, THINNING_CEILING_PERCENT,
+            "a floor above the ceiling can never fire, so it clamps to the ceiling"
+        );
+    }
+
+    /// `with_threshold` (the pre-existing 2-arg constructor, still used by
+    /// several call sites) must keep defaulting the thinning floor to 50 —
+    /// adding `with_thresholds` must not change its behaviour.
+    #[test]
+    fn test_with_threshold_defaults_thinning_floor() {
+        let cw = ContextWindow::with_threshold(100, 80.0);
+        assert_eq!(cw.thinning_floor_percent, DEFAULT_THINNING_FLOOR_PERCENT);
     }
 
     #[test]

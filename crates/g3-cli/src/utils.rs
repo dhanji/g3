@@ -113,6 +113,11 @@ pub fn load_config_with_cli_overrides(cli: &Cli) -> Result<Config> {
         config.providers.fallback_model = Some(fallback);
     }
 
+    // Apply thinning-floor override, if passed (see cli_args.rs doc comment).
+    if let Some(floor) = cli.thinning_floor {
+        config.agent.thinning_floor_percent = floor;
+    }
+
     // Apply webdriver flag override
     if cli.webdriver {
         config.webdriver.enabled = true;

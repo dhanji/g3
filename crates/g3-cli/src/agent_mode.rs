@@ -115,6 +115,11 @@ pub async fn run_agent_mode(
     // Load config
     let mut config = g3_config::Config::load(flags.config.as_deref())?;
 
+    // Apply thinning-floor override (e.g. scout's aggressive 5%).
+    if let Some(floor) = flags.thinning_floor {
+        config.agent.thinning_floor_percent = floor;
+    }
+
     // Apply chrome-headless flag override
     if flags.chrome_headless {
         config.webdriver.enabled = true;

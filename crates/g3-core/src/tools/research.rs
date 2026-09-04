@@ -109,6 +109,17 @@ async fn run_scout_agent(
         .arg("--agent")
         .arg("scout")
         .arg("--new-session")  // Always start fresh for research
+        // Scout's webdriver research generates huge disposable HTML dumps
+        // (page sources, search results) that are only useful for the one
+        // tool call that produced them. An aggressive 5% thinning floor
+        // (vs the default 50%) discards that content right after each tool
+        // call instead of letting it accumulate toward compaction, giving
+        // the research job far more headroom to actually finish. Scout is a
+        // one-shot background process with no multi-turn prompt-cache reuse
+        // to protect, so the cache-invalidation cost that makes a low floor
+        // risky for long-lived sessions (see analysis/thinning_cache_analysis.md)
+        // doesn't apply here.
+        .arg("--thinning-floor=5")
         .arg("--quiet");  // Suppress log file creation
 
     // Propagate the webdriver browser choice

@@ -31,6 +31,10 @@ pub struct CommonFlags {
     pub no_auto_memory: bool,
     /// Enable aggressive context dehydration
     pub acd: bool,
+    /// Override `agent.thinning_floor_percent` for this run (e.g. scout's
+    /// aggressive 5% floor to discard webdriver HTML right after each tool
+    /// call). `None` leaves the config file / default (50) untouched.
+    pub thinning_floor: Option<u32>,
     /// Load a project from the given path at startup
     pub project: Option<PathBuf>,
     /// Resume a specific session by ID
@@ -176,6 +180,15 @@ pub struct Cli {
     #[arg(long)]
     pub acd: bool,
 
+    /// Override the thinning floor (percent of context window at which
+    /// incremental thinning first becomes eligible; default 50, see
+    /// `agent.thinning_floor_percent`). Used by the `scout` research agent
+    /// with a value of 5 so large webdriver page-source dumps are discarded
+    /// right after the tool call that produced them, instead of accumulating
+    /// toward compaction.
+    #[arg(long, value_name = "PERCENT")]
+    pub thinning_floor: Option<u32>,
+
     /// Include additional prompt content from a file (appended before memory)
     #[arg(long, value_name = "PATH")]
     pub include_prompt: Option<PathBuf>,
@@ -215,6 +228,7 @@ impl Cli {
             memory_path: self.memory.clone(),
             no_auto_memory: self.no_auto_memory,
             acd: self.acd,
+            thinning_floor: self.thinning_floor,
             project: self.project.clone(),
             resume: self.resume.clone(),
             stream_events: self.stream_events.clone(),

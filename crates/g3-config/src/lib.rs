@@ -147,6 +147,16 @@ pub struct AgentConfig {
     /// Clamped to 10..=95 by ContextWindow. Defaults to 80.
     #[serde(default = "default_compaction_threshold_percent")]
     pub compaction_threshold_percent: f32,
+    /// Percent of the context window at which incremental thinning first
+    /// becomes eligible. Clamped to 1..=80 by ContextWindow. Defaults to 50
+    /// (unchanged historical behaviour).
+    ///
+    /// Lowered aggressively (e.g. 5) for agents that produce huge disposable
+    /// payloads early — the `scout` research agent sets this via
+    /// `--thinning-floor=5` so webdriver HTML dumps get discarded right
+    /// after each tool call instead of accumulating toward compaction.
+    #[serde(default = "default_thinning_floor_percent")]
+    pub thinning_floor_percent: u32,
     #[serde(default = "default_max_retry_attempts")]
     pub max_retry_attempts: u32,
     #[serde(default = "default_autonomous_max_retry_attempts")]
@@ -162,6 +172,10 @@ fn default_fallback_max_tokens() -> usize {
 /// Kept in sync with g3-core's DEFAULT_COMPACTION_THRESHOLD_PERCENT.
 fn default_compaction_threshold_percent() -> f32 {
     80.0
+}
+/// Kept in sync with g3-core's DEFAULT_THINNING_FLOOR_PERCENT.
+fn default_thinning_floor_percent() -> u32 {
+    50
 }
 fn default_true() -> bool {
     true
@@ -259,6 +273,7 @@ impl Default for AgentConfig {
             timeout_seconds: 120,
             auto_compact: true,
             compaction_threshold_percent: default_compaction_threshold_percent(),
+            thinning_floor_percent: default_thinning_floor_percent(),
             max_retry_attempts: 3,
             autonomous_max_retry_attempts: 6,
             check_todo_staleness: true,
@@ -311,6 +326,7 @@ impl Default for Config {
                 timeout_seconds: 60,
                 auto_compact: true,
                 compaction_threshold_percent: default_compaction_threshold_percent(),
+                thinning_floor_percent: default_thinning_floor_percent(),
                 max_retry_attempts: 3,
                 autonomous_max_retry_attempts: 6,
                 check_todo_staleness: true,
