@@ -211,6 +211,10 @@ impl<'a> AgentStatsSnapshot<'a> {
             self.cache_stats.total_input_tokens
         ));
         stats.push_str(&format!(
+            "   • Total Output Tokens:{:>9}\n",
+            self.cache_stats.total_output_tokens
+        ));
+        stats.push_str(&format!(
             "   • Cache Created:     {:>10} tokens\n",
             self.cache_stats.total_cache_creation_tokens
         ));
@@ -281,6 +285,7 @@ mod tests {
             total_input_tokens: 10000,
             total_cache_creation_tokens: 2000,
             total_cache_read_tokens: 6000,
+            ..Default::default()
         };
         let first_token_times = vec![
             Duration::from_millis(100),

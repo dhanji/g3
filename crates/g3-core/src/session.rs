@@ -6,6 +6,7 @@
 
 use crate::context_window::ContextWindow;
 use crate::paths::{ensure_session_dir, get_context_summary_file, get_g3_dir, get_session_file};
+use crate::CacheStats;
 use g3_providers::MessageRole;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -87,13 +88,123 @@ pub fn generate_session_id(description: &str, agent_name: Option<&str>) -> Strin
     format!("{}_{:x}", prefix, hash)
 }
 
+/// The JSON key under which observed token usage is persisted in session.json.
+///
+/// Named as a constant because it is a CONTRACT with another repo: butler's
+/// `tools/token_cost.py` reads this block and prefers it over its own
+/// character-count reconstruction. Renaming it here silently downgrades every
+/// cost figure on that machine back to an estimate, with no error anywhere.
+pub const TOKEN_USAGE_KEY: &str = "token_usage";
+
+/// Serialize observed usage into the shape persisted in session.json.
+///
+/// Hand-rolled rather than `serde_json::to_value(cache_stats)` so the wire
+/// names are chosen for the READER (butler's cost tooling), not derived from
+/// Rust field names that would then be unrenameable. `cache_hit_rate` is
+/// included precomputed because it is the single number that answers "is
+/// caching working", and every consumer would otherwise re-derive it — and
+/// some would put `cache_creation` in the denominator and get a different
+/// answer.
+fn token_usage_json(s: &CacheStats) -> serde_json::Value {
+    let by_model: serde_json::Map<String, serde_json::Value> = s
+        .by_model
+        .iter()
+        .map(|(model, u)| {
+            (
+                model.clone(),
+                serde_json::json!({
+                    "api_calls": u.calls,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_creation_tokens": u.cache_creation_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                }),
+            )
+        })
+        .collect();
+
+    serde_json::json!({
+        "api_calls": s.total_calls,
+        "cache_hit_calls": s.cache_hit_calls,
+        "input_tokens": s.total_input_tokens,
+        "output_tokens": s.total_output_tokens,
+        "cache_creation_tokens": s.total_cache_creation_tokens,
+        "cache_read_tokens": s.total_cache_read_tokens,
+        "cache_hit_rate": s.cache_hit_rate(),
+        "by_model": by_model,
+    })
+}
+
+/// Read a previously-persisted `token_usage` block back into `CacheStats`.
+///
+/// Returns `None` for a session written by an older g3 (no block), and for
+/// anything malformed. **Malformed must degrade to `None`, never to partial
+/// totals**: half-read usage would be reported as measured and would be wrong,
+/// which is worse than the estimate it replaced.
+///
+/// Exists for the RESUME path. `g3 --resume` continues a session in place and
+/// rewrites its session.json, so without seeding the in-memory totals from
+/// disk, every resumed turn would overwrite the file with only its own tokens
+/// — and a 40-turn butler.app chat would persist the cost of turn 40.
+pub fn read_token_usage(session_file: &std::path::Path) -> Option<CacheStats> {
+    let content = std::fs::read_to_string(session_file).ok()?;
+    let data: serde_json::Value = serde_json::from_str(&content).ok()?;
+    token_usage_from_json(data.get(TOKEN_USAGE_KEY)?)
+}
+
+/// Parse the persisted block. Separated from the file read so it can be tested
+/// against literal JSON, including the shapes a hand-edited or truncated file
+/// produces.
+pub fn token_usage_from_json(v: &serde_json::Value) -> Option<CacheStats> {
+    let obj = v.as_object()?;
+    // A block with no api_calls key at all is not a usage block — refuse it
+    // rather than reporting a confident zero.
+    let total_calls = obj.get("api_calls")?.as_u64()? as u32;
+
+    let u64_at = |key: &str| obj.get(key).and_then(|x| x.as_u64()).unwrap_or(0);
+
+    let mut by_model = std::collections::BTreeMap::new();
+    if let Some(models) = obj.get("by_model").and_then(|m| m.as_object()) {
+        for (model, mv) in models {
+            let Some(mo) = mv.as_object() else { continue };
+            let g = |key: &str| mo.get(key).and_then(|x| x.as_u64()).unwrap_or(0);
+            by_model.insert(
+                model.clone(),
+                crate::ModelTokenUsage {
+                    calls: g("api_calls") as u32,
+                    input_tokens: g("input_tokens"),
+                    output_tokens: g("output_tokens"),
+                    cache_creation_tokens: g("cache_creation_tokens"),
+                    cache_read_tokens: g("cache_read_tokens"),
+                },
+            );
+        }
+    }
+
+    Some(CacheStats {
+        total_calls,
+        cache_hit_calls: u64_at("cache_hit_calls") as u32,
+        total_input_tokens: u64_at("input_tokens"),
+        total_output_tokens: u64_at("output_tokens"),
+        total_cache_creation_tokens: u64_at("cache_creation_tokens"),
+        total_cache_read_tokens: u64_at("cache_read_tokens"),
+        by_model,
+    })
+}
+
 /// Save the context window to a session file.
 ///
 /// If session_id is provided, saves to `.g3/sessions/<session_id>/session.json`.
 /// Otherwise, saves to `.g3/sessions/anonymous_<timestamp>/session.json`.
+///
+/// `cache_stats` is the session's OBSERVED token usage (what the provider
+/// reported on the wire, not an estimate). It is written on every save,
+/// including the mid-turn `running` one, so a killed turn still accounts for
+/// the tokens it burned — those were billed whether or not the turn finished.
 pub fn save_context_window(
     session_id: Option<&str>,
     context_window: &ContextWindow,
+    cache_stats: &CacheStats,
     status: &str,
 ) {
     let timestamp = SystemTime::now()
@@ -123,6 +234,13 @@ pub fn save_context_window(
         "session_id": session_id,
         "timestamp": timestamp,
         "status": status,
+        // Deliberately unconditional, even when nothing was observed: a
+        // zeroed block means "this g3 records usage and this session used
+        // none", while an ABSENT block means "written by a g3 older than
+        // 2026-09-06". A consumer cannot distinguish those if we omit empties,
+        // and it must, because one falls back to estimation and the other
+        // does not.
+        TOKEN_USAGE_KEY: token_usage_json(cache_stats),
         "context_window": {
             "used_tokens": context_window.used_tokens,
             "total_tokens": context_window.total_tokens,

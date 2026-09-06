@@ -268,6 +268,54 @@ impl StreamState {
                 self.stop_reason = Some(reason.clone());
             }
         }
+
+        // 🚨 THE OUTPUT-TOKEN COUNT LIVES HERE, NOT IN `message_start`.
+        // Anthropic sends `usage` twice per streamed response: once on
+        // `message_start`, where `input_tokens`/`cache_*` are final but
+        // `output_tokens` is the count SO FAR (in practice 1-4 — the message
+        // has barely begun), and again on `message_delta`, where
+        // `output_tokens` is the final total for the message.
+        //
+        // g3 only ever read the first one, so every completion count it
+        // reported was ~1 regardless of how much the model actually wrote.
+        // Harmless while `Usage` fed only a debug line; not harmless now that
+        // it is persisted and priced, because output is the most expensive
+        // token class there is (5x input on every model).
+        //
+        // Merge rather than replace: `message_delta`'s usage object omits the
+        // input/cache fields, so overwriting would zero the numbers this whole
+        // change exists to record.
+        if let Some(message_usage) = &event.usage {
+            if let Some(existing) = &mut self.usage {
+                if message_usage.output_tokens > 0 {
+                    existing.completion_tokens = message_usage.output_tokens;
+                    // Keep this file's existing convention for
+                    // `total_tokens` (prompt + completion, cache counted
+                    // separately) — it feeds `cumulative_tokens`, and
+                    // widening it here would inflate a display number for
+                    // reasons unrelated to this change.
+                    existing.total_tokens =
+                        existing.prompt_tokens + existing.completion_tokens;
+                }
+                // Defensive: if a future API revision starts repeating the
+                // input side on message_delta, prefer the non-zero value
+                // rather than silently keeping a stale one.
+                if existing.prompt_tokens == 0 && message_usage.input_tokens > 0 {
+                    existing.prompt_tokens = message_usage.input_tokens;
+                }
+            } else {
+                // No message_start was seen (or it carried no usage). Better a
+                // partial record than none.
+                self.usage = Some(Usage {
+                    prompt_tokens: message_usage.input_tokens,
+                    completion_tokens: message_usage.output_tokens,
+                    total_tokens: message_usage.input_tokens + message_usage.output_tokens,
+                    cache_creation_tokens: message_usage.cache_creation_input_tokens,
+                    cache_read_tokens: message_usage.cache_read_input_tokens,
+                });
+            }
+            debug!("Merged usage from message_delta: {:?}", self.usage);
+        }
     }
 
     fn handle_message_stop(&mut self) -> Vec<Result<CompletionChunk>> {
@@ -1145,7 +1193,15 @@ struct AnthropicResponse {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicUsage {
+    /// ⚠️ `#[serde(default)]` is LOAD-BEARING, not defensive tidiness.
+    /// `message_delta`'s usage object is `{"output_tokens": N}` — no
+    /// `input_tokens` at all. Without a default, serde fails the field, which
+    /// fails the whole `AnthropicStreamEvent`, which makes the parser `continue`
+    /// past the event — taking `stop_reason` with it and losing the only
+    /// authoritative output-token count in the stream.
+    #[serde(default)]
     input_tokens: u32,
+    #[serde(default)]
     output_tokens: u32,
     /// Tokens written to cache when creating a new cache entry
     #[serde(default)]
@@ -1169,6 +1225,13 @@ struct AnthropicStreamEvent {
     content_block: Option<AnthropicContent>,
     #[serde(default)]
     message: Option<AnthropicStreamMessage>,
+    /// `message_delta` carries `usage` at the TOP level of the event, not
+    /// nested under `message` (which only `message_start` has). Without this
+    /// field the final `output_tokens` was silently unreachable — serde
+    /// ignores unknown keys, so the omission looked like an API that never
+    /// sent the number.
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1662,6 +1725,148 @@ mod tests {
 
         assert_eq!(text_content.len(), 1);
         assert_eq!(text_content[0], "Here is my response.");
+    }
+
+    // ====================================================================
+    // Usage / cache-token parsing tests
+    //
+    // These guard the wire half of "record real cache_read/cache_write token
+    // counts". Everything downstream — session.json, butler's cost dashboard,
+    // the cache hit rate — is built on the numbers parsed here, so a silent
+    // regression in this block turns a measurement back into a guess with no
+    // error anywhere.
+    // ====================================================================
+
+    /// Anthropic sends usage TWICE per streamed response and the two halves
+    /// are different: `message_start` has the final input/cache numbers with
+    /// `output_tokens` barely started, `message_delta` has the final
+    /// `output_tokens` and nothing else. Merging is mandatory — replacing
+    /// zeroes the cache fields, ignoring loses the output count.
+    #[test]
+    fn test_message_delta_supplies_final_output_tokens() {
+        let mut state = StreamState::new();
+
+        let start: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_start","message":{"usage":{
+                 "input_tokens":37,"output_tokens":1,
+                 "cache_creation_input_tokens":21000,
+                 "cache_read_input_tokens":305000}}}"#,
+        )
+        .unwrap();
+        state.handle_message_start(&start);
+
+        // Pre-merge: output is the "so far" count, i.e. useless for billing.
+        assert_eq!(state.usage.as_ref().unwrap().completion_tokens, 1);
+
+        let delta: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},
+                "usage":{"output_tokens":1843}}"#,
+        )
+        .unwrap();
+        state.handle_message_delta(&delta);
+
+        let u = state.usage.as_ref().expect("usage must survive the merge");
+        assert_eq!(u.completion_tokens, 1843, "final output_tokens must be adopted");
+        // And the merge must not have trampled the input side, which only
+        // message_start carries.
+        assert_eq!(u.prompt_tokens, 37);
+        assert_eq!(u.cache_creation_tokens, 21_000);
+        assert_eq!(u.cache_read_tokens, 305_000);
+        assert_eq!(u.total_tokens, 37 + 1843);
+        // stop_reason must still be picked up from the same event.
+        assert_eq!(state.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    /// `message_delta`'s usage object is `{"output_tokens": N}` — no
+    /// `input_tokens` key at all. Before `#[serde(default)]` on that field the
+    /// whole event failed to deserialize and the parser skipped it, losing
+    /// both the output count AND the stop reason. This is the case that proves
+    /// the default is load-bearing rather than decorative.
+    #[test]
+    fn test_message_delta_usage_deserializes_without_input_tokens() {
+        let event: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                "usage":{"output_tokens":512}}"#,
+        )
+        .expect("message_delta must deserialize despite the absent input_tokens");
+        let u = event.usage.expect("top-level usage must be captured");
+        assert_eq!(u.output_tokens, 512);
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.cache_read_input_tokens, 0);
+    }
+
+    /// A delta arriving with no prior message_start must still yield usage
+    /// rather than nothing: a partial record beats a blank one, and a blank
+    /// one is indistinguishable from "caching is off".
+    #[test]
+    fn test_message_delta_alone_still_produces_usage() {
+        let mut state = StreamState::new();
+        let delta: AnthropicStreamEvent =
+            serde_json::from_str(r#"{"type":"message_delta","usage":{"output_tokens":90}}"#)
+                .unwrap();
+        state.handle_message_delta(&delta);
+        let u = state.usage.as_ref().expect("usage must be created from the delta");
+        assert_eq!(u.completion_tokens, 90);
+        assert_eq!(u.prompt_tokens, 0);
+    }
+
+    /// An `output_tokens: 0` delta must not erase a real count. Anthropic can
+    /// emit a delta with no meaningful usage, and clobbering with zero would
+    /// report a turn that produced nothing.
+    #[test]
+    fn test_zero_output_in_delta_does_not_erase_a_real_count() {
+        let mut state = StreamState::new();
+        let start: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_start","message":{"usage":{
+                 "input_tokens":10,"output_tokens":700,
+                 "cache_read_input_tokens":1000}}}"#,
+        )
+        .unwrap();
+        state.handle_message_start(&start);
+
+        let delta: AnthropicStreamEvent =
+            serde_json::from_str(r#"{"type":"message_delta","usage":{"output_tokens":0}}"#)
+                .unwrap();
+        state.handle_message_delta(&delta);
+
+        assert_eq!(state.usage.as_ref().unwrap().completion_tokens, 700);
+        assert_eq!(state.usage.as_ref().unwrap().cache_read_tokens, 1000);
+    }
+
+    /// A `message_delta` with no usage at all (the pre-2026 shape) must be a
+    /// no-op on usage while still doing its original job.
+    #[test]
+    fn test_message_delta_without_usage_is_a_noop_on_usage() {
+        let mut state = StreamState::new();
+        let start: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_start","message":{"usage":{
+                 "input_tokens":5,"output_tokens":6}}}"#,
+        )
+        .unwrap();
+        state.handle_message_start(&start);
+        let delta: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#,
+        )
+        .unwrap();
+        state.handle_message_delta(&delta);
+        assert_eq!(state.usage.as_ref().unwrap().completion_tokens, 6);
+        assert_eq!(state.stop_reason.as_deref(), Some("max_tokens"));
+    }
+
+    /// The non-streaming path already read the cache fields correctly; pin it
+    /// so a refactor of `AnthropicUsage` cannot quietly drop them.
+    #[test]
+    fn test_non_streaming_response_carries_cache_fields() {
+        let json = r#"{
+            "content":[{"type":"text","text":"hi"}],
+            "model":"claude-opus-5",
+            "usage":{"input_tokens":12,"output_tokens":34,
+                     "cache_creation_input_tokens":56,
+                     "cache_read_input_tokens":78}}"#;
+        let r: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(r.usage.cache_creation_input_tokens, 56);
+        assert_eq!(r.usage.cache_read_input_tokens, 78);
+        assert_eq!(r.usage.output_tokens, 34);
     }
 
     // ====================================================================

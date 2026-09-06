@@ -92,20 +92,115 @@ pub struct ToolCall {
     pub id: String,
 }
 
-/// Cumulative cache statistics for prompt caching efficacy tracking.
-/// Tracks both Anthropic-style (cache_creation + cache_read) and OpenAI-style (cached_tokens) caching.
+/// Per-model slice of a session's token usage.
+///
+/// A single session can legitimately span models — `--fallback-model` switches
+/// on overload, and butler.app's picker can move a *resumed* chat from Sonnet
+/// to Opus mid-conversation. Opus is ~2.5x Sonnet per token, so a session
+/// total with no model attached cannot be priced: a consumer has to guess one
+/// model for the whole thing, which is exactly the kind of modelled number
+/// this telemetry exists to replace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelTokenUsage {
+    /// API calls billed against this model.
+    pub calls: u32,
+    /// Uncached input tokens. On a cached request this is only the cache-MISS
+    /// remainder — see `CacheStats::total_input_tokens`.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
+/// Cumulative token/cache statistics for a session, accumulated from what the
+/// provider actually reported on the wire.
+///
+/// Tracks both Anthropic-style (cache_creation + cache_read) and OpenAI-style
+/// (cached_tokens) caching.
+///
+/// ⚠️ **These are OBSERVED numbers and the only observed numbers g3 has.**
+/// Until 2026-09-06 they lived only in `get_stats()` — a string nobody but an
+/// interactive `/stats` ever read — so "is prompt caching working?" was
+/// unfalsifiable from outside the process: a cached and an uncached run looked
+/// identical in every artifact g3 wrote. They are now persisted into
+/// `session.json` (`session::save_context_window`) so cost telemetry can stop
+/// reconstructing them from character counts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CacheStats {
     /// Total tokens written to cache across all API calls
     pub total_cache_creation_tokens: u64,
     /// Total tokens read from cache across all API calls
     pub total_cache_read_tokens: u64,
-    /// Total input tokens (for calculating cache hit rate)
+    /// Total input tokens (for calculating cache hit rate).
+    ///
+    /// ⚠️ This is the provider's `input_tokens`, which once caching is on is
+    /// ONLY the portion that missed the cache. The whole prompt is
+    /// `total_input_tokens + total_cache_read_tokens + total_cache_creation_tokens`
+    /// (same trap that made the context bar read 0% — see
+    /// `ContextWindow::update_usage_from_response`).
     pub total_input_tokens: u64,
+    /// Total output (completion) tokens across all API calls.
+    ///
+    /// Output is the most expensive token class (5x input on every model in
+    /// butler's pricing table), so a cost figure without it is not a cost
+    /// figure.
+    #[serde(default)]
+    pub total_output_tokens: u64,
     /// Number of API calls that had cache hits
     pub cache_hit_calls: u32,
     /// Total number of API calls
     pub total_calls: u32,
+    /// The same totals, split by the model that was billed. `BTreeMap` rather
+    /// than `HashMap` so the persisted JSON has a stable key order.
+    #[serde(default)]
+    pub by_model: std::collections::BTreeMap<String, ModelTokenUsage>,
+}
+
+impl CacheStats {
+    /// Fold one provider response into the running totals.
+    ///
+    /// `model` is the model that served THIS call, which is not necessarily
+    /// the session's configured model (overload fallback). An empty `model`
+    /// still updates the totals but creates no `by_model` entry — a
+    /// zero-length key would be indistinguishable from a real model in the
+    /// persisted JSON, and a consumer pricing it would silently pick a
+    /// default.
+    pub fn record(&mut self, model: &str, usage: &g3_providers::Usage) {
+        self.total_calls += 1;
+        self.total_input_tokens += usage.prompt_tokens as u64;
+        self.total_output_tokens += usage.completion_tokens as u64;
+        self.total_cache_creation_tokens += usage.cache_creation_tokens as u64;
+        self.total_cache_read_tokens += usage.cache_read_tokens as u64;
+        if usage.cache_read_tokens > 0 {
+            self.cache_hit_calls += 1;
+        }
+
+        if model.is_empty() {
+            return;
+        }
+        let entry = self.by_model.entry(model.to_string()).or_default();
+        entry.calls += 1;
+        entry.input_tokens += usage.prompt_tokens as u64;
+        entry.output_tokens += usage.completion_tokens as u64;
+        entry.cache_creation_tokens += usage.cache_creation_tokens as u64;
+        entry.cache_read_tokens += usage.cache_read_tokens as u64;
+    }
+
+    /// Fraction of the prompt served from cache, 0.0..=1.0.
+    ///
+    /// `cache_read / (cache_read + input)` — deliberately EXCLUDES
+    /// cache_creation from the denominator. Writing the cache is the cost of
+    /// the first call in a prefix's life; counting it as a miss would make a
+    /// perfectly-working cache look worse the more it had to cache, which is
+    /// backwards. Returns 0.0 when nothing has been observed, so a caller must
+    /// check `total_calls` before reading 0% as "caching is broken".
+    pub fn cache_hit_rate(&self) -> f64 {
+        let denom = self.total_cache_read_tokens + self.total_input_tokens;
+        if denom == 0 {
+            return 0.0;
+        }
+        self.total_cache_read_tokens as f64 / denom as f64
+    }
 }
 
 // Re-export WebDriverSession from its own module
@@ -1343,7 +1438,12 @@ impl<W: UiWriter> Agent<W> {
         if self.quiet {
             return;
         }
-        session::save_context_window(self.session_id.as_deref(), &self.context_window, status);
+        session::save_context_window(
+            self.session_id.as_deref(),
+            &self.context_window,
+            &self.cache_stats,
+            status,
+        );
     }
 
     /// Write context window summary to file
@@ -2366,6 +2466,44 @@ Skip if nothing new. Be brief."#;
                         // this (see the comment there).
                         self.session_id = Some(continuation.session_id.clone());
 
+                        // Adopt the session's ACCUMULATED usage along with its
+                        // id. Continuing in place means this turn's save
+                        // OVERWRITES session.json, so without seeding, a
+                        // 40-turn chat would persist only the tokens of turn
+                        // 40 and every earlier turn's spend would vanish from
+                        // the record on the next message. Paired with
+                        // session_id on purpose: they must be adopted together
+                        // or not at all.
+                        //
+                        // Only on the FULL-restore path, for the same reason
+                        // the id is: the summary-only fallback below starts a
+                        // NEW session dir, so inheriting totals would
+                        // double-count the original session's tokens.
+                        // Read the SAME file the transcript came from, not a
+                        // path recomputed from the id — a continuation can
+                        // point at a session log elsewhere, and re-deriving it
+                        // would read usage from a different session than the
+                        // history.
+                        let session_file = session_log_path.clone();
+                        match session::read_token_usage(&session_file) {
+                            Some(prior) => {
+                                debug!(
+                                    "Seeded observed usage from {}: {} calls, {} cache_read tokens",
+                                    continuation.session_id,
+                                    prior.total_calls,
+                                    prior.total_cache_read_tokens
+                                );
+                                self.cache_stats = prior;
+                            }
+                            None => {
+                                debug!(
+                                    "No usable token_usage block in {} (pre-2026-09-06 session \
+                                     or malformed); starting observed usage from zero",
+                                    session_file.display()
+                                );
+                            }
+                        }
+
                         debug!(
                             "Restored full context from session log; continuing in place as {}",
                             continuation.session_id
@@ -2431,6 +2569,12 @@ Skip if nothing new. Be brief."#;
         self.tool_call_metrics.clear();
         self.tool_call_count = 0;
         self.pending_90_compaction = false;
+        // Observed token usage is per-SESSION, so it must reset here with the
+        // rest of the session metrics. restore_from_continuation() below
+        // re-seeds it from the target session's own session.json on the
+        // full-restore path; leaving the outgoing session's totals in place
+        // would attribute its spend to the one being switched to.
+        self.cache_stats = CacheStats::default();
 
         // Update session ID to the new session
         self.session_id = Some(continuation.session_id.clone());
@@ -2827,16 +2971,24 @@ Skip if nothing new. Be brief."#;
                             // (must happen here, not after the loop, because early returns bypass post-loop code)
                             self.context_window.update_usage_from_response(usage);
 
-                            // Update cumulative cache statistics
-                            self.cache_stats.total_calls += 1;
-                            self.cache_stats.total_input_tokens += usage.prompt_tokens as u64;
-                            self.cache_stats.total_cache_creation_tokens +=
-                                usage.cache_creation_tokens as u64;
-                            self.cache_stats.total_cache_read_tokens +=
-                                usage.cache_read_tokens as u64;
-                            if usage.cache_read_tokens > 0 {
-                                self.cache_stats.cache_hit_calls += 1;
-                            }
+                            // Update cumulative cache statistics.
+                            //
+                            // Attributed to the model that ACTUALLY served this
+                            // call, read from the registry rather than from the
+                            // session config: `--fallback-model` can have
+                            // switched underneath us mid-turn, and Opus vs
+                            // Sonnet is a 2.5x price difference.
+                            //
+                            // Safe to count once per usage-bearing chunk: the
+                            // provider only attaches usage to a `finished`
+                            // chunk, and every `finished` branch below either
+                            // returns or breaks this loop, so a stream cannot
+                            // deliver two usage chunks into one iteration.
+                            let billed_model = self
+                                .get_provider_info()
+                                .map(|(_, m)| m)
+                                .unwrap_or_default();
+                            self.cache_stats.record(&billed_model, usage);
                             debug!(
                                 "Received usage data - prompt: {}, completion: {}, total: {}",
                                 usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
