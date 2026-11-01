@@ -92,10 +92,64 @@ pub async fn execute_remember<W: UiWriter>(
     let size = format_size(updated.len());
     let final_content = update_header(&updated, &timestamp, &size);
 
+    // The gate runs BEFORE the write and fails closed: a refused or crashed
+    // gate leaves the file byte-for-byte untouched.
+    if let Some(gate) = ctx.config.memory.remember_gate.as_deref() {
+        if let Err(refusal) = run_remember_gate(gate, notes, &memory_path, final_content.len()) {
+            return Ok(format!("❌ Memory NOT updated — {}", refusal));
+        }
+    }
+
     // Write back
     std::fs::write(&memory_path, &final_content)?;
 
     Ok(format!("Memory updated. Size: {}", format_size(final_content.len())))
+}
+
+/// Pipe `notes` through the configured gate command. `Ok(())` = allowed.
+/// `Err(msg)` = refused; `msg` is what the model sees (the gate's stderr).
+pub(crate) fn run_remember_gate(
+    gate: &str,
+    notes: &str,
+    memory_path: &std::path::Path,
+    size_after: usize,
+) -> std::result::Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut parts = gate.split_whitespace().map(|p| shellexpand::tilde(p).to_string());
+    let Some(program) = parts.next() else {
+        return Err("remember_gate is configured but empty".to_string());
+    };
+    let child = Command::new(&program)
+        .args(parts)
+        .env("G3_MEMORY_PATH", memory_path)
+        .env("G3_MEMORY_SIZE_AFTER", size_after.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return Err(format!("remember_gate `{}` could not run ({}) — refusing (fail closed)", program, e)),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(notes.as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("remember_gate `{}` failed ({}) — refusing (fail closed)", program, e))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let mut msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if msg.is_empty() {
+        msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    }
+    if msg.is_empty() {
+        msg = format!("remember_gate refused (exit {:?})", out.status.code());
+    }
+    Err(msg)
 }
 
 /// Merge new notes into existing memory.
@@ -154,6 +208,45 @@ fn update_header(content: &str, timestamp: &str, size: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn script(dir: &std::path::Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("gate.sh");
+        std::fs::write(&p, format!("#!/bin/sh\n{}\n", body)).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn test_gate_allows_on_exit_zero_and_sees_notes_and_env() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("seen");
+        let gate = script(d.path(), &format!(
+            "cat > {0}; echo \"$G3_MEMORY_SIZE_AFTER\" >> {0}; exit 0", log.display()));
+        assert!(run_remember_gate(&gate, "- a rule", &d.path().join("m.md"), 123).is_ok());
+        let seen = std::fs::read_to_string(&log).unwrap();
+        assert!(seen.contains("- a rule") && seen.contains("123"), "{}", seen);
+    }
+
+    #[test]
+    fn test_gate_refusal_returns_stderr() {
+        let d = tempfile::tempdir().unwrap();
+        let gate = script(d.path(), "echo 'facts go to topics' >&2; exit 1");
+        let err = run_remember_gate(&gate, "x", &d.path().join("m.md"), 1).unwrap_err();
+        assert_eq!(err, "facts go to topics");
+    }
+
+    #[test]
+    fn test_missing_gate_fails_closed() {
+        let err = run_remember_gate("/nonexistent/gate", "x", std::path::Path::new("/tmp/m"), 1)
+            .unwrap_err();
+        assert!(err.contains("fail closed"), "{}", err);
+    }
+
+    #[test]
+    fn test_empty_gate_fails_closed() {
+        assert!(run_remember_gate("   ", "x", std::path::Path::new("/tmp/m"), 1).is_err());
+    }
 
     #[test]
     fn test_format_size() {

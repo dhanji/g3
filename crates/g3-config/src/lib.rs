@@ -25,6 +25,8 @@ pub struct Config {
     pub webdriver: WebDriverConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 /// Provider configuration with named configs per provider type
@@ -244,6 +246,21 @@ pub struct WebDriverConfig {
     pub browser: WebDriverBrowser,
 }
 
+/// Workspace memory configuration.
+///
+/// `remember_gate`: optional command (argv string, `~` expanded, split on
+/// whitespace) that every `remember` call is piped through BEFORE anything is
+/// written. The notes arrive on stdin; env carries `G3_MEMORY_PATH` and
+/// `G3_MEMORY_SIZE_AFTER` (bytes the file would be after the merge). Exit 0 =
+/// write; anything else = refuse and hand the gate's stderr back to the model.
+/// A gate that cannot be run also refuses (fail closed). Unset = no gate, the
+/// historical append-anything behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    #[serde(default)]
+    pub remember_gate: Option<String>,
+}
+
 /// Skills configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsConfig {
@@ -334,6 +351,7 @@ impl Default for Config {
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
             skills: SkillsConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
