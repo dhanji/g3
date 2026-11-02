@@ -1,4 +1,3 @@
-pub mod acd;
 pub mod background_process;
 pub mod code_search;
 pub mod compaction;
@@ -240,7 +239,6 @@ pub struct Agent<W: UiWriter> {
     ui_writer: W,
     is_autonomous: bool,
     quiet: bool,
-    computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
     todo_content: std::sync::Arc<tokio::sync::RwLock<String>>,
     webdriver_session: std::sync::Arc<
         tokio::sync::RwLock<Option<std::sync::Arc<tokio::sync::Mutex<WebDriverSession>>>>,
@@ -266,8 +264,6 @@ pub struct Agent<W: UiWriter> {
     agent_name: Option<String>,
     /// Whether auto-memory reminders are enabled (--auto-memory flag)
     auto_memory: bool,
-    /// Whether aggressive context dehydration is enabled (--acd flag)
-    acd_enabled: bool,
     /// Whether plan mode is active (gate blocks file changes without approved plan)
     in_plan_mode: bool,
     /// Files that were already dirty when plan mode started (excluded from approval gate)
@@ -294,8 +290,7 @@ impl<W: UiWriter> Agent<W> {
         auto_compact: bool,
         is_autonomous: bool,
         quiet: bool,
-        computer_controller: Option<Box<dyn g3_computer_control::ComputerController>>,
-    ) -> Self {
+        ) -> Self {
         Self {
             providers,
             context_window,
@@ -312,7 +307,6 @@ impl<W: UiWriter> Agent<W> {
             todo_content: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
             is_autonomous,
             quiet,
-            computer_controller,
             webdriver_session: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             webdriver_process: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             tool_call_count: 0,
@@ -329,7 +323,6 @@ impl<W: UiWriter> Agent<W> {
             is_agent_mode: false,
             agent_name: None,
             auto_memory: false,
-            acd_enabled: false,
             in_plan_mode: false,
             baseline_dirty_files: std::collections::HashSet::new(),
             pending_research_manager: pending_research::PendingResearchManager::new(),
@@ -428,7 +421,7 @@ impl<W: UiWriter> Agent<W> {
             context_window.add_message(context_message);
         }
 
-        // For tests: auto_compact=false, is_autonomous=false, quiet=true, no computer_controller
+        // For tests: auto_compact=false, is_autonomous=false, quiet=true
         Ok(Self::build_agent(
             config,
             ui_writer,
@@ -437,7 +430,6 @@ impl<W: UiWriter> Agent<W> {
             false, // auto_compact
             false, // is_autonomous
             true,  // quiet
-            None,  // computer_controller
         ))
     }
 
@@ -524,19 +516,6 @@ impl<W: UiWriter> Agent<W> {
         // We don't load any TODO at initialization since we don't have a session_id yet.
         // The agent will use todo_read to load the TODO once a session is established.
 
-        // Initialize computer controller if enabled
-        let computer_controller = if config.computer_control.enabled {
-            match g3_computer_control::create_controller() {
-                Ok(controller) => Some(controller),
-                Err(e) => {
-                    warn!("Failed to initialize computer control: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         let auto_compact = config.agent.auto_compact;
         Ok(Self::build_agent(
             config,
@@ -546,7 +525,6 @@ impl<W: UiWriter> Agent<W> {
             auto_compact,
             is_autonomous,
             quiet,
-            computer_controller,
         ))
     }
 
@@ -614,25 +592,29 @@ impl<W: UiWriter> Agent<W> {
             .count()
     }
 
-    /// Clear every rolling cache_control breakpoint in `conversation_history`.
+    /// Make room for ONE new rolling breakpoint by dropping the OLDEST
+    /// markers until fewer than `max_rolling_cache_breakpoints()` remain.
     ///
-    /// A `cache_control` marker caches the ENTIRE prefix up to and including
-    /// that block — so once a newer breakpoint is placed further along the
-    /// same growing transcript, an older one adds nothing: everything it
-    /// covered is already covered by the new one. Keeping it around only
-    /// spends one of the 4 API-wide breakpoints for no benefit.
-    ///
-    /// Previously the code placed a breakpoint every 10 tool calls and left
-    /// all of them in place. After the 3rd rolling breakpoint (4th counting
-    /// the system block — see `max_rolling_cache_breakpoints`) the budget was
-    /// exhausted and caching silently STOPPED for the remainder of the
-    /// session: a 471-turn session (observed 2026-08-27) would have cached
-    /// only its first ~30 tool calls and paid full uncached price for the
-    /// other 441. Sliding the single rolling breakpoint forward instead means
-    /// caching never runs out mid-session.
-    fn clear_rolling_cache_breakpoints(&mut self) {
+    /// Why oldest-first rather than `clear_rolling_cache_breakpoints()`: the
+    /// breakpoint from the PREVIOUS request is what the next request's
+    /// prefix lookup hits. Dropping it at the same moment a new one is
+    /// placed is harmless in theory (the API looks back ~20 blocks for a
+    /// prior cache entry) but keeping it costs nothing while we're under
+    /// budget, and it survives a turn that adds more than 20 blocks.
+    fn make_room_for_rolling_breakpoint(&mut self) {
+        let max = self.max_rolling_cache_breakpoints();
+        let mut count = self.count_cache_controls_in_history();
+        if count < max {
+            return;
+        }
         for msg in self.context_window.conversation_history.iter_mut() {
-            msg.cache_control = None;
+            if count < max {
+                break;
+            }
+            if msg.cache_control.is_some() {
+                msg.cache_control = None;
+                count -= 1;
+            }
         }
     }
 
@@ -1266,10 +1248,7 @@ impl<W: UiWriter> Agent<W> {
             // BEFORE grabbing the provider ref below, or the mutable borrow
             // of `self` conflicts with the immutable one the provider holds.
             if let Some(cache_config) = self.get_provider_cache_control() {
-                if self.count_cache_controls_in_history() >= self.max_rolling_cache_breakpoints()
-                {
-                    self.clear_rolling_cache_breakpoints();
-                }
+                self.make_room_for_rolling_breakpoint();
                 let provider = self.providers.get(None)?;
                 Message::with_cache_control_validated(
                     MessageRole::User,
@@ -1338,9 +1317,7 @@ impl<W: UiWriter> Agent<W> {
         let _has_native_tool_calling = provider.has_native_tool_calling();
         let _supports_cache_control = provider.supports_cache_control();
         let tools = if provider.has_native_tool_calling() {
-            let tool_config = tool_definitions::ToolConfig::new(
-                self.config.computer_control.enabled,
-            );
+            let tool_config = tool_definitions::ToolConfig::new();
             Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
@@ -1982,14 +1959,6 @@ impl<W: UiWriter> Agent<W> {
         }
     }
 
-    /// Enable or disable aggressive context dehydration (ACD)
-    pub fn set_acd_enabled(&mut self, enabled: bool) {
-        self.acd_enabled = enabled;
-        debug!(
-            "ACD (aggressive context dehydration): {}",
-            if enabled { "enabled" } else { "disabled" }
-        );
-    }
 
     /// Enable or disable plan mode (blocks file changes without approved plan)
     pub fn set_plan_mode(&mut self, enabled: bool, working_dir: Option<&str>) {
@@ -2034,8 +2003,7 @@ impl<W: UiWriter> Agent<W> {
     /// 1. Finish streaming markdown
     /// 2. Save context window
     /// 3. Add timing footer (if requested)
-    /// 4. Dehydrate context (if ACD enabled)
-    /// 5. Build TaskResult
+    /// 4. Build TaskResult
     fn finalize_streaming_turn(
         &mut self,
         full_response: String,
@@ -2061,140 +2029,7 @@ impl<W: UiWriter> Agent<W> {
             full_response
         };
 
-        self.dehydrate_context();
         TaskResult::new(final_response, self.context_window.clone())
-    }
-
-    /// Perform ACD dehydration - save current conversation state to a fragment.
-    /// Called at the end of each turn when ACD is enabled.
-    ///
-    /// This saves all non-system messages (except the final assistant response)
-    /// to a fragment, then replaces them with a compact stub. The final assistant
-    /// response is preserved as the turn summary after the stub.
-    ///
-    /// in the context with a compact stub. The agent's final response (summary)
-    /// is preserved after the stub.
-    fn dehydrate_context(&mut self) {
-        if !self.acd_enabled {
-            return;
-        }
-
-        let session_id = match &self.session_id {
-            Some(id) => id.clone(),
-            None => {
-                debug!("ACD: No session_id, skipping dehydration");
-                return;
-            }
-        };
-
-        // Find the index of the last dehydration stub (marks the end of previously dehydrated content)
-        // We only want to dehydrate messages AFTER the last stub+summary pair
-        let last_stub_index = self
-            .context_window
-            .conversation_history
-            .iter()
-            .rposition(|m| m.is_dehydrated_stub());
-
-        // Start index for messages to dehydrate:
-        // - If there's a previous stub, start after the stub AND its following summary (stub + 2)
-        // - Otherwise, start from the beginning (index 0)
-        //
-        // The `+ 2` assumes the stub is always followed by a Summary message,
-        // but that summary is appended only `if !summary_content.trim().is_empty()`.
-        // When a turn ends with an empty response (cancellation, or a
-        // tool-only final turn) the stub is the LAST message and `idx + 2`
-        // points past the end. Clamping keeps the subsequent
-        // `idx >= dehydrate_start` filter meaningful instead of silently
-        // selecting nothing and never dehydrating again.
-        let history_len = self.context_window.conversation_history.len();
-        let dehydrate_start = match last_stub_index {
-            Some(idx) => (idx + 2).min(history_len), // Skip the stub and the summary that follows it
-            None => 0,
-        };
-
-        // Get the preceding fragment ID (if any)
-        let preceding_id = crate::acd::get_latest_fragment_id(&session_id)
-            .ok()
-            .flatten();
-
-        // Extract only NEW non-system messages to dehydrate (after the last stub+summary)
-        let messages_to_dehydrate: Vec<_> = self
-            .context_window
-            .conversation_history
-            .iter()
-            .enumerate()
-            .filter(|(idx, m)| {
-                *idx >= dehydrate_start && !matches!(m.role, g3_providers::MessageRole::System)
-            })
-            .map(|(_, m)| m.clone())
-            .collect();
-
-        if messages_to_dehydrate.is_empty() {
-            return;
-        }
-
-        // Extract the last assistant message as the turn summary
-        // This is the actual LLM response, not the timing footer passed in final_response
-        let turn_summary: Option<String> = messages_to_dehydrate
-            .iter()
-            .rev()
-            .find(|m| matches!(m.role, g3_providers::MessageRole::Assistant))
-            .map(|m| m.content.clone());
-
-        // Use extracted summary, falling back to final_response only if no assistant message found
-        let summary_content = turn_summary.unwrap_or_default();
-
-        // Create the fragment and generate stub
-        let fragment = crate::acd::Fragment::new(messages_to_dehydrate, preceding_id);
-        let stub = fragment.generate_stub();
-
-        if let Err(e) = fragment.save(&session_id) {
-            warn!("Failed to save ACD fragment: {}", e);
-            return; // Don't modify context if save failed
-        }
-
-        // Now replace the context: keep system messages + previous stubs/summaries, add new stub, add new summary
-        // Extract messages to keep: system messages + everything up to (but not including) dehydrate_start
-        let messages_to_keep: Vec<_> = self
-            .context_window
-            .conversation_history
-            .iter()
-            .enumerate()
-            .filter(|(idx, m)| {
-                // Keep all system messages OR keep previous stub+summary pairs
-                matches!(m.role, g3_providers::MessageRole::System) || *idx < dehydrate_start
-            })
-            .map(|(_, m)| m.clone())
-            .collect();
-
-        // Clear and rebuild context
-        self.context_window.conversation_history.clear();
-
-        // Add back kept messages (system + previous stubs/summaries)
-        for msg in messages_to_keep {
-            self.context_window.conversation_history.push(msg);
-        }
-
-        // Add the stub as a user message (so LLM sees it as context)
-        let stub_msg = g3_providers::Message::with_kind(
-            g3_providers::MessageRole::User,
-            stub,
-            g3_providers::MessageKind::DehydratedStub,
-        );
-        self.context_window.conversation_history.push(stub_msg);
-
-        // Add the final response as assistant message (the summary)
-        if !summary_content.trim().is_empty() {
-            let summary_msg = g3_providers::Message::with_kind(
-                g3_providers::MessageRole::Assistant,
-                summary_content,
-                g3_providers::MessageKind::Summary,
-            );
-            self.context_window.conversation_history.push(summary_msg);
-        }
-
-        // Recalculate token usage
-        self.context_window.recalculate_tokens();
     }
 
     /// Send an auto-memory reminder to the LLM if tools were called during the turn.
@@ -2285,9 +2120,7 @@ Skip if nothing new. Be brief."#;
         let provider = self.providers.get(None)?;
         let provider_name = provider.name().to_string();
         let tools = if provider.has_native_tool_calling() {
-            let tool_config = tool_definitions::ToolConfig::new(
-                self.config.computer_control.enabled,
-            );
+            let tool_config = tool_definitions::ToolConfig::new();
             Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
@@ -2409,6 +2242,8 @@ Skip if nothing new. Be brief."#;
                                             cache_control: None,
                                             tool_calls: Vec::new(),
                                             tool_result_id: None,
+                                            thinking_blocks: Vec::new(),
+                                            continues_batch: false,
                                         }
                                     }
                                 };
@@ -2542,6 +2377,8 @@ Skip if nothing new. Be brief."#;
                 cache_control: None,
                 tool_calls: Vec::new(),
                 tool_result_id: None,
+                thinking_blocks: Vec::new(),
+                continues_batch: false,
             });
         }
 
@@ -2860,10 +2697,18 @@ Skip if nothing new. Be brief."#;
                 self.context_window.used_tokens,
                 self.quiet,
             )
-            .with_request(
-                serde_json::to_string(&request)
-                    .unwrap_or_else(|_| "Failed to serialize request".to_string()),
-            );
+            // Request summary only. This used to be
+            // `serde_json::to_string(&request)` — the ENTIRE request, every
+            // message and tool schema, serialised on every round trip and
+            // then truncated to 5,000 chars for an error report that almost
+            // never gets written. At butler's ~84k-token median prompt that
+            // was hundreds of KB of JSON per call, for nothing.
+            .with_request(format!(
+                "messages={} tools={} max_tokens={:?}",
+                request.messages.len(),
+                request.tools.as_ref().map_or(0, |t| t.len()),
+                request.max_tokens,
+            ));
 
             // Log initial request details
             debug!("Starting stream with provider={}, model={}, messages={}, tools={}, max_tokens={:?}",
@@ -3039,6 +2884,9 @@ Skip if nothing new. Be brief."#;
 
                         // Process chunk with the new parser
                         let completed_tools = iter.parser.process_chunk(&chunk);
+                        if let Some(ref blocks) = chunk.thinking_blocks {
+                            iter.thinking_blocks.extend(blocks.iter().cloned());
+                        }
 
                         // Handle completed tool calls - process all if multiple calls enabled
                         // Always process all tool calls - they will be executed after stream ends
@@ -3059,8 +2907,15 @@ Skip if nothing new. Be brief."#;
                                 self.check_duplicate_in_previous_message(tc, history_len_before_iteration)
                             });
 
+                        // Run the batch concurrently when every call in it is
+                        // concurrency-safe (see streaming::is_concurrency_safe_tool).
+                        // Results are slotted back by index so the loop below
+                        // records them in the model's original order.
+                        let mut precomputed: Vec<Option<(String, Vec<g3_providers::ImageContent>, Duration)>> =
+                            self.execute_batch_concurrently(&deduplicated_tools).await;
+
                         // Process each tool call
-                        for (tool_call, duplicate_type) in deduplicated_tools {
+                        for (batch_idx, (tool_call, duplicate_type)) in deduplicated_tools.into_iter().enumerate() {
                             debug!("Processing completed tool call: {:?}", tool_call);
 
                             // Skip duplicates (don't set tool_executed - would trigger spurious auto-continue)
@@ -3150,13 +3005,19 @@ Skip if nothing new. Be brief."#;
                             // Clone working_dir to avoid borrow checker issues
                             let working_dir = self.working_dir.clone();
                             let exec_start = Instant::now();
-                            // Tool execution timeout: 20 minutes for research, 8 minutes for others
-                            let timeout_duration = if tool_call.tool == "research" {
-                                Duration::from_secs(20 * 60) // 20 minutes for research
-                            } else {
-                                Duration::from_secs(8 * 60) // 8 minutes for other tools
-                            };
-                            let tool_result = match tokio::time::timeout(
+                            let mut precomputed_duration = None;
+                            let timeout_duration = Self::tool_timeout(&tool_call.tool);
+                            let tool_result = if let Some((result, images, took)) =
+                                precomputed.get_mut(batch_idx).and_then(Option::take)
+                            {
+                                // Already ran concurrently with its batch; do the
+                                // bookkeeping execute_tool_in_dir would have done.
+                                self.tool_call_count += 1;
+                                self.tool_calls_this_turn.push(tool_call.tool.clone());
+                                self.pending_images.extend(images);
+                                precomputed_duration = Some(took);
+                                self.apply_plan_gate(working_dir.as_deref()).unwrap_or(result)
+                            } else { match tokio::time::timeout(
                                 timeout_duration,
                                 // Use working_dir if set (from --codebase-fast-start)
                                 self.execute_tool_in_dir(&tool_call, working_dir.as_deref()),
@@ -3172,8 +3033,8 @@ Skip if nothing new. Be brief."#;
                                         timeout_mins
                                     )
                                 }
-                            };
-                            let exec_duration = exec_start.elapsed();
+                            } };
+                            let exec_duration = precomputed_duration.unwrap_or_else(|| exec_start.elapsed());
 
                             // Track tool call metrics
                             let tool_success = !tool_result.contains("❌");
@@ -3247,38 +3108,40 @@ Skip if nothing new. Be brief."#;
                                     name: tool_call.tool.clone(),
                                     input: tool_call.args.clone(),
                                 });
+                                // Reasoning precedes the first tool_use of the
+                                // response; replaying it keeps the model's own
+                                // chain of thought across the tool round trip.
+                                msg.thinking_blocks = std::mem::take(&mut iter.thinking_blocks);
+                                // A tool already ran in this iteration => this
+                                // call came from the same model response.
+                                msg.continues_batch = iter.tool_executed;
                                 msg
                             };
                             let mut result_message = {
                                 let content = format!("Tool result: {}", tool_result);
 
-                                // Apply cache control every 10 tool calls (max 4 annotations)
-                                // Every 10 tool calls, SLIDE the one rolling
-                                // breakpoint forward rather than accumulating
-                                // a new one each time. An old breakpoint is
-                                // fully subsumed by a newer one on the same
-                                // growing transcript, so keeping both wastes
-                                // budget that would otherwise let caching run
-                                // for the whole session instead of stopping
-                                // after ~30-40 tool calls.
-                                let should_cache =
-                                    self.tool_call_count > 0 && self.tool_call_count % 10 == 0;
-                                if should_cache {
-                                    self.clear_rolling_cache_breakpoints();
-                                }
-
-                                if should_cache {
+                                // Cache breakpoint on EVERY tool result (2026-11).
+                                //
+                                // Was: one breakpoint slid forward every 10th tool
+                                // call. That left up to 9 tool rounds per window
+                                // billed as plain uncached input on every request
+                                // — measured over 400 butler sessions: 66M
+                                // uncached input tokens vs 966M cache reads. With
+                                // the marker on the newest message, the only
+                                // uncached tokens per request are the ones that
+                                // are genuinely new, and those are written once
+                                // and read on every later request.
+                                // Budget: oldest markers are dropped to stay
+                                // within max_rolling_cache_breakpoints().
+                                if let Some(cache_config) = self.get_provider_cache_control() {
+                                    self.make_room_for_rolling_breakpoint();
                                     let provider = self.providers.get(None)?;
-                                    if let Some(cache_config) = self.get_provider_cache_control() {
-                                        Message::with_cache_control_validated(
-                                            MessageRole::User,
-                                            content,
-                                            cache_config,
-                                            provider,
-                                        )
-                                    } else {
-                                        Message::new(MessageRole::User, content)
-                                    }
+                                    Message::with_cache_control_validated(
+                                        MessageRole::User,
+                                        content,
+                                        cache_config,
+                                        provider,
+                                    )
                                 } else {
                                     Message::new(MessageRole::User, content)
                                 }
@@ -3333,9 +3196,7 @@ Skip if nothing new. Be brief."#;
                             // Ensure tools are included for native providers in subsequent iterations
                             let provider_for_tools = self.providers.get(None)?;
                             if provider_for_tools.has_native_tool_calling() {
-                                let tool_config = tool_definitions::ToolConfig::new(
-                                    self.config.computer_control.enabled,
-                                );
+                                let tool_config = tool_definitions::ToolConfig::new();
                                 request.tools =
                                     Some(self.get_tool_definitions_with_loaded_toolsets(tool_config));
                             }
@@ -3810,6 +3671,105 @@ Skip if nothing new. Be brief."#;
     // TOOL EXECUTION
     // =========================================================================
 
+    /// Per-tool execution timeout: 20 minutes for research, 8 for the rest.
+    fn tool_timeout(tool_name: &str) -> Duration {
+        if tool_name == "research" {
+            Duration::from_secs(20 * 60)
+        } else {
+            Duration::from_secs(8 * 60)
+        }
+    }
+
+    /// In plan mode, the approval gate may replace a tool's result with a
+    /// blocking message. Shared by the sequential and concurrent paths.
+    fn apply_plan_gate(&self, working_dir: Option<&str>) -> Option<String> {
+        if !self.in_plan_mode {
+            return None;
+        }
+        let session_id = self.session_id.as_ref()?;
+        match check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files) {
+            ApprovalGateResult::Blocked { message } => Some(message),
+            _ => None,
+        }
+    }
+
+    /// Execute a whole batch of tool calls CONCURRENTLY, if it qualifies.
+    ///
+    /// Returns one slot per input call (index-aligned). All slots are `None`
+    /// — meaning "run it sequentially in the loop as before" — unless the
+    /// batch has 2+ non-duplicate calls and every one of them is
+    /// `streaming::is_concurrency_safe_tool`. Duplicate-flagged calls are
+    /// never executed here (the loop skips them).
+    ///
+    /// Each concurrent call gets its own `ToolContext` built from shared
+    /// borrows of the agent, plus a private image buffer (merged back into
+    /// `pending_images` by the loop, in order) and a scratch copy of the
+    /// loaded toolsets (no concurrency-safe tool mutates them). A dispatch
+    /// error becomes a `❌` result rather than aborting the turn, so one bad
+    /// call cannot orphan its siblings' tool_use blocks.
+    async fn execute_batch_concurrently(
+        &self,
+        batch: &[(ToolCall, Option<String>)],
+    ) -> Vec<Option<(String, Vec<g3_providers::ImageContent>, Duration)>> {
+        let mut slots: Vec<Option<(String, Vec<g3_providers::ImageContent>, Duration)>> =
+            batch.iter().map(|_| None).collect();
+        let live: Vec<usize> = (0..batch.len()).filter(|&i| batch[i].1.is_none()).collect();
+        if live.len() < 2
+            || !live.iter().all(|&i| streaming::is_concurrency_safe_tool(&batch[i].0.tool))
+        {
+            return slots;
+        }
+        debug!("Executing {} tool calls concurrently", live.len());
+
+        let working_dir = self.working_dir.as_deref();
+        let futures = live.iter().map(|&i| {
+            let tool_call = &batch[i].0;
+            async move {
+                let mut images = Vec::new();
+                let mut toolsets = self.loaded_toolsets.clone();
+                let mut ctx = tools::executor::ToolContext {
+                    config: &self.config,
+                    ui_writer: &self.ui_writer,
+                    session_id: self.session_id.as_deref(),
+                    working_dir,
+                    webdriver_session: &self.webdriver_session,
+                    webdriver_process: &self.webdriver_process,
+                    background_process_manager: &self.background_process_manager,
+                    todo_content: &self.todo_content,
+                    pending_research_manager: &self.pending_research_manager,
+                    pending_images: &mut images,
+                    is_autonomous: self.is_autonomous,
+                    requirements_sha: self.requirements_sha.as_deref(),
+                    context_total_tokens: self.context_window.total_tokens,
+                    context_used_tokens: self.context_window.used_tokens,
+                    memory_path: self.memory_path.as_deref(),
+                    loaded_toolsets: &mut toolsets,
+                    concurrent: true,
+                };
+                let start = Instant::now();
+                let timeout = Self::tool_timeout(&tool_call.tool);
+                let result = match tokio::time::timeout(
+                    timeout,
+                    tool_dispatch::dispatch_tool(tool_call, &mut ctx),
+                )
+                .await
+                {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => format!("❌ Tool error: {}", e),
+                    Err(_) => format!(
+                        "❌ Tool execution timed out after {} minutes",
+                        timeout.as_secs() / 60
+                    ),
+                };
+                (i, result, images, start.elapsed())
+            }
+        });
+        for (i, result, images, took) in futures_util::future::join_all(futures).await {
+            slots[i] = Some((result, images, took));
+        }
+        slots
+    }
+
     pub async fn execute_tool(&mut self, tool_call: &ToolCall) -> Result<String> {
         // Tool tracking is handled by execute_tool_in_dir
         self.execute_tool_in_dir(tool_call, None).await
@@ -3828,15 +3788,9 @@ Skip if nothing new. Be brief."#;
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
 
         // Check plan approval gate after tool execution (only in plan mode)
-        if self.in_plan_mode {
-            if let Some(session_id) = &self.session_id {
-            if let ApprovalGateResult::Blocked { message } =
-                check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files)
-            {
-                // Return the blocking message instead of the tool result
-                return Ok(message);
-            }
-            }
+        if let Some(message) = self.apply_plan_gate(working_dir) {
+            // Return the blocking message instead of the tool result
+            return Ok(message);
         }
 
         let log_str = match &result {
@@ -3876,7 +3830,6 @@ Skip if nothing new. Be brief."#;
             ui_writer: &self.ui_writer,
             session_id: self.session_id.as_deref(),
             working_dir,
-            computer_controller: self.computer_controller.as_ref(),
             webdriver_session: &self.webdriver_session,
             webdriver_process: &self.webdriver_process,
             background_process_manager: &self.background_process_manager,
@@ -3889,6 +3842,7 @@ Skip if nothing new. Be brief."#;
             context_used_tokens: self.context_window.used_tokens,
             memory_path: self.memory_path.as_deref(),
             loaded_toolsets: &mut self.loaded_toolsets,
+            concurrent: false,
         };
 
         // Dispatch to the appropriate tool handler
@@ -3988,6 +3942,7 @@ mod cache_breakpoint_budget_tests {
                 cache_config: cache_config.map(|s| s.to_string()),
                 enable_1m_context: None,
                 thinking_budget_tokens: None,
+                effort: None,
             },
         );
 
@@ -4023,44 +3978,35 @@ mod cache_breakpoint_budget_tests {
     }
 
     #[tokio::test]
-    async fn clear_rolling_cache_breakpoints_removes_all_of_them() {
+    async fn make_room_evicts_oldest_first_and_only_when_full() {
         let mut window = crate::context_window::ContextWindow::with_threshold(200_000, 90.0);
         window.add_message(Message::new(MessageRole::System, "sys".to_string()));
-        window.add_message(Message::with_cache_control(
-            MessageRole::User,
-            "old breakpoint 1".to_string(),
-            CacheControl::ephemeral(),
-        ));
-        window.add_message(Message::new(MessageRole::Assistant, "reply".to_string()));
-        window.add_message(Message::with_cache_control(
-            MessageRole::User,
-            "old breakpoint 2".to_string(),
-            CacheControl::ephemeral(),
-        ));
-
-        let config = g3_config::Config::default();
-        let mut registry = ProviderRegistry::new();
-        registry.register(MockProvider::new());
-        let mut agent = Agent::new_for_test_with_project_context(
-            config, NullUiWriter, registry, None,
-        )
-        .await
-        .unwrap();
+        for i in 0..3 {
+            window.add_message(Message::with_cache_control(
+                MessageRole::User,
+                format!("bp {i}"),
+                CacheControl::ephemeral(),
+            ));
+            window.add_message(Message::new(MessageRole::Assistant, "reply".to_string()));
+        }
+        let mut agent = agent_with_cache_config(Some("1hour")).await;
         agent.context_window = window;
+        assert_eq!(agent.max_rolling_cache_breakpoints(), 3);
+        assert_eq!(agent.count_cache_controls_in_history(), 3);
 
+        agent.make_room_for_rolling_breakpoint();
+        let marked: Vec<String> = agent
+            .context_window
+            .conversation_history
+            .iter()
+            .filter(|m| m.cache_control.is_some())
+            .map(|m| m.content.clone())
+            .collect();
+        assert_eq!(marked, vec!["bp 1", "bp 2"], "must evict the OLDEST marker only");
+
+        // Boundary: under budget is a no-op.
+        agent.make_room_for_rolling_breakpoint();
         assert_eq!(agent.count_cache_controls_in_history(), 2);
-        agent.clear_rolling_cache_breakpoints();
-        assert_eq!(
-            agent.count_cache_controls_in_history(),
-            0,
-            "every marker must be cleared, not just the most recent one, or a \
-             long session accumulates breakpoints it never frees"
-        );
-
-        // Boundary: clearing an empty/no-breakpoint history must not panic and
-        // must remain a no-op.
-        agent.clear_rolling_cache_breakpoints();
-        assert_eq!(agent.count_cache_controls_in_history(), 0);
     }
 }
 
@@ -4129,7 +4075,7 @@ mod tool_timeout_tests {
         let standard_tools = [
             "shell", "read_file", "write_file", "str_replace", "read_image",
             "screenshot", "code_search", "todo_read", "todo_write", "remember",
-            "rehydrate", "coverage", "background_process",
+            "coverage", "background_process",
             "webdriver_start", "webdriver_navigate", "webdriver_click",
             "webdriver_send_keys", "webdriver_find_element", "webdriver_quit",
         ];

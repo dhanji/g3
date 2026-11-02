@@ -64,6 +64,7 @@ pub fn make_final_chunk(tool_calls: Vec<ToolCall>, usage: Option<Usage>) -> Comp
         stop_reason: None,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -81,6 +82,7 @@ pub fn make_final_chunk_with_reason(tool_calls: Vec<ToolCall>, usage: Option<Usa
         stop_reason,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -94,6 +96,7 @@ pub fn make_text_chunk(content: String) -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -107,6 +110,7 @@ pub fn make_tool_chunk(tool_calls: Vec<ToolCall>) -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -120,6 +124,7 @@ pub fn make_tool_streaming_hint(tool_name: String) -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: Some(tool_name),
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -134,6 +139,7 @@ pub fn make_tool_streaming_active() -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: Some(String::new()), // Empty string signals "active" vs "detected"
         upstream_ping: false,
+        thinking_blocks: None,
     }
 }
 
@@ -151,5 +157,6 @@ pub fn make_upstream_ping_chunk() -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: None,
         upstream_ping: true,
+        thinking_blocks: None,
     }
 }

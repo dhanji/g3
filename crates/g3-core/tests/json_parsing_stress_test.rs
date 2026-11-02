@@ -42,6 +42,7 @@ fn chunk(content: &str) -> CompletionChunk {
         stop_reason: None,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
         usage: None,
     }
 }
@@ -55,6 +56,7 @@ fn finished_chunk() -> CompletionChunk {
         stop_reason: Some("end_turn".to_string()),
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
         usage: Some(Usage {
             prompt_tokens: 100,
             completion_tokens: 50,

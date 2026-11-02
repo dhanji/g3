@@ -438,6 +438,7 @@ async fn process_stream(
             stop_reason: None,
             tool_call_streaming: None,
             upstream_ping: false,
+            thinking_blocks: None,
         };
         if tx.send(Ok(chunk)).await.is_err() {
             return;
@@ -453,6 +454,7 @@ async fn process_stream(
         stop_reason: last_finish_reason,
         tool_call_streaming: None,
         upstream_ping: false,
+        thinking_blocks: None,
     };
     let _ = tx.send(Ok(final_chunk)).await;
 }

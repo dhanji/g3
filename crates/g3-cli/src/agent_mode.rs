@@ -224,9 +224,6 @@ pub async fn run_agent_mode(
     agent.set_auto_memory(!flags.no_auto_memory);
     
     // Enable ACD (Aggressive Context Dehydration) if requested
-    if flags.acd {
-        agent.set_acd_enabled(true);
-    }
 
     // If resuming a session, restore context and TODO
     let initial_task = if let Some(ref incomplete_session) = resuming_session {

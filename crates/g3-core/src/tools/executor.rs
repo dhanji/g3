@@ -19,7 +19,6 @@ pub struct ToolContext<'a, W: UiWriter> {
     pub ui_writer: &'a W,
     pub session_id: Option<&'a str>,
     pub working_dir: Option<&'a str>,
-    pub computer_controller: Option<&'a Box<dyn g3_computer_control::ComputerController>>,
     pub webdriver_session: &'a Arc<RwLock<Option<Arc<tokio::sync::Mutex<WebDriverSession>>>>>,
     pub webdriver_process: &'a Arc<RwLock<Option<tokio::process::Child>>>,
     pub background_process_manager: &'a Arc<BackgroundProcessManager>,
@@ -36,6 +35,10 @@ pub struct ToolContext<'a, W: UiWriter> {
     pub memory_path: Option<&'a str>,
     /// Set of toolset names that have been loaded in this session
     pub loaded_toolsets: &'a mut HashSet<String>,
+    /// Running as one of several concurrent calls: don't stream live output
+    /// lines (they would interleave across tools with no way to attribute
+    /// them). Heartbeats still flow — they are liveness, not content.
+    pub concurrent: bool,
 }
 
 impl<'a, W: UiWriter> ToolContext<'a, W> {

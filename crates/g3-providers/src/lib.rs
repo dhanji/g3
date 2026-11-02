@@ -167,6 +167,22 @@ pub struct Message {
     /// instead of plain text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result_id: Option<String>,
+    /// Reasoning blocks returned with this assistant message, kept opaque and
+    /// replayed verbatim (see `CompletionChunk::thinking_blocks`). Persisted so
+    /// a resumed session replays the same bytes and keeps its cache prefix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_blocks: Vec<serde_json::Value>,
+    /// This assistant tool message is the 2nd+ call of ONE model response.
+    ///
+    /// g3 records a batch as (tool_use, tool_result) pairs, one per call, but
+    /// the model emitted them together. Providers that care (Anthropic) fold
+    /// a continuing message back into the previous assistant turn, and its
+    /// result into the previous user turn, so the replayed history matches
+    /// what the model actually did. Without this the model reads its own
+    /// batch as N sequential round trips — measured live 2026-11-02: it
+    /// apologised for "making them one at a time" after a 5-call batch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continues_batch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +313,17 @@ pub struct CompletionChunk {
     /// a no-op through `StreamingParser::process_chunk`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub upstream_ping: bool,
+    /// Provider-opaque reasoning blocks (Anthropic `thinking` /
+    /// `redacted_thinking`, each with its signature) completed in this chunk.
+    ///
+    /// They MUST be echoed back verbatim on the assistant message that made
+    /// the tool calls, or the model loses its own reasoning across every tool
+    /// round trip. Measured live 2026-11-02 on opus-5-5: a codeword chosen in
+    /// thinking before a tool call was recalled when the block was echoed and
+    /// forgotten ("I never actually picked one") when it was stripped — which
+    /// is what g3 had always done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,15 +341,10 @@ pub struct Tool {
 }
 
 pub mod anthropic;
-pub mod databricks;
-pub mod embedded;
 pub mod gemini;
-pub mod oauth;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
-pub use databricks::DatabricksProvider;
-pub use embedded::EmbeddedProvider;
 pub use gemini::GeminiProvider;
 pub use openai::OpenAIProvider;
 
@@ -369,6 +391,8 @@ impl Message {
             cache_control: None,
             tool_calls: Vec::new(),
             tool_result_id: None,
+            thinking_blocks: Vec::new(),
+            continues_batch: false,
         }
     }
 
@@ -387,6 +411,8 @@ impl Message {
             cache_control: Some(cache_control),
             tool_calls: Vec::new(),
             tool_result_id: None,
+            thinking_blocks: Vec::new(),
+            continues_batch: false,
         }
     }
 
@@ -401,6 +427,8 @@ impl Message {
             cache_control: None,
             tool_calls: Vec::new(),
             tool_result_id: None,
+            thinking_blocks: Vec::new(),
+            continues_batch: false,
         }
     }
 

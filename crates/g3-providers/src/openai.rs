@@ -160,6 +160,7 @@ impl OpenAIProvider {
                                         stop_reason: None, // TODO: Extract from OpenAI response
                                         tool_call_streaming: None,
                                         upstream_ping: false,
+                                        thinking_blocks: None,
                                     };
                                     let _ = tx.send(Ok(final_chunk)).await;
                                 }

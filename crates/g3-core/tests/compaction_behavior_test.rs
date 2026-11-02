@@ -38,26 +38,6 @@ mod token_cap_calculation {
         assert!(capped >= SUMMARY_MIN_TOKENS, "Should respect minimum floor");
     }
 
-    /// Test that Databricks provider gets appropriate token caps
-    #[test]
-    fn test_databricks_token_cap() {
-        let config = g3_config::Config::default();
-        
-        let capped = calculate_capped_summary_tokens(&config, "databricks", 50000);
-        assert!(capped <= 10000, "Databricks should cap at 10000, got {}", capped);
-        assert!(capped >= SUMMARY_MIN_TOKENS, "Should respect minimum floor");
-    }
-
-    /// Test that embedded provider gets lower token caps
-    #[test]
-    fn test_embedded_token_cap() {
-        let config = g3_config::Config::default();
-        
-        let capped = calculate_capped_summary_tokens(&config, "embedded", 50000);
-        assert!(capped <= 3000, "Embedded should cap at 3000, got {}", capped);
-        assert!(capped >= SUMMARY_MIN_TOKENS, "Should respect minimum floor");
-    }
-
     /// Test that unknown providers get conservative caps
     #[test]
     fn test_unknown_provider_token_cap() {
@@ -112,7 +92,7 @@ mod thinking_mode_disable {
         let config = g3_config::Config::default();
         
         // Non-Anthropic providers don't have thinking mode
-        let should_disable = should_disable_thinking(&config, "databricks", 1000);
+        let should_disable = should_disable_thinking(&config, "gemini", 1000);
         assert!(!should_disable, "Non-Anthropic providers should not disable thinking");
     }
 }

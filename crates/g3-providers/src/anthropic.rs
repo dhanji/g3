@@ -113,7 +113,7 @@ use tracing::{debug, error};
 use crate::{
     streaming::{
         decode_utf8_streaming, make_final_chunk, make_final_chunk_with_reason, make_text_chunk,
-        make_tool_chunk, make_tool_streaming_active, make_tool_streaming_hint,
+        make_tool_streaming_active, make_tool_streaming_hint,
         make_upstream_ping_chunk,
     },
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, LLMProvider, Message,
@@ -152,7 +152,16 @@ pub struct AnthropicProvider {
     cache_config: Option<String>,
     enable_1m_context: bool,
     thinking_budget_tokens: Option<u32>,
+    /// `output_config.effort` — "low" | "medium" | "high" | "xhigh" | "max".
+    /// None sends nothing (API default is "high"). Set via `with_effort`.
+    effort: Option<String>,
 }
+
+/// Values the API accepts for `output_config.effort`. Measured 2026-11-02:
+/// anything else is a 400 ("Input should be 'low', 'medium', 'high', 'xhigh'
+/// or 'max'"), so an invalid config value is dropped with a warning rather
+/// than allowed to fail every request of the session.
+pub const VALID_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 // ── SSE Stream State ────────────────────────────────────────────────────
 // Mutable state threaded through Anthropic's SSE stream parser.
@@ -161,6 +170,11 @@ pub struct AnthropicProvider {
 struct StreamState {
     tool_calls: Vec<ToolCall>,
     partial_tool_json: String,
+    /// The current tool_use block arrived with complete `input` on
+    /// content_block_start; ignore any (empty) partial_json for it.
+    args_complete: bool,
+    /// The thinking / redacted_thinking block currently being streamed.
+    current_thinking: Option<serde_json::Value>,
     usage: Option<Usage>,
     message_stopped: bool,
     stop_reason: Option<String>,
@@ -171,6 +185,8 @@ impl StreamState {
         Self {
             tool_calls: Vec::new(),
             partial_tool_json: String::new(),
+            args_complete: false,
+            current_thinking: None,
             usage: None,
             message_stopped: false,
             stop_reason: None,
@@ -203,16 +219,37 @@ impl StreamState {
                 let has_complete_args = !input.is_null()
                     && input != serde_json::Value::Object(serde_json::Map::new());
 
+                // Tool calls are HELD until the message ends and delivered
+                // together on the final chunk (see handle_block_stop), so the
+                // agent sees a response's whole batch at once and can run
+                // independent calls concurrently.
+                let hint = make_tool_streaming_hint(name);
+                self.tool_calls.push(tool_call);
+                self.partial_tool_json.clear();
                 if has_complete_args {
-                    debug!("Tool call has complete args, sending immediately");
-                    vec![Ok(make_tool_chunk(vec![tool_call]))]
+                    debug!("Tool call has complete args");
+                    self.args_complete = true;
                 } else {
                     debug!("Tool call has empty args, will accumulate from partial_json");
-                    let hint = make_tool_streaming_hint(name);
-                    self.tool_calls.push(tool_call);
-                    self.partial_tool_json.clear();
-                    vec![Ok(hint)]
+                    self.args_complete = false;
                 }
+                vec![Ok(hint)]
+            }
+            AnthropicContent::Thinking { thinking, signature } => {
+                self.current_thinking = Some(serde_json::json!({
+                    "type": "thinking",
+                    "thinking": thinking,
+                    "signature": signature.unwrap_or_default(),
+                }));
+                vec![]
+            }
+            AnthropicContent::RedactedThinking { data } => {
+                // Complete on arrival; no deltas follow.
+                self.current_thinking = Some(serde_json::json!({
+                    "type": "redacted_thinking",
+                    "data": data,
+                }));
+                vec![]
             }
             _ => {
                 debug!("Non-tool content block: {:?}", content_block);
@@ -229,6 +266,19 @@ impl StreamState {
             debug!("Text chunk (len {})", text.len());
             chunks.push(Ok(make_text_chunk(text)));
         }
+        if let Some(fragment) = delta.thinking {
+            if let Some(block) = self.current_thinking.as_mut() {
+                if let Some(s) = block.get_mut("thinking").and_then(|v| v.as_str().map(String::from)) {
+                    block["thinking"] = serde_json::Value::String(s + &fragment);
+                }
+            }
+        }
+        if let Some(sig) = delta.signature {
+            if let Some(block) = self.current_thinking.as_mut() {
+                let prev = block.get("signature").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                block["signature"] = serde_json::Value::String(prev + &sig);
+            }
+        }
         if let Some(json_fragment) = delta.partial_json {
             debug!("Partial JSON: {}", json_fragment);
             self.partial_tool_json.push_str(&json_fragment);
@@ -239,8 +289,16 @@ impl StreamState {
 
     /// Returns chunks to send when a content block finishes.
     fn handle_block_stop(&mut self) -> Vec<Result<CompletionChunk>> {
+        // A finished reasoning block is emitted on its own chunk so the agent
+        // can attach it to the assistant message, in stream order, ahead of
+        // the tool_use blocks that follow it.
+        if let Some(block) = self.current_thinking.take() {
+            let mut chunk = make_text_chunk(String::new());
+            chunk.thinking_blocks = Some(vec![block]);
+            return vec![Ok(chunk)];
+        }
         // Finalize accumulated partial JSON into the last tool call's args
-        if !self.tool_calls.is_empty() && !self.partial_tool_json.is_empty() {
+        if !self.tool_calls.is_empty() && !self.partial_tool_json.is_empty() && !self.args_complete {
             debug!("Parsing complete tool JSON: {}", self.partial_tool_json);
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&self.partial_tool_json) {
                 if let Some(last) = self.tool_calls.last_mut() {
@@ -253,12 +311,12 @@ impl StreamState {
             self.partial_tool_json.clear();
         }
 
-        if self.tool_calls.is_empty() {
-            return vec![];
-        }
-        let chunk = make_tool_chunk(self.tool_calls.clone());
-        self.tool_calls.clear();
-        vec![Ok(chunk)]
+        // Before 2026-11 each tool call was emitted HERE, the moment its block
+        // closed, and the agent executed it mid-stream — which serialised
+        // every batch: the model would emit 3 independent reads and g3 would
+        // run them one after another. They now ride the final chunk
+        // (handle_message_stop / end-of-stream), all together.
+        vec![]
     }
 
     fn handle_message_delta(&mut self, event: &AnthropicStreamEvent) {
@@ -321,8 +379,12 @@ impl StreamState {
     fn handle_message_stop(&mut self) -> Vec<Result<CompletionChunk>> {
         debug!("Received message stop event");
         self.message_stopped = true;
+        // TAKE, not clone: the end-of-stream fallback in
+        // parse_streaming_response also sends `state.tool_calls`, and since
+        // tool calls are now delivered here as one batch, leaving them in
+        // place would deliver the whole batch twice.
         let chunk = make_final_chunk_with_reason(
-            self.tool_calls.clone(),
+            std::mem::take(&mut self.tool_calls),
             self.usage.clone(),
             self.stop_reason.clone(),
         );
@@ -388,7 +450,27 @@ impl AnthropicProvider {
             cache_config,
             enable_1m_context: enable_1m_context.unwrap_or(false),
             thinking_budget_tokens,
+            effort: None,
         })
+    }
+
+    /// Set the reasoning effort (`output_config.effort`). On current models
+    /// (opus-5-5 and later) adaptive thinking is always on and this is the
+    /// ONLY lever on how much the model reasons — `thinking.type: "enabled"`
+    /// with `budget_tokens` is a 400 there. Invalid values are ignored.
+    pub fn with_effort(mut self, effort: Option<String>) -> Self {
+        self.effort = match effort {
+            Some(e) if VALID_EFFORTS.contains(&e.as_str()) => Some(e),
+            Some(e) => {
+                tracing::warn!(
+                    "Ignoring invalid effort '{}' for provider '{}' (expected one of {:?})",
+                    e, self.name, VALID_EFFORTS
+                );
+                None
+            }
+            None => None,
+        };
+        self
     }
 
     fn create_request_builder(&self, streaming: bool) -> RequestBuilder {
@@ -477,8 +559,13 @@ impl AnthropicProvider {
     ) -> Result<(Option<String>, Vec<AnthropicMessage>)> {
         let mut system_message = None;
         let mut anthropic_messages = Vec::new();
+        // Parallel to anthropic_messages: does this entry continue a batch?
+        let mut continues: Vec<bool> = Vec::new();
 
         for message in messages {
+            if !matches!(message.role, MessageRole::System) {
+                continues.push(matches!(message.role, MessageRole::Assistant) && message.continues_batch);
+            }
             match message.role {
                 MessageRole::System => {
                     if let Some(existing) = system_message {
@@ -550,6 +637,18 @@ impl AnthropicProvider {
                 MessageRole::Assistant => {
                     let mut content_blocks: Vec<AnthropicContent> = Vec::new();
 
+                    // Reasoning blocks go first, verbatim, exactly as the API
+                    // returned them. Unparseable ones are dropped rather than
+                    // failing the request (the API tolerates missing thinking
+                    // on prior turns; it does not tolerate altered thinking).
+                    for block in &message.thinking_blocks {
+                        match serde_json::from_value::<AnthropicContent>(block.clone()) {
+                            Ok(c @ AnthropicContent::Thinking { .. })
+                            | Ok(c @ AnthropicContent::RedactedThinking { .. }) => content_blocks.push(c),
+                            _ => tracing::warn!("Dropping unrecognised thinking block on replay"),
+                        }
+                    }
+
                     // Add text content if non-empty
                     if !message.content.trim().is_empty() {
                         content_blocks.push(AnthropicContent::Text {
@@ -586,10 +685,47 @@ impl AnthropicProvider {
             }
         }
 
+        // Fold same-response batches back into one assistant turn + one user
+        // turn (see Message::continues_batch).
+        let mut anthropic_messages = Self::fold_batches(anthropic_messages, &continues);
+
         // Defense-in-depth: strip orphaned tool_use blocks that have no matching tool_result
         Self::strip_orphaned_tool_use(&mut anthropic_messages);
 
         Ok((system_message, anthropic_messages))
+    }
+
+    /// Merge `[A1, R1, A2*, R2, A3*, R3]` (where `*` = continues_batch) into
+    /// `[A1+A2+A3, R1+R2+R3]`. Only folds when the shape is exactly
+    /// assistant-tool / user-result alternation; anything else is left as is.
+    fn fold_batches(messages: Vec<AnthropicMessage>, continues: &[bool]) -> Vec<AnthropicMessage> {
+        if !continues.iter().any(|c| *c) || continues.len() != messages.len() {
+            return messages;
+        }
+        let mut out: Vec<AnthropicMessage> = Vec::with_capacity(messages.len());
+        let mut iter = messages.into_iter().zip(continues.iter().copied()).peekable();
+        while let Some((msg, cont)) = iter.next() {
+            let n = out.len();
+            let foldable = cont
+                && msg.role == "assistant"
+                && n >= 2
+                && out[n - 1].role == "user"
+                && out[n - 1].content.iter().all(|c| matches!(c, AnthropicContent::ToolResult { .. }))
+                && out[n - 2].role == "assistant"
+                && matches!(iter.peek(), Some((next, _)) if next.role == "user"
+                    && next.content.iter().all(|c| matches!(c, AnthropicContent::ToolResult { .. })));
+            if !foldable {
+                out.push(msg);
+                continue;
+            }
+            let (result, _) = iter.next().expect("peeked");
+            // Continuing messages carry no text of their own worth keeping
+            // (the response's text rode on the first call); keep only tool_use.
+            let uses = msg.content.into_iter().filter(|c| matches!(c, AnthropicContent::ToolUse { .. }));
+            out[n - 2].content.extend(uses);
+            out[n - 1].content.extend(result.content);
+        }
+        out
     }
 
     /// Strip orphaned tool_use blocks from assistant messages that have no matching
@@ -732,6 +868,7 @@ impl AnthropicProvider {
             tools: anthropic_tools,
             stream: streaming,
             thinking,
+            output_config: self.effort.clone().map(|effort| OutputConfig { effort }),
         };
 
         // Ensure the conversation starts with a user message
@@ -1050,6 +1187,13 @@ struct AnthropicRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct OutputConfig {
+    effort: String,
 }
 
 /// The `system` field, in either shape the Anthropic API accepts.
@@ -1111,6 +1255,8 @@ enum AnthropicContent {
         #[serde(default)]
         signature: Option<String>,
     },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -1244,6 +1390,10 @@ struct AnthropicStreamMessage {
 struct AnthropicDelta {
     text: Option<String>,
     partial_json: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
     #[serde(default)]
     stop_reason: Option<String>,
 }
@@ -2237,5 +2387,146 @@ mod tests {
                 .any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
             "Valid tool_use with structured tool_result should be preserved"
         );
+    }
+}
+
+/// 2026-11: effort, thinking replay, and batched tool-call delivery.
+#[cfg(test)]
+mod effort_thinking_batch_tests {
+    use super::*;
+    use crate::MessageToolCall;
+
+    fn provider() -> AnthropicProvider {
+        AnthropicProvider::new("k".into(), Some("claude-opus-5-5".into()), Some(4000), None, None, None, None).unwrap()
+    }
+
+    fn body(p: &AnthropicProvider, messages: &[Message]) -> serde_json::Value {
+        serde_json::to_value(p.create_request_body(messages, None, true, 4000, false).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn effort_serialises_as_output_config() {
+        let p = provider().with_effort(Some("high".into()));
+        let b = body(&p, &[Message::new(MessageRole::User, "hi".into())]);
+        assert_eq!(b["output_config"]["effort"], "high");
+        assert!(b.get("thinking").is_none(), "must not send thinking.enabled: 400 on opus-5-5");
+    }
+
+    #[test]
+    fn unset_effort_sends_no_output_config() {
+        let b = body(&provider(), &[Message::new(MessageRole::User, "hi".into())]);
+        assert!(b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn invalid_effort_is_dropped_not_sent() {
+        // The API 400s on anything outside VALID_EFFORTS; one typo in config
+        // must not fail every request of every session.
+        let p = provider().with_effort(Some("extreme".into()));
+        let b = body(&p, &[Message::new(MessageRole::User, "hi".into())]);
+        assert!(b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn thinking_blocks_replay_first_and_verbatim() {
+        let mut a = Message::new(MessageRole::Assistant, "".into());
+        a.thinking_blocks = vec![
+            serde_json::json!({"type":"thinking","thinking":"plan","signature":"SIG"}),
+            serde_json::json!({"type":"redacted_thinking","data":"OPAQUE"}),
+        ];
+        a.tool_calls.push(MessageToolCall { id: "t1".into(), name: "shell".into(), input: serde_json::json!({"command":"ls"}) });
+        let mut r = Message::new(MessageRole::User, "ok".into());
+        r.tool_result_id = Some("t1".into());
+        let b = body(&provider(), &[Message::new(MessageRole::User, "go".into()), a, r]);
+        let content = &b["messages"][1]["content"];
+        assert_eq!(content[0], serde_json::json!({"type":"thinking","thinking":"plan","signature":"SIG"}));
+        assert_eq!(content[1], serde_json::json!({"type":"redacted_thinking","data":"OPAQUE"}));
+        assert_eq!(content[2]["type"], "tool_use");
+    }
+
+    fn tool_pair(id: &str, cont: bool) -> (Message, Message) {
+        let mut a = Message::new(MessageRole::Assistant, "".into());
+        a.tool_calls.push(MessageToolCall { id: id.into(), name: "shell".into(), input: serde_json::json!({}) });
+        a.continues_batch = cont;
+        let mut r = Message::new(MessageRole::User, format!("result {id}"));
+        r.tool_result_id = Some(id.into());
+        (a, r)
+    }
+
+    #[test]
+    fn same_response_batch_replays_as_one_turn() {
+        let mut msgs = vec![Message::new(MessageRole::User, "go".into())];
+        for (id, cont) in [("a", false), ("b", true), ("c", true), ("d", false)] {
+            let (a, r) = tool_pair(id, cont);
+            msgs.push(a);
+            msgs.push(r);
+        }
+        let b = body(&provider(), &msgs);
+        let m = b["messages"].as_array().unwrap();
+        // user, [a b c], [ra rb rc], [d], [rd]
+        assert_eq!(m.len(), 5, "{}", serde_json::to_string_pretty(&b["messages"]).unwrap());
+        let ids = |i: usize, k: &str| m[i]["content"].as_array().unwrap().iter().map(|c| c[k].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(1, "id"), vec!["a", "b", "c"]);
+        assert_eq!(ids(2, "tool_use_id"), vec!["a", "b", "c"]);
+        assert_eq!(ids(3, "id"), vec!["d"], "a NEW response must not be folded into the previous one");
+    }
+
+    #[test]
+    fn no_batches_means_unchanged_shape() {
+        let mut msgs = vec![Message::new(MessageRole::User, "go".into())];
+        for id in ["a", "b"] {
+            let (a, r) = tool_pair(id, false);
+            msgs.push(a);
+            msgs.push(r);
+        }
+        assert_eq!(body(&provider(), &msgs)["messages"].as_array().unwrap().len(), 5);
+    }
+
+    fn sse(events: &[serde_json::Value]) -> Vec<reqwest::Result<Bytes>> {
+        events.iter().map(|e| Ok(Bytes::from(format!("data: {}\n\n", e)))).collect()
+    }
+
+    async fn collect(events: Vec<serde_json::Value>) -> Vec<CompletionChunk> {
+        let (tx, mut rx) = mpsc::channel(100);
+        let stream = futures_util::stream::iter(sse(&events));
+        provider().parse_streaming_response(stream, tx).await;
+        let mut out = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            out.push(c.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn stream_captures_thinking_and_delivers_batch_once_on_final_chunk() {
+        use serde_json::json;
+        let chunks = collect(vec![
+            json!({"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me "}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG=="}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"a","name":"get_n","input":{}}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"b","name":"shell","input":{}}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"ls\"}"}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}),
+            json!({"type":"message_stop"}),
+        ])
+        .await;
+
+        let thinking: Vec<_> = chunks.iter().filter_map(|c| c.thinking_blocks.clone()).flatten().collect();
+        assert_eq!(thinking, vec![json!({"type":"thinking","thinking":"let me think","signature":"SIG=="})]);
+
+        let with_tools: Vec<_> = chunks.iter().filter(|c| c.tool_calls.is_some()).collect();
+        assert_eq!(with_tools.len(), 1, "batch must arrive exactly once, on one chunk");
+        let calls = with_tools[0].tool_calls.as_ref().unwrap();
+        assert!(with_tools[0].finished);
+        assert_eq!(calls.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(calls[1].args, json!({"command":"ls"}));
     }
 }

@@ -7,7 +7,7 @@ use anyhow::Result;
 use tracing::{debug, warn};
 
 use crate::tools::executor::ToolContext;
-use crate::tools::{acd, envelope, file_ops, memory, misc, plan, research, shell, toolsets, webdriver};
+use crate::tools::{envelope, file_ops, memory, misc, plan, research, shell, toolsets, webdriver};
 use crate::ui_writer::UiWriter;
 use crate::ToolCall;
 
@@ -53,8 +53,6 @@ pub async fn dispatch_tool<W: UiWriter>(
         // Toolset loading
         "load_toolset" => toolsets::execute_load_toolset(tool_call, ctx).await,
 
-        // ACD (Aggressive Context Dehydration) tools
-        "rehydrate" => acd::execute_rehydrate(tool_call, ctx).await,
 
         // WebDriver tools
         "webdriver_start" => webdriver::execute_webdriver_start(tool_call, ctx).await,

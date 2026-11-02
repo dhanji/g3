@@ -93,6 +93,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -112,6 +113,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -131,6 +133,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -146,6 +149,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -161,6 +165,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -182,6 +187,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: Some("end_turn".to_string()),
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -200,6 +206,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -218,6 +225,7 @@ impl LLMProvider for MockStreamingProvider {
                         stop_reason: Some("end_turn".to_string()),
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
             });
@@ -443,6 +451,7 @@ async fn test_finished_signal_terminates_stream() {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -462,6 +471,7 @@ async fn test_finished_signal_terminates_stream() {
                         stop_reason: Some("end_turn".to_string()),
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await;
 
@@ -479,6 +489,7 @@ async fn test_finished_signal_terminates_stream() {
                         stop_reason: None,
                         tool_call_streaming: None,
                         upstream_ping: false,
+                        thinking_blocks: None,
                     }))
                     .await
                     .is_ok()

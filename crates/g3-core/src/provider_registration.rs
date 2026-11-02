@@ -1,6 +1,6 @@
 //! Provider registration logic for the Agent.
 //!
-//! This module handles the registration of LLM providers (Anthropic, OpenAI, Databricks, Embedded)
+//! This module handles the registration of LLM providers (Anthropic, OpenAI, Gemini, OpenAI-compatible)
 //! based on configuration. It consolidates the duplicated registration patterns into a single
 //! cohesive module.
 
@@ -53,12 +53,10 @@ pub async fn register_providers(
 ) -> Result<ProviderRegistry> {
     let mut registry = ProviderRegistry::new();
 
-    register_embedded_providers(config, providers_to_register, &mut registry)?;
     register_openai_providers(config, providers_to_register, &mut registry)?;
     register_openai_compatible_providers(config, providers_to_register, &mut registry)?;
     register_anthropic_providers(config, providers_to_register, &mut registry)?;
     register_gemini_providers(config, providers_to_register, &mut registry)?;
-    register_databricks_providers(config, providers_to_register, &mut registry).await?;
 
     // Set default provider
     debug!(
@@ -120,7 +118,8 @@ fn register_fallback_provider(config: &Config, registry: &mut ProviderRegistry) 
                 base.cache_config.clone(),
                 base.enable_1m_context,
                 base.thinking_budget_tokens,
-            )?;
+            )?
+            .with_effort(base.effort.clone());
             registry.register_fallback(provider);
         }
         "openai" => {
@@ -160,47 +159,6 @@ fn register_fallback_provider(config: &Config, registry: &mut ProviderRegistry) 
             )?;
             registry.register_fallback(provider);
         }
-        "databricks" => {
-            let Some(base) = config.providers.databricks.get(&config_name) else {
-                warn!("Cannot register fallback model: databricks.{} not found", config_name);
-                return Ok(());
-            };
-            if base.model == fallback_model {
-                debug!("Fallback model equals default model ({}); no fallback registered", fallback_model);
-                return Ok(());
-            }
-            // Only the token path is supported here. The OAuth constructor is
-            // async and performs a network round trip; doing that eagerly for a
-            // provider that may never be used would tax every startup.
-            let Some(token) = base.token.as_ref() else {
-                warn!(
-                    "Fallback model not registered: databricks.{} uses OAuth, which cannot be \
-                     initialised lazily. Set a token to use --fallback-model.",
-                    config_name
-                );
-                return Ok(());
-            };
-            let provider = g3_providers::DatabricksProvider::from_token_with_name(
-                fallback_name.clone(),
-                base.host.clone(),
-                token.clone(),
-                fallback_model.to_string(),
-                base.max_tokens,
-                base.temperature,
-            )?;
-            registry.register_fallback(provider);
-        }
-        "embedded" => {
-            // A model here is a path to a multi-gigabyte GGUF that would be
-            // loaded into memory at startup. An overload fallback makes no
-            // sense for a local model anyway: local inference does not return
-            // "overloaded".
-            warn!(
-                "--fallback-model is not supported for embedded providers ({}); ignoring",
-                default_ref
-            );
-            return Ok(());
-        }
         other => {
             // openai_compatible providers are keyed by their own name.
             let Some(base) = config.providers.openai_compatible.get(other) else {
@@ -227,30 +185,6 @@ fn register_fallback_provider(config: &Config, registry: &mut ProviderRegistry) 
         "Registered overload fallback provider '{}' (model={})",
         fallback_name, fallback_model
     );
-    Ok(())
-}
-
-/// Register embedded providers from configuration.
-fn register_embedded_providers(
-    config: &Config,
-    providers_to_register: &[String],
-    registry: &mut ProviderRegistry,
-) -> Result<()> {
-    for (name, embedded_config) in &config.providers.embedded {
-        if should_register(providers_to_register, "embedded", name) {
-            let embedded_provider = g3_providers::EmbeddedProvider::new_with_name(
-                format!("embedded.{}", name),
-                embedded_config.model_path.clone(),
-                embedded_config.model_type.clone(),
-                embedded_config.context_length,
-                embedded_config.max_tokens,
-                embedded_config.temperature,
-                embedded_config.gpu_layers,
-                embedded_config.threads,
-            )?;
-            registry.register(embedded_provider);
-        }
-    }
     Ok(())
 }
 
@@ -315,7 +249,8 @@ fn register_anthropic_providers(
                 anthropic_config.cache_config.clone(),
                 anthropic_config.enable_1m_context,
                 anthropic_config.thinking_budget_tokens,
-            )?;
+            )?
+            .with_effort(anthropic_config.effort.clone());
             registry.register(anthropic_provider);
         }
     }
@@ -338,44 +273,6 @@ fn register_gemini_providers(
                 gemini_config.temperature,
             )?;
             registry.register(gemini_provider);
-        }
-    }
-    Ok(())
-}
-
-/// Register Databricks providers from configuration.
-///
-/// This is async because OAuth authentication requires async operations.
-async fn register_databricks_providers(
-    config: &Config,
-    providers_to_register: &[String],
-    registry: &mut ProviderRegistry,
-) -> Result<()> {
-    for (name, databricks_config) in &config.providers.databricks {
-        if should_register(providers_to_register, "databricks", name) {
-            let databricks_provider = if let Some(token) = &databricks_config.token {
-                // Use token-based authentication
-                g3_providers::DatabricksProvider::from_token_with_name(
-                    format!("databricks.{}", name),
-                    databricks_config.host.clone(),
-                    token.clone(),
-                    databricks_config.model.clone(),
-                    databricks_config.max_tokens,
-                    databricks_config.temperature,
-                )?
-            } else {
-                // Use OAuth authentication
-                g3_providers::DatabricksProvider::from_oauth_with_name(
-                    format!("databricks.{}", name),
-                    databricks_config.host.clone(),
-                    databricks_config.model.clone(),
-                    databricks_config.max_tokens,
-                    databricks_config.temperature,
-                )
-                .await?
-            };
-
-            registry.register(databricks_provider);
         }
     }
     Ok(())
@@ -424,7 +321,6 @@ mod fallback_registration_tests {
     fn anthropic_config(fallback_model: Option<&str>) -> Config {
         let mut config = Config::default();
         config.providers.default_provider = "anthropic.default".to_string();
-        config.providers.databricks.clear(); // drop Config::default()'s OAuth entry
         config.providers.anthropic.insert(
             "default".to_string(),
             AnthropicConfig {
@@ -435,6 +331,7 @@ mod fallback_registration_tests {
                 cache_config: Some("ephemeral".to_string()),
                 enable_1m_context: Some(true),
                 thinking_budget_tokens: None,
+                effort: None,
             },
         );
         config.providers.fallback_model = fallback_model.map(str::to_string);
@@ -572,7 +469,7 @@ mod fallback_registration_tests {
         assert!(!registry.has_fallback());
     }
 
-    /// Negative: embedded default provider is skipped with a warning, NOT an
+    /// Negative: an unsupported (e.g. removed `embedded`) default provider is skipped with a warning, NOT an
     /// error — a bad flag must never prevent g3 from starting.
     #[test]
     fn test_embedded_default_provider_is_skipped_not_an_error() {
@@ -601,29 +498,12 @@ mod fallback_registration_tests {
         assert!(!registry.has_fallback());
     }
 
-    /// Negative: a Databricks default using OAuth cannot be cloned lazily, so
-    /// it is skipped with a warning instead of blocking startup on a network
-    /// round trip.
-    #[test]
-    fn test_databricks_oauth_default_is_skipped_not_an_error() {
-        let mut config = Config::default(); // default entry uses OAuth, token: None
-        config.providers.default_provider = "databricks.default".to_string();
-        config.providers.fallback_model = Some("databricks-claude-opus".to_string());
-
-        let mut registry = ProviderRegistry::new();
-        let result = register_fallback_provider(&config, &mut registry);
-
-        assert!(result.is_ok(), "must not error: {:?}", result.err());
-        assert!(!registry.has_fallback());
-    }
-
     /// A non-anthropic provider type also works (openai here), proving the
     /// feature is not hardcoded to one vendor.
     #[test]
     fn test_openai_default_gets_a_fallback() {
         let mut config = Config::default();
         config.providers.default_provider = "openai.default".to_string();
-        config.providers.databricks.clear();
         config.providers.openai.insert(
             "default".to_string(),
             OpenAIConfig {

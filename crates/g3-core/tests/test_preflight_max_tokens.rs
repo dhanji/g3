@@ -21,6 +21,7 @@ fn create_test_config_with_thinking(thinking_budget: Option<u32>) -> Config {
         cache_config: None,
         enable_1m_context: None,
         thinking_budget_tokens: thinking_budget,
+        effort: None,
     });
     config.providers.anthropic = anthropic_configs;
     

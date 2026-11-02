@@ -624,6 +624,7 @@ Some text after"#;
             stop_reason: None,
             tool_call_streaming: None,
             upstream_ping: false,
+            thinking_blocks: None,
         };
 
         let tools = parser.process_chunk(&chunk);
@@ -771,6 +772,7 @@ Some text after"#;
             stop_reason: None,
             tool_call_streaming: None,
             upstream_ping: false,
+            thinking_blocks: None,
         };
 
         let tools = parser.process_chunk(&chunk);

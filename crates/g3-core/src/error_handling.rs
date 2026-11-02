@@ -68,8 +68,14 @@ impl ErrorContext {
             .unwrap_or_default()
             .as_secs();
 
-        // Capture stack trace
-        let stack_trace = std::backtrace::Backtrace::force_capture().to_string();
+        // NOTE: no stack trace here. This constructor runs on EVERY model round
+        // trip (stream_completion_with_tools builds one per iteration, before
+        // anything has failed), and `Backtrace::force_capture().to_string()`
+        // symbolises the whole stack — measured 2026-11 at 17-55 SECONDS per
+        // call in a debug test binary (gimli walking target/debug/deps), and a
+        // pure tax in release. The trace is captured in `log_error`, i.e. only
+        // when there is an error to report.
+        let stack_trace = String::new();
 
         Self {
             operation,
@@ -98,6 +104,15 @@ impl ErrorContext {
 
     /// Log the error context with ERROR level
     pub fn log_error(&self, error: &anyhow::Error) {
+        // Captured lazily — see ErrorContext::new.
+        let mut this = self.clone();
+        if this.stack_trace.is_empty() {
+            this.stack_trace = std::backtrace::Backtrace::force_capture().to_string();
+        }
+        this.log_error_inner(error);
+    }
+
+    fn log_error_inner(&self, error: &anyhow::Error) {
         error!("=== G3 ERROR DETAILS ===");
         error!("Operation: {}", self.operation);
         error!("Provider: {} | Model: {}", self.provider, self.model);

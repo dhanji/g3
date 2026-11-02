@@ -72,9 +72,22 @@ pub struct MockChunk {
     /// already protected — it would test the easy case while appearing to cover
     /// the hard one.
     pub stream_error: Option<String>,
+    /// Opaque reasoning blocks to emit with this chunk (see
+    /// `CompletionChunk::thinking_blocks`). A fake that cannot produce them
+    /// cannot test that they are echoed back.
+    pub thinking_blocks: Option<Vec<serde_json::Value>>,
 }
 
 impl MockChunk {
+    /// A chunk carrying a single completed `thinking` block with a signature.
+    pub fn thinking(text: &str, signature: &str) -> Self {
+        let mut c = Self::content("");
+        c.thinking_blocks = Some(vec![serde_json::json!({
+            "type": "thinking", "thinking": text, "signature": signature
+        })]);
+        c
+    }
+
     /// Create a content chunk (not finished)
     pub fn content(text: &str) -> Self {
         Self {
@@ -85,6 +98,7 @@ impl MockChunk {
             tool_call_streaming: None,
             stream_error: None,
             upstream_ping: false,
+            thinking_blocks: None,
         }
     }
 
@@ -98,6 +112,7 @@ impl MockChunk {
             tool_call_streaming: None,
             stream_error: None,
             upstream_ping: false,
+            thinking_blocks: None,
         }
     }
 
@@ -115,6 +130,7 @@ impl MockChunk {
             tool_call_streaming: None,
             stream_error: None,
             upstream_ping: false,
+            thinking_blocks: None,
         }
     }
 
@@ -128,6 +144,7 @@ impl MockChunk {
             tool_call_streaming: Some(tool_name.to_string()),
             stream_error: None,
             upstream_ping: false,
+            thinking_blocks: None,
         }
     }
 
@@ -143,6 +160,7 @@ impl MockChunk {
             tool_call_streaming: None,
             stream_error: None,
             upstream_ping: true,
+            thinking_blocks: None,
         }
     }
 
@@ -161,6 +179,7 @@ impl MockChunk {
             tool_call_streaming: None,
             stream_error: Some(message.to_string()),
             upstream_ping: false,
+            thinking_blocks: None,
         }
     }
 }
@@ -622,6 +641,7 @@ impl LLMProvider for MockProvider {
                     stop_reason: chunk.stop_reason,
                     tool_call_streaming: chunk.tool_call_streaming,
                     upstream_ping: chunk.upstream_ping,
+                    thinking_blocks: chunk.thinking_blocks,
                 };
 
                 if tx.send(Ok(completion_chunk)).await.is_err() {

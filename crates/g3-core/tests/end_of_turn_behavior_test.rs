@@ -20,7 +20,7 @@ use g3_core::streaming::{
     are_tool_calls_duplicate, format_timing_footer, is_connection_error, is_empty_response,
     format_read_file_summary, format_write_file_result, format_str_replace_summary,
     format_remember_summary, format_screenshot_summary, format_coverage_summary,
-    format_rehydrate_summary, format_duration, truncate_for_display, truncate_line,
+    format_duration, truncate_for_display, truncate_line,
     clean_llm_tokens,
 };
 use g3_core::ToolCall;
@@ -471,19 +471,6 @@ mod tool_output_formatting {
         assert!(summary.contains("❌") || summary.contains("failed"));
     }
 
-    /// Test rehydrate summary parsing
-    #[test]
-    fn test_rehydrate_summary() {
-        let summary = format_rehydrate_summary("✅ Rehydrated fragment 'abc123' (47 messages, ~18500 tokens)");
-        assert!(summary.contains("abc123") || summary.contains("🔄"));
-    }
-
-    /// Test rehydrate summary error case
-    #[test]
-    fn test_rehydrate_summary_error() {
-        let summary = format_rehydrate_summary("❌ Fragment not found");
-        assert!(summary.contains("❌") || summary.contains("failed"));
-    }
 }
 
 // =============================================================================

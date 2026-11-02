@@ -7,7 +7,7 @@ If you create temporary files for verification, place these in a subdir named 't
 
 Use `code_search` for definitions, `rg` for everything else.
 
-If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the same response, otherwise you MUST wait for previous calls to finish first to determine the dependent values.
+If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the same response, otherwise you MUST wait for previous calls to finish first to determine the dependent values. Independent read-only calls (shell, read_file, read_image, code_search) made in the same response execute concurrently, so batching them is much faster.
 
 # Task Management with Plan Mode
 

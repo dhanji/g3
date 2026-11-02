@@ -7,17 +7,14 @@
 use g3_providers::Tool;
 use serde_json::json;
 
-/// Configuration for which optional tool sets to enable
+/// Kept as a zero-sized marker so call sites and tests keep their shape;
+/// the only optional set it ever governed (desktop control) was removed.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ToolConfig {
-    pub computer_control: bool,
-}
+pub struct ToolConfig;
 
 impl ToolConfig {
-    pub fn new(computer_control: bool) -> Self {
-        Self {
-            computer_control,
-        }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -35,7 +32,7 @@ fn create_core_tools() -> Vec<Tool> {
     let mut tools = vec![
         Tool {
             name: "shell".to_string(),
-            description: "Execute shell commands in the current working directory. Do NOT prefix commands with `cd <path> &&` - commands already run in the workspace.".to_string(),
+            description: "Execute shell commands in the current working directory. Do NOT prefix commands with `cd <path> &&` - commands already run in the workspace. Several shell/read_file/read_image/code_search calls in ONE response run CONCURRENTLY — batch independent reads and searches together, and never put a call in the same batch as one it depends on.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -247,22 +244,6 @@ fn create_core_tools() -> Vec<Tool> {
         }),
     });
 
-    // ACD rehydration tool
-    tools.push(Tool {
-        name: "rehydrate".to_string(),
-        description: "Restore dehydrated conversation history from a previous context segment. Use this when you see a DEHYDRATED CONTEXT stub and need to recall the full conversation details from that segment.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "fragment_id": {
-                    "type": "string",
-                    "description": "The fragment ID to restore (from a DEHYDRATED CONTEXT stub message)"
-                }
-            },
-            "required": ["fragment_id"]
-        }),
-    });
-
     // Toolset loading tool - allows dynamic loading of additional tools
     tools.push(Tool {
         name: "load_toolset".to_string(),
@@ -291,25 +272,33 @@ mod tests {
         let tools = create_core_tools();
         // Core tools: shell, background_process, read_file, read_image,
         // write_file, str_replace, code_search, plan_read, plan_write, plan_approve,
-        // remember, rehydrate, load_toolset, write_envelope
-        // (14 total - research tools are now in a loadable toolset)
-        assert_eq!(tools.len(), 14);
+        // remember, load_toolset, write_envelope
+        // (13 total — rehydrate removed with ACD 2026-11 - research tools are now in a loadable toolset)
+        assert_eq!(tools.len(), 13);
     }
 
     #[test]
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        // 14 core tools (webdriver and research are now JIT-loaded)
-        assert_eq!(tools.len(), 14);
+        // 13 core tools (webdriver and research are now JIT-loaded)
+        assert_eq!(tools.len(), 13);
     }
 
     #[test]
     fn test_create_tool_definitions() {
-        let config = ToolConfig::new(true);
+        let config = ToolConfig::new();
         let tools = create_tool_definitions(config);
         // Webdriver and research tools are now JIT-loaded, so only core tools are included
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 13);
+    }
+
+    #[test]
+    fn test_removed_tools_stay_removed() {
+        let names: Vec<String> = create_core_tools().into_iter().map(|t| t.name).collect();
+        for gone in ["rehydrate", "take_screenshot", "code_coverage"] {
+            assert!(!names.iter().any(|n| n == gone), "{gone} is back in the tool list");
+        }
     }
 
     #[test]

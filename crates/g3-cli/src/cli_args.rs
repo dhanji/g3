@@ -29,8 +29,6 @@ pub struct CommonFlags {
     pub memory_path: Option<PathBuf>,
     /// Disable automatic memory update reminder
     pub no_auto_memory: bool,
-    /// Enable aggressive context dehydration
-    pub acd: bool,
     /// Override `agent.thinning_floor_percent` for this run (e.g. scout's
     /// aggressive 5% floor to discard webdriver HTML right after each tool
     /// call). `None` leaves the config file / default (50) untouched.
@@ -176,10 +174,6 @@ pub struct Cli {
     #[arg(long)]
     pub auto_memory: bool,
 
-    /// Enable aggressive context dehydration (save context to disk on compaction)
-    #[arg(long)]
-    pub acd: bool,
-
     /// Override the thinning floor (percent of context window at which
     /// incremental thinning first becomes eligible; default 50, see
     /// `agent.thinning_floor_percent`). Used by the `scout` research agent
@@ -215,7 +209,7 @@ pub struct Cli {
 
 impl Cli {
     /// Extract common flags that apply across all execution modes.
-    /// This ensures flags like --project, --acd, --include-prompt work consistently.
+    /// This ensures flags like --project, --include-prompt work consistently.
     pub fn common_flags(&self) -> CommonFlags {
         CommonFlags {
             workspace: self.workspace.clone(),
@@ -227,7 +221,6 @@ impl Cli {
             include_prompt: self.include_prompt.clone(),
             memory_path: self.memory.clone(),
             no_auto_memory: self.no_auto_memory,
-            acd: self.acd,
             thinning_floor: self.thinning_floor,
             project: self.project.clone(),
             resume: self.resume.clone(),

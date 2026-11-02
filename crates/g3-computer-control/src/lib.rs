@@ -1,8 +1,11 @@
-// Suppress warnings from objc crate macros
-#![allow(unexpected_cfgs)]
+//! Browser automation via WebDriver (Safari, headless Chrome).
+//!
+//! This crate used to also hold desktop control (mouse/keyboard, OCR, window
+//! screenshots via CoreGraphics/X11/Win32). That layer was removed 2026-11:
+//! its only surviving tool (`take_screenshot`) had no dispatch entry, so it
+//! could never be called, yet the controller was still initialised on every
+//! startup. WebDriver is what butler actually uses.
 
-pub mod platform;
-pub mod types;
 pub mod webdriver;
 
 // Re-export webdriver types for convenience
@@ -10,33 +13,3 @@ pub use webdriver::{
     chrome::ChromeDriver, safari::SafariDriver, WebDriverController, WebElement,
     diagnostics::{run_diagnostics as run_chrome_diagnostics, ChromeDiagnosticReport, DiagnosticStatus},
 };
-
-use anyhow::Result;
-use async_trait::async_trait;
-use types::*;
-
-#[async_trait]
-pub trait ComputerController: Send + Sync {
-    // Screen capture
-    async fn take_screenshot(
-        &self,
-        path: &str,
-        region: Option<Rect>,
-        window_id: Option<&str>,
-    ) -> Result<()>;
-}
-
-// Platform-specific constructor
-pub fn create_controller() -> Result<Box<dyn ComputerController>> {
-    #[cfg(target_os = "macos")]
-    return Ok(Box::new(platform::macos::MacOSController::new()?));
-
-    #[cfg(target_os = "linux")]
-    return Ok(Box::new(platform::linux::LinuxController::new()?));
-
-    #[cfg(target_os = "windows")]
-    return Ok(Box::new(platform::windows::WindowsController::new()?));
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    anyhow::bail!("Unsupported platform")
-}

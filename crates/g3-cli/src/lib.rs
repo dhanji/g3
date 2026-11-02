@@ -206,9 +206,6 @@ async fn run_console_mode(
     agent.set_memory_path(
         cli.memory.as_ref().map(|p| p.to_string_lossy().to_string()),
     );
-    if cli.acd {
-        agent.set_acd_enabled(true);
-    }
 
     // Load CLI project if --project flag was specified
     let initial_project: Option<project::Project> = if let Some(ref project_path) = cli.project {

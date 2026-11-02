@@ -42,8 +42,6 @@ pub fn get_max_tokens(config: &Config, provider_name: &str) -> Option<u32> {
     match provider_type {
         "anthropic" => config.providers.anthropic.get(config_name)?.max_tokens,
         "openai" => config.providers.openai.get(config_name)?.max_tokens,
-        "databricks" => config.providers.databricks.get(config_name)?.max_tokens,
-        "embedded" => config.providers.embedded.get(config_name)?.max_tokens,
         _ => None,
     }
 }
@@ -55,8 +53,6 @@ pub fn get_temperature(config: &Config, provider_name: &str) -> Option<f32> {
     match provider_type {
         "anthropic" => config.providers.anthropic.get(config_name)?.temperature,
         "openai" => config.providers.openai.get(config_name)?.temperature,
-        "databricks" => config.providers.databricks.get(config_name)?.temperature,
-        "embedded" => config.providers.embedded.get(config_name)?.temperature,
         _ => None,
     }
 }
@@ -102,9 +98,7 @@ pub fn resolve_max_tokens(config: &Config, provider_name: &str) -> u32 {
     // These defaults should match what the providers use internally
     let provider_default = match provider_type {
         "anthropic" => 32000,   // Anthropic provider defaults to 32768, we use 32000
-        "databricks" => 32000,  // Databricks is passthru to Anthropic, match its defaults
         "openai" => 32000,      // OpenAI models support large outputs
-        "embedded" => 8192,     // Embedded provider: let provider's effective_max_tokens() handle it
         _ => 16000,             // Generic fallback
     };
     let base = get_max_tokens(config, provider_name).unwrap_or(provider_default);
@@ -126,7 +120,6 @@ pub fn resolve_temperature(config: &Config, provider_name: &str) -> f32 {
     let (provider_type, _) = parse_provider_ref(provider_name);
     
     match provider_type {
-        "databricks" => get_temperature(config, provider_name).unwrap_or(0.1),
         _ => get_temperature(config, provider_name).unwrap_or(0.1),
     }
 }
@@ -226,8 +219,6 @@ pub fn get_summary_max_tokens_cap(config: &Config, provider_name: &str) -> u32 {
                 None => 10_000,
             }
         }
-        "databricks" => 10_000,
-        "embedded" => 3000,
         _ => 5000,
     }
 }
@@ -276,6 +267,7 @@ mod tests {
                 cache_config: None,
                 enable_1m_context: flag,
                 thinking_budget_tokens: None,
+                effort: None,
             },
         );
         config
@@ -307,8 +299,6 @@ mod tests {
         let config = config_with_anthropic("default", Some(true));
         assert!(!is_1m_context_enabled(&config, "gemini.default"));
         assert!(!is_1m_context_enabled(&config, "openai.default"));
-        assert!(!is_1m_context_enabled(&config, "embedded.qwen3-big"));
-        assert!(!is_1m_context_enabled(&config, "databricks.default"));
     }
 
     /// Negative: correct provider type but the named config isn't in the map.

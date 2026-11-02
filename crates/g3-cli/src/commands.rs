@@ -44,8 +44,6 @@ pub async fn handle_command<W: UiWriter>(
             output.print("  /thinnify  - Trigger context thinning (replaces large tool results with file references)");
             output.print("  /skinnify  - Trigger full context thinning (like /thinnify but for entire context, not just first third)");
             output.print("  /clear     - Clear session and start fresh (discards continuation artifacts)");
-            output.print("  /fragments - List dehydrated context fragments (ACD)");
-            output.print("  /rehydrate - Restore a dehydrated fragment by ID");
             output.print("  /resume    - List and switch to a previous session");
             output.print("  /project <path> - Load a project from the given absolute path");
             output.print("  /unproject - Unload the current project and reset context");
@@ -82,62 +80,6 @@ pub async fn handle_command<W: UiWriter>(
         "/skinnify" => {
             let result = agent.force_thin_all();
             G3Status::thin_result(&result);
-            Ok(CommandResult::Handled)
-        }
-        "/fragments" => {
-            if let Some(session_id) = agent.get_session_id() {
-                match g3_core::acd::list_fragments(session_id) {
-                    Ok(fragments) => {
-                        if fragments.is_empty() {
-                            output.print("No dehydrated fragments found for this session.");
-                        } else {
-                            output.print(&format!(
-                                "📦 {} dehydrated fragment(s):\n",
-                                fragments.len()
-                            ));
-                            for fragment in &fragments {
-                                output.print(&fragment.generate_stub());
-                                output.print("");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        output.print(&format!("❌ Error listing fragments: {}", e));
-                    }
-                }
-            } else {
-                output.print("No active session - fragments are session-scoped.");
-            }
-            Ok(CommandResult::Handled)
-        }
-        cmd if cmd.starts_with("/rehydrate") => {
-            let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
-            if parts.len() < 2 || parts[1].trim().is_empty() {
-                output.print("Usage: /rehydrate <fragment_id>");
-                output.print("Use /fragments to list available fragment IDs.");
-            } else {
-                let fragment_id = parts[1].trim();
-                if let Some(session_id) = agent.get_session_id() {
-                    match g3_core::acd::Fragment::load(session_id, fragment_id) {
-                        Ok(fragment) => {
-                            output.print(&format!(
-                                "✅ Fragment '{}' loaded ({} messages, ~{} tokens)",
-                                fragment_id, fragment.message_count, fragment.estimated_tokens
-                            ));
-                            output.print("");
-                            output.print(&fragment.generate_stub());
-                        }
-                        Err(e) => {
-                            output.print(&format!(
-                                "❌ Failed to load fragment '{}': {}",
-                                fragment_id, e
-                            ));
-                        }
-                    }
-                } else {
-                    output.print("No active session - fragments are session-scoped.");
-                }
-            }
             Ok(CommandResult::Handled)
         }
         cmd if cmd.starts_with("/run") => {

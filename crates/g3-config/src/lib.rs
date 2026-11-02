@@ -19,8 +19,9 @@ pub struct Config {
     pub providers: ProvidersConfig,
     #[serde(default)]
     pub agent: AgentConfig,
-    #[serde(default)]
-    pub computer_control: ComputerControlConfig,
+    /// REMOVED 2026-11 (desktop control). Table still accepted and ignored.
+    #[serde(default, rename = "computer_control", skip_serializing)]
+    pub legacy_computer_control: Option<toml::Value>,
     #[serde(default)]
     pub webdriver: WebDriverConfig,
     #[serde(default)]
@@ -68,13 +69,13 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub openai: HashMap<String, OpenAIConfig>,
 
-    /// Named Databricks provider configs
-    #[serde(default)]
-    pub databricks: HashMap<String, DatabricksConfig>,
-
-    /// Named embedded provider configs
-    #[serde(default)]
-    pub embedded: HashMap<String, EmbeddedConfig>,
+    /// REMOVED providers (2026-11): `databricks` and `embedded` (llama.cpp).
+    /// Their config tables are still ACCEPTED and ignored so an existing
+    /// config.toml keeps loading; nothing reads them. Never serialised.
+    #[serde(default, rename = "databricks", skip_serializing)]
+    pub legacy_databricks: Option<toml::Value>,
+    #[serde(default, rename = "embedded", skip_serializing)]
+    pub legacy_embedded: Option<toml::Value>,
 
     /// Named Gemini provider configs
     #[serde(default)]
@@ -103,27 +104,12 @@ pub struct AnthropicConfig {
     pub cache_config: Option<String>,
     pub enable_1m_context: Option<bool>,
     pub thinking_budget_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatabricksConfig {
-    pub host: String,
-    pub token: Option<String>,
-    pub model: String,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
-    pub use_oauth: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddedConfig {
-    pub model_path: String,
-    pub model_type: String,
-    pub context_length: Option<u32>,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
-    pub gpu_layers: Option<u32>,
-    pub threads: Option<u32>,
+    /// Reasoning effort (`output_config.effort`): low | medium | high | xhigh | max.
+    /// Unset = API default ("high"). On opus-5-5+ this is the only thinking
+    /// control: adaptive thinking is always on and `thinking_budget_tokens`
+    /// is rejected by the API.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,9 +168,6 @@ fn default_thinning_floor_percent() -> u32 {
 fn default_true() -> bool {
     true
 }
-fn default_false() -> bool {
-    false
-}
 fn default_timeout_seconds() -> u64 {
     120
 }
@@ -193,9 +176,6 @@ fn default_max_retry_attempts() -> u32 {
 }
 fn default_autonomous_max_retry_attempts() -> u32 {
     6
-}
-fn default_max_actions_per_second() -> u32 {
-    5
 }
 fn default_check_todo_staleness() -> bool {
     true
@@ -206,16 +186,6 @@ fn default_safari_port() -> u16 {
 fn default_chrome_port() -> u16 {
     9515
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComputerControlConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_false")]
-    pub require_confirmation: bool,
-    #[serde(default = "default_max_actions_per_second")]
-    pub max_actions_per_second: u32,
-}
-
 /// Browser type for WebDriver
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -297,42 +267,34 @@ impl Default for AgentConfig {
         }
     }
 }
-impl Default for ComputerControlConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            require_confirmation: false,
-            max_actions_per_second: 5,
-        }
-    }
-}
-
 impl Default for Config {
     fn default() -> Self {
-        let mut databricks_configs = HashMap::new();
-        databricks_configs.insert(
-            "default".to_string(),
-            DatabricksConfig {
-                host: "https://your-workspace.cloud.databricks.com".to_string(),
-                token: None,
-                model: "databricks-claude-sonnet-4".to_string(),
-                max_tokens: Some(4096),
-                temperature: Some(0.1),
-                use_oauth: Some(true),
-            },
-        );
-
         Self {
             providers: ProvidersConfig {
-                default_provider: "databricks.default".to_string(),
+                default_provider: "anthropic.default".to_string(),
                 planner: None,
                 coach: None,
                 player: None,
                 fallback_model: None,
-                anthropic: HashMap::new(),
+                // A registrable default (was a Databricks OAuth entry). The
+                // key is a placeholder; Config::load writes this out as the
+                // starter config.toml for the user to fill in.
+                anthropic: HashMap::from([(
+                    "default".to_string(),
+                    AnthropicConfig {
+                        api_key: "your-anthropic-api-key".to_string(),
+                        model: "claude-sonnet-5".to_string(),
+                        max_tokens: None,
+                        temperature: None,
+                        cache_config: None,
+                        enable_1m_context: None,
+                        thinking_budget_tokens: None,
+                        effort: None,
+                    },
+                )]),
                 openai: HashMap::new(),
-                databricks: databricks_configs,
-                embedded: HashMap::new(),
+                legacy_databricks: None,
+                legacy_embedded: None,
                 gemini: HashMap::new(),
                 openai_compatible: HashMap::new(),
             },
@@ -348,7 +310,7 @@ impl Default for Config {
                 autonomous_max_retry_attempts: 6,
                 check_todo_staleness: true,
             },
-            computer_control: ComputerControlConfig::default(),
+            legacy_computer_control: None,
             webdriver: WebDriverConfig::default(),
             skills: SkillsConfig::default(),
             memory: MemoryConfig::default(),
@@ -480,15 +442,6 @@ impl Config {
                             }
                         }
                     }
-                    // Check databricks section
-                    if let Some(databricks) = providers_table.get("databricks") {
-                        if let Some(databricks_table) = databricks.as_table() {
-                            // If databricks has host directly, it's old format
-                            if databricks_table.contains_key("host") {
-                                return true;
-                            }
-                        }
-                    }
                     // Check openai section
                     if let Some(openai) = providers_table.get("openai") {
                         if let Some(openai_table) = openai.as_table() {
@@ -535,24 +488,6 @@ impl Config {
                     );
                 }
             }
-            "databricks" => {
-                if !self.providers.databricks.contains_key(config_name) {
-                    anyhow::bail!(
-                        "Provider config 'databricks.{}' not found. Available: {:?}",
-                        config_name,
-                        self.providers.databricks.keys().collect::<Vec<_>>()
-                    );
-                }
-            }
-            "embedded" => {
-                if !self.providers.embedded.contains_key(config_name) {
-                    anyhow::bail!(
-                        "Provider config 'embedded.{}' not found. Available: {:?}",
-                        config_name,
-                        self.providers.embedded.keys().collect::<Vec<_>>()
-                    );
-                }
-            }
             "gemini" => {
                 if !self.providers.gemini.contains_key(config_name) {
                     anyhow::bail!(
@@ -566,7 +501,7 @@ impl Config {
                 // Check openai_compatible providers
                 if !self.providers.openai_compatible.contains_key(provider_type) {
                     anyhow::bail!(
-                        "Unknown provider type '{}'. Valid types: anthropic, openai, databricks, embedded, gemini, or openai_compatible names",
+                        "Unknown provider type '{}'. Valid types: anthropic, openai, gemini, or openai_compatible names",
                         provider_type
                     );
                 }
@@ -627,30 +562,6 @@ impl Config {
                     } else {
                         return Err(anyhow::anyhow!(
                             "Provider config 'anthropic.{}' not found.",
-                            config_name
-                        ));
-                    }
-                }
-                "databricks" => {
-                    if let Some(ref mut databricks_config) =
-                        config.providers.databricks.get_mut(&config_name)
-                    {
-                        databricks_config.model = model;
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            "Provider config 'databricks.{}' not found.",
-                            config_name
-                        ));
-                    }
-                }
-                "embedded" => {
-                    if let Some(ref mut embedded_config) =
-                        config.providers.embedded.get_mut(&config_name)
-                    {
-                        embedded_config.model_path = model;
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            "Provider config 'embedded.{}' not found.",
                             config_name
                         ));
                     }
@@ -754,16 +665,6 @@ impl Config {
         self.providers.openai.get(name)
     }
 
-    /// Get Databricks config by name
-    pub fn get_databricks_config(&self, name: &str) -> Option<&DatabricksConfig> {
-        self.providers.databricks.get(name)
-    }
-
-    /// Get Embedded config by name
-    pub fn get_embedded_config(&self, name: &str) -> Option<&EmbeddedConfig> {
-        self.providers.embedded.get(name)
-    }
-
     /// Get Gemini config by name
     pub fn get_gemini_config(&self, name: &str) -> Option<&GeminiConfig> {
         self.providers.gemini.get(name)
@@ -787,18 +688,6 @@ impl Config {
                 .get(&config_name)
                 .map(ProviderConfigRef::OpenAI)
                 .ok_or_else(|| anyhow::anyhow!("OpenAI config '{}' not found", config_name)),
-            "databricks" => self
-                .providers
-                .databricks
-                .get(&config_name)
-                .map(ProviderConfigRef::Databricks)
-                .ok_or_else(|| anyhow::anyhow!("Databricks config '{}' not found", config_name)),
-            "embedded" => self
-                .providers
-                .embedded
-                .get(&config_name)
-                .map(ProviderConfigRef::Embedded)
-                .ok_or_else(|| anyhow::anyhow!("Embedded config '{}' not found", config_name)),
             "gemini" => self
                 .providers
                 .gemini
@@ -822,8 +711,6 @@ impl Config {
 pub enum ProviderConfigRef<'a> {
     Anthropic(&'a AnthropicConfig),
     OpenAI(&'a OpenAIConfig),
-    Databricks(&'a DatabricksConfig),
-    Embedded(&'a EmbeddedConfig),
     Gemini(&'a GeminiConfig),
     OpenAICompatible(&'a OpenAIConfig),
 }

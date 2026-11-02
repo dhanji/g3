@@ -71,8 +71,6 @@ pub fn calculate_capped_summary_tokens(
     
     let capped = match provider_name {
         name if name.starts_with("anthropic") => base_max_tokens.min(anthropic_cap),
-        name if name.starts_with("databricks") => base_max_tokens.min(10_000),
-        name if name.starts_with("embedded") => base_max_tokens.min(3000),
         _ => base_max_tokens.min(5000),
     };
     
@@ -291,24 +289,10 @@ mod tests {
     }
     
     #[test]
-    fn test_calculate_capped_summary_tokens_databricks() {
-        let config = g3_config::Config::default();
-        let result = calculate_capped_summary_tokens(&config, "databricks", 20_000);
-        assert_eq!(result, 10_000);
-    }
-    
-    #[test]
-    fn test_calculate_capped_summary_tokens_embedded() {
-        let config = g3_config::Config::default();
-        let result = calculate_capped_summary_tokens(&config, "embedded", 20_000);
-        assert_eq!(result, 3000);
-    }
-    
-    #[test]
     fn test_calculate_capped_summary_tokens_minimum_floor() {
         let config = g3_config::Config::default();
         // Even with very low input, should return at least SUMMARY_MIN_TOKENS
-        let result = calculate_capped_summary_tokens(&config, "embedded", 100);
+        let result = calculate_capped_summary_tokens(&config, "gemini", 100);
         assert_eq!(result, SUMMARY_MIN_TOKENS);
     }
     

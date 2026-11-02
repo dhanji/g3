@@ -150,7 +150,7 @@ pub fn load_config_with_cli_overrides(cli: &Cli) -> Result<Config> {
 
     // Validate provider if specified
     if let Some(ref provider) = cli.provider {
-        let valid_providers = ["anthropic", "databricks", "embedded", "gemini", "openai"];
+        let valid_providers = ["anthropic", "gemini", "openai"];
         let provider_type = provider.split('.').next().unwrap_or(provider);
         if !valid_providers.contains(&provider_type) {
             return Err(anyhow::anyhow!(
@@ -182,8 +182,6 @@ pub fn initialize_logging(verbose: bool) {
             .add_directive("g3_cli=info".parse().unwrap())
             .add_directive("g3_execution=info".parse().unwrap())
             .add_directive("g3_providers=info".parse().unwrap())
-            .add_directive("llama_cpp=off".parse().unwrap())
-            .add_directive("llama=off".parse().unwrap())
     };
 
     let _ = tracing_subscriber::registry()

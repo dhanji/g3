@@ -489,7 +489,7 @@ impl UiWriter for ConsoleUiWriter {
         self.hint_state.handle_hint(ToolParsingHint::Complete);
 
         // Handle file operation tools and other compact tools
-        let is_compact_tool = matches!(tool_name, "read_file" | "write_file" | "str_replace" | "remember" | "screenshot" | "coverage" | "rehydrate" | "code_search" | "plan_approve" | "load_toolset");
+        let is_compact_tool = matches!(tool_name, "read_file" | "write_file" | "str_replace" | "remember" | "screenshot" | "coverage" | "code_search" | "plan_approve" | "load_toolset");
         if !is_compact_tool {
             // Reset continuation tracking for non-compact tools
             *self.last_read_file_path.lock().unwrap() = None;

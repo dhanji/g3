@@ -8,10 +8,8 @@
 //! - `webdriver` - Browser automation via WebDriver
 //! - `misc` - Other tools (screenshots, code search, etc.)
 //! - `memory` - Workspace memory (remember)
-//! - `acd` - Aggressive Context Dehydration (rehydrate)
 
 pub mod executor;
-pub mod acd;
 pub mod datalog;
 pub mod envelope;
 pub mod file_ops;

@@ -52,7 +52,8 @@ pub async fn create_planner_provider(
                 anthropic_config.cache_config.clone(),
                 anthropic_config.enable_1m_context,
                 anthropic_config.thinking_budget_tokens,
-            )?;
+            )?
+            .with_effort(anthropic_config.effort.clone());
             Ok(Box::new(provider))
         }
         "openai" => {
@@ -70,35 +71,9 @@ pub async fn create_planner_provider(
             )?;
             Ok(Box::new(provider))
         }
-        "databricks" => {
-            let databricks_config = config
-                .get_databricks_config(&config_name)
-                .ok_or_else(|| anyhow!("Databricks config '{}' not found", config_name))?;
-            
-            let provider = if let Some(token) = &databricks_config.token {
-                g3_providers::DatabricksProvider::from_token_with_name(
-                    format!("databricks.{}", config_name),
-                    databricks_config.host.clone(),
-                    token.clone(),
-                    databricks_config.model.clone(),
-                    databricks_config.max_tokens,
-                    databricks_config.temperature,
-                )?
-            } else {
-                g3_providers::DatabricksProvider::from_oauth_with_name(
-                    format!("databricks.{}", config_name),
-                    databricks_config.host.clone(),
-                    databricks_config.model.clone(),
-                    databricks_config.max_tokens,
-                    databricks_config.temperature,
-                )
-                .await?
-            };
-            Ok(Box::new(provider))
-        }
         _ => {
             Err(anyhow!(
-                "Unsupported provider type '{}' for planner. Supported: anthropic, openai, databricks",
+                "Unsupported provider type '{}' for planner. Supported: anthropic, openai",
                 provider_type
             ))
         }

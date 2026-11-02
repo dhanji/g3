@@ -155,7 +155,6 @@ pub fn format_tool_result_summary(
             | "remember"
             | "screenshot"
             | "coverage"
-            | "rehydrate"
             | "code_search"
             | "plan_approve"
             | "load_toolset"
@@ -184,10 +183,31 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
             | "remember"
             | "screenshot"
             | "coverage"
-            | "rehydrate"
             | "code_search"
             | "plan_approve"
             | "load_toolset"
+    )
+}
+
+/// Tools that may run CONCURRENTLY with each other when the model emits
+/// several in one response.
+///
+/// Measured over 400 butler sessions (2026-11): 12,432 tool calls over
+/// 12,965 model round trips — 0.96 per call, i.e. every independent read the
+/// model wanted cost a full ~84k-token round trip, and every batch it did emit
+/// ran one-at-a-time. The read-only tools are trivially safe. `shell` is here
+/// because it is 78% of all calls (no batching win exists without it) and
+/// because the model is told — in the shell tool description and the system
+/// prompt — that same-response calls run concurrently and must be independent.
+///
+/// A batch is run concurrently only if EVERY call in it is in this set; one
+/// barrier tool (a write, plan, webdriver, ...) makes the whole batch run
+/// sequentially in order, exactly as before, so no call is ever reordered
+/// across a side effect.
+pub fn is_concurrency_safe_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "shell" | "read_file" | "read_image" | "code_search" | "plan_read" | "research_status"
     )
 }
 
@@ -214,7 +234,6 @@ fn format_compact_tool_summary(tool_name: &str, tool_result: &str) -> String {
         "remember" => format_remember_summary(tool_result),
         "screenshot" => format_screenshot_summary(tool_result),
         "coverage" => format_coverage_summary(tool_result),
-        "rehydrate" => format_rehydrate_summary(tool_result),
         "code_search" => format_code_search_summary(tool_result),
         "plan_approve" => format_plan_approve_summary(tool_result),
         "load_toolset" => format_load_toolset_summary(tool_result),
@@ -266,6 +285,9 @@ pub struct IterationState {
     pub stream_stop_reason: Option<String>,
     /// Last tool call executed in this iteration (for cross-chunk dedup within same response)
     pub last_executed_tool: Option<ToolCall>,
+    /// Opaque reasoning blocks streamed in this iteration, attached verbatim
+    /// to the assistant message that carries its tool calls.
+    pub thinking_blocks: Vec<serde_json::Value>,
 }
 
 impl IterationState {
@@ -279,6 +301,7 @@ impl IterationState {
             accumulated_usage: None,
             stream_stop_reason: None,
             last_executed_tool: None,
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -575,23 +598,6 @@ pub fn format_coverage_summary(result: &str) -> String {
     }
 }
 
-/// Format a rehydrate result summary.
-pub fn format_rehydrate_summary(result: &str) -> String {
-    // Result format: "✅ Rehydrated fragment 'abc123' (47 messages, ~18500 tokens)"
-    if let Some(start) = result.find("fragment '") {
-        let after = &result[start + 10..];
-        if let Some(end) = after.find("'") {
-            let fragment_id = &after[..end];
-            return format!("🔄 restored '{}'", fragment_id);
-        }
-    }
-    if result.contains("❌") {
-        "❌ failed".to_string()
-    } else {
-        "🔄 restored".to_string()
-    }
-}
-
 /// Format a code_search result summary.
 pub fn format_code_search_summary(result: &str) -> String {
     // Result format: "✅ Code search completed\n{json}"
@@ -677,8 +683,18 @@ where
 
     for tool_call in tool_calls {
         let duplicate_type = if let Some(ref last) = last_tool_in_chunk {
-            // Check for sequential duplicate within this chunk
-            if are_tool_calls_duplicate(last, &tool_call) {
+            // Check for sequential duplicate within this chunk.
+            //
+            // Two NATIVE calls with distinct ids are distinct invocations even
+            // when name+args match: the model asked for the same thing twice in
+            // one response, and the API requires a tool_result for EACH id.
+            // Dropping one orphans its tool_use. The name+args heuristic exists
+            // for text-parsed JSON calls (no ids), where it catches stutter.
+            // Synthetic ids (`json_tool_N`, minted by the parser for text-parsed
+            // calls) carry no such meaning and must NOT exempt a stutter.
+            let is_native = |id: &str| !id.is_empty() && !id.starts_with("json_tool_");
+            let distinct_native = is_native(&last.id) && is_native(&tool_call.id) && last.id != tool_call.id;
+            if !distinct_native && are_tool_calls_duplicate(last, &tool_call) {
                 Some("DUP IN CHUNK".to_string())
             } else {
                 None

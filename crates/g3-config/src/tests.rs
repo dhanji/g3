@@ -26,22 +26,21 @@ safari_port = 4444
         // Write a test configuration with coach and player providers (new format)
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 coach = "anthropic.default"
-player = "embedded.local"
+player = "openai.local"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [providers.anthropic.default]
 api_key = "test-key"
 model = "claude-3"
 
-[providers.embedded.local]
-model_path = "test.gguf"
-model_type = "llama"
+[providers.openai.local]
+api_key = "local-key"
+model = "local-model"
 
 [agent]
 fallback_default_max_tokens = 32000
@@ -58,9 +57,9 @@ autonomous_max_retry_attempts = 6
         let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
 
         // Test that the providers are correctly identified
-        assert_eq!(config.providers.default_provider, "databricks.default");
+        assert_eq!(config.providers.default_provider, "openai.default");
         assert_eq!(config.get_coach_provider(), "anthropic.default");
-        assert_eq!(config.get_player_provider(), "embedded.local");
+        assert_eq!(config.get_player_provider(), "openai.local");
 
         // Test creating coach config
         let coach_config = config.for_coach().unwrap();
@@ -68,7 +67,7 @@ autonomous_max_retry_attempts = 6
 
         // Test creating player config
         let player_config = config.for_player().unwrap();
-        assert_eq!(player_config.providers.default_provider, "embedded.local");
+        assert_eq!(player_config.providers.default_provider, "openai.local");
     }
 
     #[test]
@@ -80,11 +79,10 @@ autonomous_max_retry_attempts = 6
         // Write a test configuration WITHOUT coach and player providers (new format)
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [agent]
@@ -102,16 +100,16 @@ autonomous_max_retry_attempts = 6
         let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
 
         // Test that coach and player fall back to default provider
-        assert_eq!(config.get_coach_provider(), "databricks.default");
-        assert_eq!(config.get_player_provider(), "databricks.default");
+        assert_eq!(config.get_coach_provider(), "openai.default");
+        assert_eq!(config.get_player_provider(), "openai.default");
 
         // Test creating coach config (should use default)
         let coach_config = config.for_coach().unwrap();
-        assert_eq!(coach_config.providers.default_provider, "databricks.default");
+        assert_eq!(coach_config.providers.default_provider, "openai.default");
 
         // Test creating player config (should use default)
         let player_config = config.for_player().unwrap();
-        assert_eq!(player_config.providers.default_provider, "databricks.default");
+        assert_eq!(player_config.providers.default_provider, "openai.default");
     }
 
     #[test]
@@ -123,12 +121,11 @@ autonomous_max_retry_attempts = 6
         // Write a test configuration with an unconfigured provider (new format)
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
-coach = "openai.default"  # OpenAI default is not configured
+default_provider = "openai.default"
+coach = "openai.missing"  # not configured
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [agent]
@@ -196,12 +193,11 @@ autonomous_max_retry_attempts = 6
         // Write a test configuration with planner provider (new format)
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 planner = "anthropic.planner"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [providers.anthropic.planner]
@@ -240,11 +236,10 @@ autonomous_max_retry_attempts = 6
         // Write a test configuration WITHOUT planner provider
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [agent]
@@ -262,7 +257,7 @@ autonomous_max_retry_attempts = 6
         let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
 
         // Test that planner falls back to default provider
-        assert_eq!(config.get_planner_provider(), "databricks.default");
+        assert_eq!(config.get_planner_provider(), "openai.default");
     }
 
     /// A config that predates `compaction_threshold_percent` must still load,
@@ -275,11 +270,10 @@ autonomous_max_retry_attempts = 6
 
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [agent]
@@ -303,11 +297,10 @@ auto_compact = true
 
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 {}"#, test_config_footer());
 
@@ -352,11 +345,10 @@ model = "claude-opus-5"
 
         let config_content = format!(r#"
 [providers]
-default_provider = "databricks.default"
+default_provider = "openai.default"
 
-[providers.databricks.default]
-host = "https://test.databricks.com"
-token = "test-token"
+[providers.openai.default]
+api_key = "test-token"
 model = "test-model"
 
 [agent]
@@ -369,5 +361,34 @@ compaction_threshold_percent = 60.0
         let config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
         assert_eq!(config.agent.compaction_threshold_percent, 60.0);
         assert_eq!(config.agent.max_context_length, Some(1_000_000));
+    }
+
+    /// The removed `databricks` / `embedded` providers must not brick an
+    /// existing config.toml that still carries their tables (butler's does).
+    #[test]
+    fn test_legacy_removed_provider_tables_still_load() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("legacy.toml");
+        fs::write(&config_path, format!(r#"
+[providers]
+default_provider = "anthropic.default"
+
+[providers.anthropic.default]
+api_key = "k"
+model = "claude-opus-5-5"
+effort = "high"
+
+[providers.embedded.qwen3-big]
+model_path = "~/.g3/models/q.gguf"
+model_type = "qwen"
+gpu_layers = 99
+
+[providers.databricks.default]
+host = "https://x.cloud.databricks.com"
+model = "m"
+{}"#, test_config_footer())).unwrap();
+        let config = Config::load(Some(config_path.to_str().unwrap())).expect("legacy tables must be ignored, not fatal");
+        assert_eq!(config.providers.default_provider, "anthropic.default");
+        assert_eq!(config.providers.anthropic["default"].effort.as_deref(), Some("high"));
     }
 }

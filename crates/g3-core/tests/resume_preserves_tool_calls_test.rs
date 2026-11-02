@@ -46,6 +46,8 @@ fn restore_message_from_json(msg: &serde_json::Value) -> Option<Message> {
                 cache_control: None,
                 tool_calls: Vec::new(),
                 tool_result_id: None,
+                thinking_blocks: Vec::new(),
+                continues_batch: false,
             })
         }
     }

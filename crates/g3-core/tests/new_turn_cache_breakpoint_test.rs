@@ -70,6 +70,7 @@ async fn agent_with_cache_enabled(num_responses: usize) -> Agent<NullUiWriter> {
             cache_config: Some("1hour".to_string()),
             enable_1m_context: None,
             thinking_budget_tokens: None,
+            effort: None,
         },
     );
 
