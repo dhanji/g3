@@ -35,7 +35,11 @@ pub async fn execute_task_with_retry<W: UiWriter>(
 ) {
     let mut attempt = 0;
 
-    output.print("🤔 Thinking...");
+    if crate::pretty::is_active() {
+        crate::pretty::begin_turn(); // the spinner replaces "Thinking..."
+    } else {
+        output.print("🤔 Thinking...");
+    }
 
     // Create cancellation token for this request
     let cancellation_token = CancellationToken::new();
@@ -53,7 +57,11 @@ pub async fn execute_task_with_retry<W: UiWriter>(
             }
             _ = tokio::signal::ctrl_c() => {
                 cancel_token_clone.cancel();
-                output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
+                if crate::pretty::is_active() {
+                    crate::pretty::say("\x1b[38;2;247;118;142m⏹ stopped");
+                } else {
+                    output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
+                }
                 return;
             }
         };
@@ -81,6 +89,7 @@ pub async fn execute_task_with_retry<W: UiWriter>(
                         let delay = calculate_retry_delay(attempt, false);
                         let delay_secs = delay.as_secs_f64();
 
+                        crate::pretty::suspend(); // no spinner under direct prints
                         // Print error status
                         G3Status::complete(
                             recoverable_error_name(&recoverable_error),
@@ -98,6 +107,7 @@ pub async fn execute_task_with_retry<W: UiWriter>(
                 }
 
                 // For non-recoverable errors or after max retries
+                crate::pretty::suspend();
                 handle_execution_error(&e, input, output, attempt);
                 return;
             }

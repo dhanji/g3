@@ -26,6 +26,8 @@ mod completion;
 mod project;
 mod input_formatter;
 mod terminal_width;
+pub mod pretty;
+pub mod ui_select;
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -37,6 +39,81 @@ use g3_core::Agent;
 
 pub use cli_args::Cli;
 use clap::Parser;
+
+/// Agent construction shared by every console path. Generic over the writer
+/// so autonomous (ConsoleUiWriter) and the rest (CliUiWriter) run the SAME code.
+async fn build_console_agent<W: UiWriter>(
+    cli: &Cli,
+    config: &Config,
+    ui_writer: W,
+    combined_content: &Option<String>,
+) -> Result<Agent<W>> {
+    let mut agent = if cli.autonomous {
+        Agent::new_autonomous_with_project_context_and_quiet(
+            config.clone(),
+            ui_writer,
+            combined_content.clone(),
+            cli.quiet,
+        )
+        .await?
+    } else {
+        Agent::new_with_project_context_and_quiet(
+            config.clone(),
+            ui_writer,
+            combined_content.clone(),
+            cli.quiet,
+        )
+        .await?
+    };
+
+    // `--auto-memory` opts IN to the reminder turn (console mode default is off);
+    // `--no-auto-memory` additionally strips the standing "call `remember`"
+    // directive from the system prompt. Console mode never sent the reminder, but
+    // it DID carry the directive — which is how butler's duties kept appending to
+    // tier-1 memory while nothing appeared to have enabled auto-memory.
+    if cli.auto_memory {
+        agent.set_auto_memory(true);
+    } else if cli.no_auto_memory {
+        agent.set_auto_memory(false);
+    }
+    // Keep the write path (remember) pointed at the same file the read path
+    // loaded from above. If this is ever dropped, memory forks silently.
+    agent.set_memory_path(
+        cli.memory.as_ref().map(|p| p.to_string_lossy().to_string()),
+    );
+    Ok(agent)
+}
+
+/// Load the --project project into the agent (exits on a bad path, as before).
+fn load_cli_project<W: UiWriter>(cli: &Cli, agent: &mut Agent<W>, workspace_dir: &PathBuf) -> Option<project::Project> {
+    // Load CLI project if --project flag was specified
+    if let Some(ref project_path) = cli.project {
+        match load_and_validate_project(&project_path.to_string_lossy(), workspace_dir) {
+            Ok(cli_project) => {
+                // Set project content in agent's system message
+                if agent.set_project_content(Some(cli_project.content.clone())) {
+                    // Set project path on UI writer for path shortening
+                    let project_name = cli_project.path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("project")
+                        .to_string();
+                    agent.ui_writer().set_project_path(cli_project.path.clone(), project_name);
+                    Some(cli_project)
+                } else {
+                    eprintln!("Warning: Failed to set project content in agent context.");
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Error loading project: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    }
+}
 
 use accumulative::run_accumulative_mode;
 use agent_mode::run_agent_mode;
@@ -170,72 +247,14 @@ async fn run_console_mode(
         return run_accumulative_mode(workspace_dir, cli, combined_content).await;
     }
 
-    let ui_writer = ConsoleUiWriter::new();
-    ui_writer.set_workspace_path(workspace_dir.clone());
-
-    let mut agent = if cli.autonomous {
-        Agent::new_autonomous_with_project_context_and_quiet(
-            config.clone(),
-            ui_writer,
-            combined_content.clone(),
-            cli.quiet,
-        )
-        .await?
-    } else {
-        Agent::new_with_project_context_and_quiet(
-            config.clone(),
-            ui_writer,
-            combined_content.clone(),
-            cli.quiet,
-        )
-        .await?
-    };
-
-    // `--auto-memory` opts IN to the reminder turn (console mode default is off);
-    // `--no-auto-memory` additionally strips the standing "call `remember`"
-    // directive from the system prompt. Console mode never sent the reminder, but
-    // it DID carry the directive — which is how butler's duties kept appending to
-    // tier-1 memory while nothing appeared to have enabled auto-memory.
-    if cli.auto_memory {
-        agent.set_auto_memory(true);
-    } else if cli.no_auto_memory {
-        agent.set_auto_memory(false);
-    }
-    // Keep the write path (remember) pointed at the same file the read path
-    // loaded from above. If this is ever dropped, memory forks silently.
-    agent.set_memory_path(
-        cli.memory.as_ref().map(|p| p.to_string_lossy().to_string()),
-    );
-
-    // Load CLI project if --project flag was specified
-    let initial_project: Option<project::Project> = if let Some(ref project_path) = cli.project {
-        match load_and_validate_project(&project_path.to_string_lossy(), &workspace_dir) {
-            Ok(cli_project) => {
-                // Set project content in agent's system message
-                if agent.set_project_content(Some(cli_project.content.clone())) {
-                    // Set project path on UI writer for path shortening
-                    let project_name = cli_project.path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("project")
-                        .to_string();
-                    agent.ui_writer().set_project_path(cli_project.path.clone(), project_name);
-                    Some(cli_project)
-                } else {
-                    eprintln!("Warning: Failed to set project content in agent context.");
-                    None
-                }
-            }
-            Err(e) => {
-                eprintln!("Error loading project: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        None
-    };
-
+    // Autonomous mode keeps the classic writer on its own typed path
+    // (run_autonomous takes Agent<ConsoleUiWriter>); everything else picks
+    // pretty-vs-classic ONCE from the environment (see ui_select.rs).
     if cli.autonomous {
+        let ui_writer = ConsoleUiWriter::new();
+        ui_writer.set_workspace_path(workspace_dir.clone());
+        let mut agent = build_console_agent(&cli, &config, ui_writer, &combined_content).await?;
+        let _initial_project = load_cli_project(&cli, &mut agent, &workspace_dir);
         let _agent = run_autonomous(
             agent,
             project,
@@ -246,16 +265,28 @@ async fn run_console_mode(
             cli.codebase_fast_start.clone(),
         )
         .await?;
-        Ok(())
-    } else if let Some(task) = cli.task {
+        return Ok(());
+    }
+
+    let ui_writer = ui_select::CliUiWriter::from_env(cli.quiet);
+    ui_writer.set_workspace_path(workspace_dir.clone());
+    let mut agent = build_console_agent(&cli, &config, ui_writer, &combined_content).await?;
+    let initial_project = load_cli_project(&cli, &mut agent, &workspace_dir);
+
+    if let Some(task) = cli.task {
         // Single-shot mode
         let processed_task = process_template(&task);
         let output = SimpleOutput::new();
+        crate::pretty::begin_turn();
         let result = agent
             .execute_task_with_timing(&processed_task, None, false, cli.show_prompt, cli.show_code, true, None)
             .await?;
-        // Only print response if it's not empty (streaming already displayed it)
-        if !result.response.trim().is_empty() {
+        if crate::pretty::is_active() {
+            // Pretty already streamed the reply; close the turn with its footer.
+            let cw = agent.get_context_window();
+            agent.ui_writer().print_context_summary(cw.used_tokens, cw.total_tokens, cw.percentage_used());
+        } else if !result.response.trim().is_empty() {
+            // Only print response if it's not empty (streaming already displayed it)
             output.print_smart(&result.response);
         }
 

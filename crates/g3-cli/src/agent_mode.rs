@@ -11,7 +11,6 @@ use crate::display::{LoadedContent, print_loaded_status, print_workspace_path};
 use crate::language_prompts::{get_language_prompts_for_workspace, get_agent_language_prompts_for_workspace_with_langs};
 use crate::simple_output::SimpleOutput;
 use crate::embedded_agents::load_agent_prompt;
-use crate::ui_writer_impl::ConsoleUiWriter;
 use crate::interactive::run_interactive;
 use crate::template::process_template;
 use crate::project::{Project, load_and_validate_project};
@@ -197,7 +196,9 @@ pub async fn run_agent_mode(
     );
 
     // Create agent with custom system prompt
-    let ui_writer = ConsoleUiWriter::new();
+    // Pretty on a human's terminal, classic for every machine consumer
+    // (butler.app pipes stdout and passes --quiet). See ui_select.rs.
+    let ui_writer = crate::ui_select::CliUiWriter::from_env(flags.quiet);
     // Set agent mode on UI writer for visual differentiation (light gray tool names)
     ui_writer.set_agent_mode(true);
     ui_writer.set_workspace_path(workspace_dir.clone());
@@ -322,6 +323,7 @@ pub async fn run_agent_mode(
     }
 
     // Single-shot mode: execute the task and exit
+    crate::pretty::begin_turn();
     let _result = agent.execute_task(&final_task, None, true).await?;
 
     // Send auto-memory reminder if enabled and tools were called

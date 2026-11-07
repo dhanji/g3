@@ -334,6 +334,9 @@ impl Highlighter for G3Helper {
         prompt: &'p str,
         _default: bool,
     ) -> std::borrow::Cow<'b, str> {
+        if crate::pretty::is_active() {
+            return std::borrow::Cow::Owned(pretty_prompt_colors(prompt));
+        }
         // Plan mode prompt: colorize "[plan mode]" in magenta
         if prompt.contains("[plan mode]") {
             return std::borrow::Cow::Owned(
@@ -355,6 +358,28 @@ impl Highlighter for G3Helper {
         }
         std::borrow::Cow::Borrowed(prompt)
     }
+}
+
+/// Tokyo Night colours for the pretty prompt ("g3 · proj plan ❯ ").
+fn pretty_prompt_colors(prompt: &str) -> String {
+    use crate::pretty::screen::tn;
+    if prompt.trim() == "┊" {
+        return format!("{}{}{}", tn::FAINT, prompt, tn::RESET);
+    }
+    let mut out = prompt.to_string();
+    out = out.replacen("g3", &format!("{}{}g3{}", tn::BOLD, tn::BLUE, tn::RESET), 1);
+    if let Some(dot) = out.find(" · ") {
+        let end = out[dot..].find(|c| c == '❯').map(|e| dot + e).unwrap_or(out.len());
+        let seg = out[dot..end].replace(" plan ", " ");
+        let colored = format!("{}{}{} ", tn::CYAN, seg.trim_end(), tn::RESET);
+        out = format!("{}{}{}", &out[..dot], colored, &out[end..]);
+        if prompt.contains(" plan ") {
+            out = out.replacen("❯", &format!("{}plan{} ❯", tn::YELLOW, tn::RESET), 1);
+        }
+    } else if prompt.contains(" plan ") {
+        out = out.replacen(" plan ", &format!(" {}plan{} ", tn::YELLOW, tn::RESET), 1);
+    }
+    out.replacen("❯", &format!("{}{}❯{}", tn::BOLD, tn::PURPLE, tn::RESET), 1)
 }
 
 impl Validator for G3Helper {}

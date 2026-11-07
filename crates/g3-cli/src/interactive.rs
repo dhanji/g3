@@ -31,6 +31,9 @@ const PLAN_MODE_PROMPT: &str = " [plan mode] >> ";
 /// - No project: `"agent_name> "` (defaults to "g3")
 /// - With project: `"agent_name | project_name> "`
 pub fn build_prompt(in_multiline: bool, in_plan_mode: bool, agent_name: Option<&str>, active_project: &Option<Project>) -> String {
+    if crate::pretty::is_active() {
+        return build_pretty_prompt(in_multiline, in_plan_mode, active_project);
+    }
     if in_multiline {
         "... > ".to_string()
     } else if in_plan_mode {
@@ -47,6 +50,45 @@ pub fn build_prompt(in_multiline: bool, in_plan_mode: bool, agent_name: Option<&
             format!("{}> ", base_name)
         }
     }
+}
+
+/// Pretty-mode prompt: always `g3 ❯` (Dhanji's call — the agent name is in
+/// the banner, not the prompt). Plain text: colour is added by
+/// `G3Helper::highlight_prompt`, so rustyline still measures the width right.
+pub fn build_pretty_prompt(in_multiline: bool, in_plan_mode: bool, active_project: &Option<Project>) -> String {
+    if in_multiline {
+        return "   ┊ ".to_string();
+    }
+    let mut p = String::from("g3");
+    if let Some(project) = active_project {
+        let name = project.path.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+        p.push_str(&format!(" · {}", name));
+    }
+    if in_plan_mode {
+        p.push_str(" plan");
+    }
+    p.push_str(" ❯ ");
+    p
+}
+
+/// Pretty-mode welcome: one line of who/what/where, one line of invitation.
+fn print_pretty_banner<W: UiWriter>(agent: &Agent<W>, combined_content: &Option<String>, workspace_path: &Path) {
+    use crate::pretty::screen::tn;
+    let mut line = format!("  🧬 {}{}g3{}", tn::BOLD, tn::PURPLE, tn::RESET);
+    if let Ok((provider, model)) = agent.get_provider_info() {
+        line.push_str(&format!("  {}·  {}{} {}{}", tn::FAINT, tn::SUB, provider, tn::DIM, model));
+    }
+    line.push_str(&format!("  {}·  {}{}", tn::FAINT, tn::CYAN, crate::display::format_workspace_path(workspace_path)));
+    println!("{}{}", line, tn::RESET);
+    if let Some(content) = combined_content {
+        let items = LoadedContent::from_combined_content(content).to_loaded_items();
+        if !items.is_empty() {
+            let list: Vec<String> = items.iter().map(|i| format!("{}✓ {}{}", tn::GREEN, tn::DIM, i)).collect();
+            println!("  {}{}", list.join("  "), tn::RESET);
+        }
+    }
+    println!("  {}what shall we build today?{}", tn::FAINT, tn::RESET);
+    println!();
 }
 
 /// Prepare user input for plan mode, prepending "Create a plan: " if this is the first message.
@@ -92,7 +134,11 @@ fn check_and_exit_plan_mode_if_terminal<W: UiWriter>(
     output: &SimpleOutput,
 ) -> bool {
     if *in_plan_mode && agent.is_plan_terminal() {
-        output.print("\n📋 Plan complete - exiting plan mode");
+        if crate::pretty::is_active() {
+            crate::pretty::say("\x1b[38;2;158;206;106m✓ \x1b[38;2;86;95;137mplan complete — leaving plan mode");
+        } else {
+            output.print("\n📋 Plan complete - exiting plan mode");
+        }
         *in_plan_mode = false;
         agent.set_plan_mode(false, None);
         return true;
@@ -117,7 +163,9 @@ pub async fn run_interactive<W: UiWriter>(
     let from_agent_mode = agent_name.is_some();
 
     // Skip verbose welcome when coming from agent mode (it already printed context info)
-    if !from_agent_mode {
+    if !from_agent_mode && crate::pretty::is_active() {
+        print_pretty_banner(&agent, &combined_content, workspace_path);
+    } else if !from_agent_mode {
         match agent.get_provider_info() {
             Ok((provider, model)) => {
                 print!(
