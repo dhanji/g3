@@ -8,10 +8,12 @@
 
 pub mod explain;
 pub mod screen;
+pub mod theme;
 
 use explain::{explain_tool, short, Explained};
 use g3_core::ui_writer::UiWriter;
-use screen::{tn, Last, Screen, Status};
+use screen::{Last, Screen, Status};
+use theme::th;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -185,13 +187,13 @@ impl PrettyUiWriter {
 
     /// The collapsed "✓ 📄 read lib.rs  3ms" line.
     fn done_line(ex: &Explained, extra: &str, summary: &str, dur: &str, failed: bool, tail: &str) -> String {
-        let mark = if failed { format!("{}✗", tn::RED) } else { format!("{}✓", tn::GREEN) };
-        let mut l = format!("  {} {}{} {}", mark, tn::DIM, ex.icon, ex.done);
+        let mark = if failed { format!("{}✗", th().err.as_str()) } else { format!("{}✓", th().ok.as_str()) };
+        let mut l = format!("  {} {}{} {}", mark, th().dim.as_str(), ex.icon, ex.done);
         if !ex.detail.is_empty() {
-            l.push_str(&format!("  {}{}", tn::SUB, ex.detail));
+            l.push_str(&format!("  {}{}", th().sub.as_str(), ex.detail));
         }
         if !extra.is_empty() {
-            l.push_str(&format!("{}{}", tn::DIM, extra));
+            l.push_str(&format!("{}{}", th().dim.as_str(), extra));
         }
         if !summary.is_empty() {
             l.push_str(&format!("  {}", summary));
@@ -200,7 +202,7 @@ impl PrettyUiWriter {
             l.push_str(&format!("  {}{}", duration_color(dur), dur));
         }
         if failed && !tail.trim().is_empty() {
-            l.push_str(&format!("  {}⟩ {}", tn::RED, short(&screen::strip_ansi(tail), 60)));
+            l.push_str(&format!("  {}⟩ {}", th().err.as_str(), short(&screen::strip_ansi(tail), 60)));
         }
         l
     }
@@ -233,21 +235,21 @@ impl Drop for PrettyUiWriter {
 /// Slow tools get warmer colours: ≥1s yellow, ≥1m orange, ≥5m red.
 pub fn duration_color(d: &str) -> &'static str {
     if d.ends_with("ms") {
-        return tn::FAINT;
+        return th().faint.as_str();
     }
     if let Some(m) = d.find('m') {
         if let Ok(min) = d[..m].trim().parse::<u32>() {
-            return if min >= 5 { tn::RED } else { tn::ORANGE };
+            return if min >= 5 { th().err.as_str() } else { th().slow.as_str() };
         }
     }
     if let Some(s) = d.strip_suffix('s') {
         if let Ok(sec) = s.trim().parse::<f64>() {
             if sec >= 1.0 {
-                return tn::YELLOW;
+                return th().warn.as_str();
             }
         }
     }
-    tn::FAINT
+    th().faint.as_str()
 }
 
 /// "+5 | -3" → green +5, red −3.
@@ -256,11 +258,11 @@ pub fn colorize_edit_summary(s: &str) -> String {
     let paint = |p: &str| {
         let p = p.trim();
         if p.starts_with('+') {
-            format!("{}{}", tn::GREEN, p)
+            format!("{}{}", th().ok.as_str(), p)
         } else if let Some(rest) = p.strip_prefix('-') {
-            format!("{}−{}", tn::RED, rest)
+            format!("{}−{}", th().err.as_str(), rest)
         } else {
-            format!("{}{}", tn::DIM, p)
+            format!("{}{}", th().dim.as_str(), p)
         }
     };
     parts.iter().map(|p| paint(p)).collect::<Vec<_>>().join(" ")
@@ -268,13 +270,13 @@ pub fn colorize_edit_summary(s: &str) -> String {
 
 fn ctx_color(pct: f32) -> &'static str {
     if pct < 40.0 {
-        tn::GREEN
+        th().ok.as_str()
     } else if pct < 60.0 {
-        tn::YELLOW
+        th().warn.as_str()
     } else if pct < 80.0 {
-        tn::ORANGE
+        th().slow.as_str()
     } else {
-        tn::RED
+        th().err.as_str()
     }
 }
 
@@ -296,9 +298,9 @@ pub fn footer_line(elapsed: Duration, tools: usize, used: u32, total: u32, pct: 
     if tools > 0 {
         bits.push(format!("{} tool{}", tools, if tools == 1 { "" } else { "s" }));
     }
-    let sep = format!("{} · ", tn::FAINT);
-    let mut l = format!("  {}─ {}", tn::FAINT, bits.join(&sep));
-    l.push_str(&format!("{}{}ctx {:.0}%{} {}/{}", sep, ctx_color(pct), pct, tn::FAINT, compact_tokens(used), compact_tokens(total)));
+    let sep = format!("{} · ", th().faint.as_str());
+    let mut l = format!("  {}─ {}", th().faint.as_str(), bits.join(&sep));
+    l.push_str(&format!("{}{}ctx {:.0}%{} {}/{}", sep, ctx_color(pct), pct, th().faint.as_str(), compact_tokens(used), compact_tokens(total)));
     l
 }
 
@@ -319,7 +321,7 @@ impl UiWriter for PrettyUiWriter {
         let msg = message.trim_end_matches('\n').to_string();
         self.scr(|s| {
             for l in msg.lines() {
-                s.line(&format!("  {}{}", tn::SUB, l), Last::Tool);
+                s.line(&format!("  {}{}", th().sub.as_str(), l), Last::Tool);
             }
         });
     }
@@ -339,7 +341,7 @@ impl UiWriter for PrettyUiWriter {
         if m.is_empty() {
             return;
         }
-        self.scr(|s| s.line(&format!("  {}◦ {}", tn::DIM, m), Last::Tool));
+        self.scr(|s| s.line(&format!("  {}◦ {}", th().dim.as_str(), m), Last::Tool));
     }
 
     fn print_g3_progress(&self, message: &str) {
@@ -358,15 +360,15 @@ impl UiWriter for PrettyUiWriter {
         };
         let st = status.trim();
         let (mark, col) = if matches!(st, "done" | "resolved") {
-            ("✓", tn::GREEN)
+            ("✓", th().ok.as_str())
         } else if st.starts_with("fail") || st.starts_with("error") || st == "insufficient" {
-            ("✗", tn::RED)
+            ("✗", th().err.as_str())
         } else {
-            ("◦", tn::DIM)
+            ("◦", th().dim.as_str())
         };
-        let tail = if matches!(st, "done") { String::new() } else { format!("  {}{}", tn::DIM, st) };
+        let tail = if matches!(st, "done") { String::new() } else { format!("  {}{}", th().dim.as_str(), st) };
         self.scr(|s| {
-            s.line(&format!("  {}{} {}{}{}", col, mark, tn::DIM, msg, tail), Last::Tool);
+            s.line(&format!("  {}{} {}{}{}", col, mark, th().dim.as_str(), msg, tail), Last::Tool);
             s.status = Status::None;
             s.thinking();
         });
@@ -378,9 +380,9 @@ impl UiWriter for PrettyUiWriter {
             g3_core::ThinScope::All => "thinned context (full)",
         };
         let l = if r.had_changes {
-            format!("  {}🥒 {}{}  {}% → {}%", tn::GREEN, tn::DIM, what, r.before_percentage, r.after_percentage)
+            format!("  {}🥒 {}{}  {}% → {}%", th().ok.as_str(), th().dim.as_str(), what, r.before_percentage, r.after_percentage)
         } else {
-            format!("  {}🥒 {} — no changes  {}%", tn::DIM, what, r.before_percentage)
+            format!("  {}🥒 {} — no changes  {}%", th().dim.as_str(), what, r.before_percentage)
         };
         self.scr(|s| s.line(&l, Last::Tool));
     }
@@ -463,10 +465,10 @@ impl UiWriter for PrettyUiWriter {
         let summ = if tool_name == "str_replace" {
             colorize_edit_summary(summary)
         } else {
-            format!("{}{}", tn::DIM, short(summary, 50))
+            format!("{}{}", th().dim.as_str(), short(summary, 50))
         };
         let line = if cont {
-            format!("    {}└ read further{}  {}  {}{}", tn::DIM, extra, summ, duration_color(duration_str), duration_str)
+            format!("    {}└ read further{}  {}  {}{}", th().dim.as_str(), extra, summ, duration_color(duration_str), duration_str)
         } else {
             Self::done_line(&ex, &extra, &summ, duration_str, failed, summary)
         };
@@ -479,20 +481,20 @@ impl UiWriter for PrettyUiWriter {
     fn print_todo_compact(&self, content: Option<&str>, is_write: bool) -> bool {
         self.state.lock().unwrap().last_read_path = None;
         let label = if is_write { "updated todos" } else { "todos" };
-        let mut lines = vec![format!("  {}📌 {}{}", tn::PURPLE, tn::FG, label)];
+        let mut lines = vec![format!("  {}📌 {}{}", th().accent.as_str(), th().fg.as_str(), label)];
         match content {
-            None => lines[0].push_str(&format!("  {}empty", tn::DIM)),
+            None => lines[0].push_str(&format!("  {}empty", th().dim.as_str())),
             Some(text) => {
                 for l in text.lines().filter(|l| !l.trim().is_empty()) {
                     let done = l.contains("- [x]") || l.contains("- [X]");
                     let body = l.replace("- [x]", "").replace("- [X]", "").replace("- [ ]", "");
                     let body = body.trim();
                     if done {
-                        lines.push(format!("    {}■ {}{}{}", tn::GREEN, tn::DIM, tn::STRIKE, body));
+                        lines.push(format!("    {}■ {}{}{}", th().ok.as_str(), th().dim.as_str(), th().strike, body));
                     } else if l.contains("- [ ]") {
-                        lines.push(format!("    {}□ {}{}", tn::DIM, tn::FG, body));
+                        lines.push(format!("    {}□ {}{}", th().dim.as_str(), th().fg.as_str(), body));
                     } else {
-                        lines.push(format!("    {}{}", tn::DIM, body));
+                        lines.push(format!("    {}{}", th().dim.as_str(), body));
                     }
                 }
             }
@@ -521,18 +523,18 @@ impl UiWriter for PrettyUiWriter {
     fn print_envelope_compact(&self, fact_groups: usize, stages: &[(&str, &str)], passed: Option<usize>, total: Option<usize>, failed: usize) {
         let mut lines = vec![format!(
             "  {}📨 {}envelope  {}{} fact group{}",
-            tn::PURPLE, tn::FG, tn::DIM, fact_groups, if fact_groups == 1 { "" } else { "s" }
+            th().accent.as_str(), th().fg.as_str(), th().dim.as_str(), fact_groups, if fact_groups == 1 { "" } else { "s" }
         )];
         let has_v = passed.is_some();
         for (i, (icon, desc)) in stages.iter().enumerate() {
             let last = i + 1 == stages.len() && !has_v;
-            lines.push(format!("    {}{} {} {}", tn::FAINT, if last { "└" } else { "├" }, icon, tn::DIM.to_string() + desc));
+            lines.push(format!("    {}{} {} {}", th().faint.as_str(), if last { "└" } else { "├" }, icon, th().dim.as_str().to_string() + desc));
         }
         if let (Some(p), Some(t)) = (passed, total) {
             if failed == 0 {
-                lines.push(format!("    {}└ {}✓ {}/{} passed", tn::FAINT, tn::GREEN, p, t));
+                lines.push(format!("    {}└ {}✓ {}/{} passed", th().faint.as_str(), th().ok.as_str(), p, t));
             } else {
-                lines.push(format!("    {}└ {}✗ {}/{} passed, {} failed", tn::FAINT, tn::RED, p, t, failed));
+                lines.push(format!("    {}└ {}✗ {}/{} passed, {} failed", th().faint.as_str(), th().err.as_str(), p, t, failed));
             }
         }
         self.scr(|s| {
@@ -596,7 +598,7 @@ impl UiWriter for PrettyUiWriter {
 
     fn prompt_user_yes_no(&self, message: &str) -> bool {
         self.scr(|s| s.suspend());
-        print!("  {}?{} {} {}[y/N]{} ", tn::PURPLE, tn::RESET, message, tn::DIM, tn::RESET);
+        print!("  {}?{} {} {}[y/N]{} ", th().accent.as_str(), th().reset, message, th().dim.as_str(), th().reset);
         let _ = io::stdout().flush();
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_ok() {
@@ -609,12 +611,12 @@ impl UiWriter for PrettyUiWriter {
 
     fn prompt_user_choice(&self, message: &str, options: &[&str]) -> usize {
         self.scr(|s| s.suspend());
-        println!("  {}?{} {}", tn::PURPLE, tn::RESET, message);
+        println!("  {}?{} {}", th().accent.as_str(), th().reset, message);
         for (i, o) in options.iter().enumerate() {
-            println!("    {}{}{} {}", tn::PURPLE, i + 1, tn::RESET, o);
+            println!("    {}{}{} {}", th().accent.as_str(), i + 1, th().reset, o);
         }
         loop {
-            print!("  {}select 1–{}:{} ", tn::DIM, options.len(), tn::RESET);
+            print!("  {}select 1–{}:{} ", th().dim.as_str(), options.len(), th().reset);
             let _ = io::stdout().flush();
             let mut input = String::new();
             if io::stdin().read_line(&mut input).is_ok() {
@@ -682,68 +684,68 @@ pub fn render_plan(plan_yaml: Option<&str>, plan_file_path: Option<&str>, is_wri
     let verb = if is_write { "plan updated" } else { "plan" };
     let mut out = Vec::new();
     let Some(yaml) = plan_yaml else {
-        out.push(format!("  {}📐 {}{}  {}empty", tn::PURPLE, tn::FG, verb, tn::DIM));
+        out.push(format!("  {}📐 {}{}  {}empty", th().accent.as_str(), th().fg.as_str(), verb, th().dim.as_str()));
         return out;
     };
     let Ok(plan) = serde_yaml::from_str::<Plan>(yaml) else {
-        out.push(format!("  {}📐 {}{}", tn::PURPLE, tn::FG, verb));
+        out.push(format!("  {}📐 {}{}", th().accent.as_str(), th().fg.as_str(), verb));
         for l in yaml.lines().take(20) {
-            out.push(format!("    {}{}", tn::DIM, l));
+            out.push(format!("    {}{}", th().dim.as_str(), l));
         }
         return out;
     };
     let count = |s: &str| plan.items.iter().filter(|i| i.state == s).count();
     let (done, doing, blocked, todo) = (count("done"), count("doing"), count("blocked"), count("todo"));
     let approved = match plan.approved_revision {
-        Some(r) => format!("{}✓ approved@{}", tn::GREEN, r),
-        None => format!("{}⚠ not approved", tn::YELLOW),
+        Some(r) => format!("{}✓ approved@{}", th().ok.as_str(), r),
+        None => format!("{}⚠ not approved", th().warn.as_str()),
     };
     let bar = format!(
         "{}{}{}{}{}{}{}{}",
-        tn::GREEN, "■".repeat(done), tn::YELLOW, "■".repeat(doing), tn::RED, "■".repeat(blocked), tn::FAINT, "□".repeat(todo)
+        th().ok.as_str(), "■".repeat(done), th().warn.as_str(), "■".repeat(doing), th().err.as_str(), "■".repeat(blocked), th().faint.as_str(), "□".repeat(todo)
     );
     out.push(format!(
         "  {}📐 {}{}  {}{}{}  {}  {}{}/{}  {}",
-        tn::PURPLE, tn::FG, verb, tn::BOLD, tn::CYAN, plan.plan_id, approved, tn::DIM, done, plan.items.len(), bar
+        th().accent.as_str(), th().fg.as_str(), verb, th().bold, th().info.as_str(), plan.plan_id, approved, th().dim.as_str(), done, plan.items.len(), bar
     ));
     let n = plan.items.len();
     for (i, it) in plan.items.iter().enumerate() {
         let last = i + 1 == n;
         let (icon, col) = match it.state.as_str() {
-            "doing" => ("◐", tn::YELLOW),
-            "done" => ("■", tn::GREEN),
-            "blocked" => ("⊘", tn::RED),
-            _ => ("□", tn::DIM),
+            "doing" => ("◐", th().warn.as_str()),
+            "done" => ("■", th().ok.as_str()),
+            "blocked" => ("⊘", th().err.as_str()),
+            _ => ("□", th().dim.as_str()),
         };
         let branch = if last { "└" } else { "├" };
         let child = if last { " " } else { "│" };
         let desc = if it.state == "done" {
-            format!("{}{}{}", tn::DIM, tn::STRIKE, it.description)
+            format!("{}{}{}", th().dim.as_str(), th().strike, it.description)
         } else {
-            format!("{}{}", tn::FG, it.description)
+            format!("{}{}", th().fg.as_str(), it.description)
         };
-        out.push(format!("    {}{} {}{} {}{}{}{} {}", tn::FAINT, branch, col, icon, tn::RESET, tn::BOLD, tn::SUB, it.id, desc));
+        out.push(format!("    {}{} {}{} {}{}{}{} {}", th().faint.as_str(), branch, col, icon, th().reset, th().bold, th().sub.as_str(), it.id, desc));
         if it.state == "done" {
             if !it.evidence.is_empty() {
-                out.push(format!("    {}{}    📎 {}", tn::FAINT, child, it.evidence.join(", ")));
+                out.push(format!("    {}{}    📎 {}", th().faint.as_str(), child, it.evidence.join(", ")));
             }
         } else {
             if !it.touches.is_empty() {
-                out.push(format!("    {}{}    {}→ {}", tn::FAINT, child, tn::DIM, it.touches.join(", ")));
+                out.push(format!("    {}{}    {}→ {}", th().faint.as_str(), child, th().dim.as_str(), it.touches.join(", ")));
             }
             if let Some(c) = &it.checks {
-                out.push(format!("    {}{}    {}✓ {}{}", tn::FAINT, child, tn::GREEN, tn::DIM, c.happy.desc));
+                out.push(format!("    {}{}    {}✓ {}{}", th().faint.as_str(), child, th().ok.as_str(), th().dim.as_str(), c.happy.desc));
                 for x in &c.negative {
-                    out.push(format!("    {}{}    {}✗ {}{}", tn::FAINT, child, tn::RED, tn::DIM, x.desc));
+                    out.push(format!("    {}{}    {}✗ {}{}", th().faint.as_str(), child, th().err.as_str(), th().dim.as_str(), x.desc));
                 }
                 for x in &c.boundary {
-                    out.push(format!("    {}{}    {}◇ {}{}", tn::FAINT, child, tn::YELLOW, tn::DIM, x.desc));
+                    out.push(format!("    {}{}    {}◇ {}{}", th().faint.as_str(), child, th().warn.as_str(), th().dim.as_str(), x.desc));
                 }
             }
         }
     }
     if let Some(p) = plan_file_path {
-        out.push(format!("    {}📄 {}", tn::FAINT, p));
+        out.push(format!("    {}📄 {}", th().faint.as_str(), p));
     }
     out
 }
@@ -776,26 +778,26 @@ mod tests {
     fn edit_summary_colours() {
         let s = screen::strip_ansi(&colorize_edit_summary("+5 | -3"));
         assert_eq!(s, "+5 −3");
-        assert!(colorize_edit_summary("+5 | -3").contains(tn::GREEN));
-        assert!(colorize_edit_summary("+5 | -3").contains(tn::RED));
+        assert!(colorize_edit_summary("+5 | -3").contains(th().ok.as_str()));
+        assert!(colorize_edit_summary("+5 | -3").contains(th().err.as_str()));
     }
 
     #[test]
     fn duration_colours_match_classic_thresholds() {
-        assert_eq!(duration_color("132ms"), tn::FAINT);
-        assert_eq!(duration_color("0.9s"), tn::FAINT);
-        assert_eq!(duration_color("1.2s"), tn::YELLOW);
-        assert_eq!(duration_color("2m 3.0s"), tn::ORANGE);
-        assert_eq!(duration_color("7m 0.0s"), tn::RED);
+        assert_eq!(duration_color("132ms"), th().faint.as_str());
+        assert_eq!(duration_color("0.9s"), th().faint.as_str());
+        assert_eq!(duration_color("1.2s"), th().warn.as_str());
+        assert_eq!(duration_color("2m 3.0s"), th().slow.as_str());
+        assert_eq!(duration_color("7m 0.0s"), th().err.as_str());
     }
 
     #[test]
     fn footer_ctx_thresholds() {
         let f = |p| footer_line(Duration::from_millis(12_300), 3, 38_500, 1_000_000, p);
-        assert!(f(10.0).contains(tn::GREEN));
-        assert!(f(45.0).contains(tn::YELLOW));
-        assert!(f(65.0).contains(tn::ORANGE));
-        assert!(f(85.0).contains(tn::RED));
+        assert!(f(10.0).contains(th().ok.as_str()));
+        assert!(f(45.0).contains(th().warn.as_str()));
+        assert!(f(65.0).contains(th().slow.as_str()));
+        assert!(f(85.0).contains(th().err.as_str()));
         assert_eq!(screen::strip_ansi(&f(4.2)), "  ─ 12.3s · 3 tools · ctx 4% 38.5k/1.0m");
     }
 }

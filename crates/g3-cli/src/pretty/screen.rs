@@ -23,63 +23,20 @@ use termimad::MadSkin;
 use unicode_width::UnicodeWidthChar;
 
 use super::explain::Explained;
-
-/// Tokyo Night, as ANSI 24-bit foreground prefixes.
-pub mod tn {
-    pub const FG: &str = "\x1b[38;2;192;202;245m";
-    pub const SUB: &str = "\x1b[38;2;154;165;206m";
-    pub const DIM: &str = "\x1b[38;2;86;95;137m";
-    pub const FAINT: &str = "\x1b[38;2;59;66;97m";
-    pub const BLUE: &str = "\x1b[38;2;122;162;247m";
-    pub const PURPLE: &str = "\x1b[38;2;187;154;247m";
-    pub const CYAN: &str = "\x1b[38;2;125;207;255m";
-    pub const GREEN: &str = "\x1b[38;2;158;206;106m";
-    pub const ORANGE: &str = "\x1b[38;2;255;158;100m";
-    pub const RED: &str = "\x1b[38;2;247;118;142m";
-    pub const YELLOW: &str = "\x1b[38;2;224;175;104m";
-    pub const CODE_BG: &str = "\x1b[48;2;41;46;66m";
-    pub const BOLD: &str = "\x1b[1m";
-    pub const ITALIC: &str = "\x1b[3m";
-    pub const STRIKE: &str = "\x1b[9m";
-    pub const RESET: &str = "\x1b[0m";
-}
+use super::theme::th;
 
 pub const GUTTER: usize = 2;
 const SPIN: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// Catppuccin (what StreamingMarkdownFormatter emits) → Tokyo Night.
+/// Recolour StreamingMarkdownFormatter output into the active theme.
 /// Remapping on the way OUT keeps the formatter, and therefore classic mode,
-/// byte-identical. Headings gain a gutter mark; each source colour appears in
-/// exactly one construct in the formatter (checked by a test against its source).
-const REMAP: &[(&str, &str)] = &[
-    // H1: bold mauve
-    ("\x1b[1m\x1b[38;2;198;160;246m", "\x1b[1m\x1b[38;2;122;162;247m▌ "),
-    // H2: blue
-    ("\x1b[38;2;138;173;244m", "\x1b[1m\x1b[38;2;187;154;247m▍ "),
-    // H3: lavender
-    ("\x1b[38;2;183;189;248m", "\x1b[1m\x1b[38;2;125;207;255m▏ "),
-    // H4: teal
-    ("\x1b[38;2;139;213;202m", "\x1b[1m\x1b[38;2;158;206;106m"),
-    // H5/6 + muted: subtext1
-    ("\x1b[38;2;165;173;203m", "\x1b[38;2;154;165;206m"),
-    // italic: sky
-    ("\x1b[38;2;145;215;227m", "\x1b[38;2;192;202;245m"),
-    // bold: sapphire
-    ("\x1b[38;2;125;196;228m", "\x1b[38;2;192;202;245m"),
-    // inline code: peach → orange on a soft chip
-    ("\x1b[38;2;245;169;127m", "\x1b[38;2;255;158;100m\x1b[48;2;41;46;66m"),
-    // links: green → cyan
-    ("\x1b[38;2;166;218;149m", "\x1b[38;2;125;207;255m"),
-    // rules + unhighlighted code: overlay1
-    ("\x1b[38;2;128;135;162m", "\x1b[38;2;86;95;137m"),
-];
-
+/// byte-identical. Headings gain a gutter mark (see theme::Theme::new).
 pub fn remap(s: &str) -> String {
     if !s.contains('\x1b') {
         return s.to_string();
     }
     let mut out = s.to_string();
-    for (from, to) in REMAP {
+    for (from, to) in &th().remap {
         if out.contains(from) {
             out = out.replace(from, to);
         }
@@ -88,19 +45,20 @@ pub fn remap(s: &str) -> String {
 }
 
 pub fn tn_skin() -> MadSkin {
-    let rgb = |r, g, b| Color::Rgb { r, g, b };
+    let p = th().p;
+    let rgb = |c: super::theme::Rgb| Color::Rgb { r: c.0, g: c.1, b: c.2 };
     let mut skin = MadSkin::default();
-    skin.bold.set_fg(rgb(192, 202, 245));
-    skin.italic.set_fg(rgb(192, 202, 245));
-    skin.inline_code.set_fg(rgb(255, 158, 100));
-    skin.inline_code.set_bg(rgb(41, 46, 66));
-    skin.code_block.set_fg(rgb(192, 202, 245));
-    skin.table.set_fg(rgb(59, 66, 97));
-    skin.quote_mark.set_fg(rgb(187, 154, 247));
-    skin.bullet.set_fg(rgb(187, 154, 247));
-    skin.horizontal_rule.set_fg(rgb(59, 66, 97));
+    skin.bold.set_fg(rgb(p.fg));
+    skin.italic.set_fg(rgb(p.fg));
+    skin.inline_code.set_fg(rgb(p.code));
+    skin.inline_code.set_bg(rgb(p.code_bg));
+    skin.code_block.set_fg(rgb(p.fg));
+    skin.table.set_fg(rgb(p.faint));
+    skin.quote_mark.set_fg(rgb(p.accent));
+    skin.bullet.set_fg(rgb(p.accent));
+    skin.horizontal_rule.set_fg(rgb(p.faint));
     for h in skin.headers.iter_mut() {
-        h.set_fg(rgb(122, 162, 247));
+        h.set_fg(rgb(p.h1));
     }
     skin
 }
@@ -168,7 +126,7 @@ pub fn clip_ansi(s: &str, max: usize) -> String {
         let cw = UnicodeWidthChar::width(c).unwrap_or(0);
         if w + cw + 1 > max {
             out.push('…');
-            out.push_str(tn::RESET);
+            out.push_str(th().reset);
             return out;
         }
         out.push(c);
@@ -277,7 +235,7 @@ impl Screen {
 
     fn draw_cursor(&mut self) {
         if !self.cursor_on && self.col < self.width.saturating_sub(1) {
-            self.w(&format!("{}▌{}\x1b[D", tn::PURPLE, tn::RESET));
+            self.w(&format!("{}▌{}\x1b[D", th().accent.as_str(), th().reset));
             self.cursor_on = true;
         }
     }
@@ -401,8 +359,12 @@ impl Screen {
             return;
         }
         self.erase_cursor();
-        let word = std::mem::take(&mut self.word);
+        let mut word = std::mem::take(&mut self.word);
         let ww = std::mem::replace(&mut self.word_w, 0);
+        // List markers ("•", "1.") at the start of a line take the accent colour.
+        if ww > 0 && self.line_text.trim().is_empty() && is_list_marker(&strip_ansi(&word)) {
+            word = format!("{}{}{}", th().accent, word, th().reset);
+        }
         if ww == 0 {
             self.w(&word); // escapes only: no gutter, no width
             return;
@@ -459,7 +421,7 @@ impl Screen {
         self.emit(&remap(&formatted));
         self.flush_word();
         self.erase_cursor();
-        self.w(tn::RESET);
+        self.w(th().reset);
         self.to_line_start();
         self.streaming = false;
         self.md = None;
@@ -480,7 +442,7 @@ impl Screen {
         }
         let clipped = clip_ansi(s, self.width.saturating_sub(1));
         self.w(&clipped);
-        self.w(tn::RESET);
+        self.w(th().reset);
         self.w("\r\n");
         self.col = 0;
         self.at_line_start = true;
@@ -538,32 +500,32 @@ impl Screen {
                     return None;
                 }
                 let el = (now - *since).as_secs();
-                t.push_str(&format!("  {}{} {}thinking", tn::PURPLE, spin, tn::SUB));
+                t.push_str(&format!("  {}{} {}thinking", th().accent.as_str(), spin, th().sub.as_str()));
                 let total = self.turn.as_ref().map(|tr| (now - tr.start).as_secs()).unwrap_or(el);
                 if total >= 3 {
-                    t.push_str(&format!("{}  {}s", tn::DIM, total));
+                    t.push_str(&format!("{}  {}s", th().dim.as_str(), total));
                 }
             }
             Status::Tool { ex, started, last_line, preparing } => {
-                t.push_str(&format!("  {}{} {}{} {}", tn::CYAN, spin, tn::FG, ex.icon, ex.doing));
+                t.push_str(&format!("  {}{} {}{} {}", th().info.as_str(), spin, th().fg.as_str(), ex.icon, ex.doing));
                 if !ex.detail.is_empty() {
-                    t.push_str(&format!("  {}{}", tn::SUB, ex.detail));
+                    t.push_str(&format!("  {}{}", th().sub.as_str(), ex.detail));
                 }
                 let el = (now - *started).as_secs();
                 if *preparing {
-                    t.push_str(&format!("{}  …", tn::DIM));
+                    t.push_str(&format!("{}  …", th().dim.as_str()));
                 } else if el >= 2 {
-                    t.push_str(&format!("{}  {}s", tn::DIM, el));
+                    t.push_str(&format!("{}  {}s", th().dim.as_str(), el));
                 }
                 if !last_line.trim().is_empty() {
                     let used = visible_width(&t) + 6;
                     let room = self.width.saturating_sub(used).max(8);
                     let tail = super::explain::short(&strip_ansi(last_line), room);
-                    t.push_str(&format!("  {}⟩ {}", tn::FAINT, tail));
+                    t.push_str(&format!("  {}⟩ {}", th().faint.as_str(), tail));
                 }
             }
             Status::Progress { msg, .. } => {
-                t.push_str(&format!("  {}{} {}{}", tn::PURPLE, spin, tn::SUB, msg));
+                t.push_str(&format!("  {}{} {}{}", th().accent.as_str(), spin, th().sub.as_str(), msg));
             }
         }
         Some(t)
@@ -575,7 +537,7 @@ impl Screen {
             Some(text) => {
                 self.to_line_start();
                 let clipped = clip_ansi(&text, self.width.saturating_sub(1));
-                self.w(&format!("\r\x1b[2K{}{}", clipped, tn::RESET));
+                self.w(&format!("\r\x1b[2K{}{}", clipped, th().reset));
                 self.status_drawn = true;
             }
         }
@@ -623,6 +585,10 @@ pub fn hanging_indent(line: &str) -> usize {
     if hang > 24 { 0 } else { hang }
 }
 
+fn is_list_marker(w: &str) -> bool {
+    w == "•" || (w.len() >= 2 && w.ends_with('.') && w[..w.len() - 1].chars().all(|c| c.is_ascii_digit()))
+}
+
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::new();
     let mut it = s.chars().peekable();
@@ -648,10 +614,16 @@ mod tests {
 
     #[test]
     fn clip_keeps_escapes_and_marks_cut() {
-        let s = format!("{}hello world{}", tn::BLUE, tn::RESET);
+        let s = format!("{}hello world{}", th().brand.as_str(), th().reset);
         let c = clip_ansi(&s, 6);
         assert_eq!(strip_ansi(&c), "hello…");
-        assert!(c.starts_with(tn::BLUE));
+        assert!(c.starts_with(th().brand.as_str()));
+    }
+
+    #[test]
+    fn list_markers() {
+        assert!(is_list_marker("•") && is_list_marker("1.") && is_list_marker("12."));
+        assert!(!is_list_marker("3.14") && !is_list_marker(".") && !is_list_marker("a."));
     }
 
     #[test]

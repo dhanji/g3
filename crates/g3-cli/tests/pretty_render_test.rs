@@ -283,3 +283,15 @@ fn no_spinner_for_self_handled_tools() {
     r.w.tick();
     assert!(r.text().contains("running a command"), "{}", r.text());
 }
+
+#[test]
+fn list_markers_take_the_accent_colour() {
+    let r = Rig::new(W);
+    r.w.begin_turn();
+    r.stream("- one\n2. two\n", 3);
+    r.w.finish_streaming_markdown();
+    let raw = r.buf.text();
+    let accent = &g3_cli::pretty::theme::th().accent;
+    assert!(raw.contains(&format!("{}•", accent)), "bullet not accented: {:?}", raw);
+    assert!(raw.contains(&format!("{}2.", accent)), "number not accented: {:?}", raw);
+}

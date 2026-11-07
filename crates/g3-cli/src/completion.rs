@@ -362,24 +362,24 @@ impl Highlighter for G3Helper {
 
 /// Tokyo Night colours for the pretty prompt ("g3 · proj plan ❯ ").
 fn pretty_prompt_colors(prompt: &str) -> String {
-    use crate::pretty::screen::tn;
+    use crate::pretty::theme::th;
     if prompt.trim() == "┊" {
-        return format!("{}{}{}", tn::FAINT, prompt, tn::RESET);
+        return format!("{}{}{}", th().faint.as_str(), prompt, th().reset);
     }
     let mut out = prompt.to_string();
-    out = out.replacen("g3", &format!("{}{}g3{}", tn::BOLD, tn::BLUE, tn::RESET), 1);
+    out = out.replacen("g3", &format!("{}{}g3{}", th().bold, th().brand.as_str(), th().reset), 1);
     if let Some(dot) = out.find(" · ") {
         let end = out[dot..].find(|c| c == '❯').map(|e| dot + e).unwrap_or(out.len());
         let seg = out[dot..end].replace(" plan ", " ");
-        let colored = format!("{}{}{} ", tn::CYAN, seg.trim_end(), tn::RESET);
+        let colored = format!("{}{}{} ", th().info.as_str(), seg.trim_end(), th().reset);
         out = format!("{}{}{}", &out[..dot], colored, &out[end..]);
         if prompt.contains(" plan ") {
-            out = out.replacen("❯", &format!("{}plan{} ❯", tn::YELLOW, tn::RESET), 1);
+            out = out.replacen("❯", &format!("{}plan{} ❯", th().warn.as_str(), th().reset), 1);
         }
     } else if prompt.contains(" plan ") {
-        out = out.replacen(" plan ", &format!(" {}plan{} ", tn::YELLOW, tn::RESET), 1);
+        out = out.replacen(" plan ", &format!(" {}plan{} ", th().warn.as_str(), th().reset), 1);
     }
-    out.replacen("❯", &format!("{}{}❯{}", tn::BOLD, tn::PURPLE, tn::RESET), 1)
+    out.replacen("❯", &format!("{}{}❯{}", th().bold, th().accent.as_str(), th().reset), 1)
 }
 
 impl Validator for G3Helper {}

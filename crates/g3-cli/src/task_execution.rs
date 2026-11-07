@@ -58,7 +58,7 @@ pub async fn execute_task_with_retry<W: UiWriter>(
             _ = tokio::signal::ctrl_c() => {
                 cancel_token_clone.cancel();
                 if crate::pretty::is_active() {
-                    crate::pretty::say("\x1b[38;2;247;118;142m⏹ stopped");
+                    crate::pretty::say(&format!("{}⏹ stopped", crate::pretty::theme::th().err));
                 } else {
                     output.print("\n⚠️  Operation cancelled by user (Ctrl+C)");
                 }

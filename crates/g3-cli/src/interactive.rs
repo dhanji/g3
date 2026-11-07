@@ -73,21 +73,21 @@ pub fn build_pretty_prompt(in_multiline: bool, in_plan_mode: bool, active_projec
 
 /// Pretty-mode welcome: one line of who/what/where, one line of invitation.
 fn print_pretty_banner<W: UiWriter>(agent: &Agent<W>, combined_content: &Option<String>, workspace_path: &Path) {
-    use crate::pretty::screen::tn;
-    let mut line = format!("  🧬 {}{}g3{}", tn::BOLD, tn::PURPLE, tn::RESET);
+    use crate::pretty::theme::th;
+    let mut line = format!("  🧬 {}{}g3{}", th().bold, th().accent.as_str(), th().reset);
     if let Ok((provider, model)) = agent.get_provider_info() {
-        line.push_str(&format!("  {}·  {}{} {}{}", tn::FAINT, tn::SUB, provider, tn::DIM, model));
+        line.push_str(&format!("  {}·  {}{} {}{}", th().faint.as_str(), th().sub.as_str(), provider, th().dim.as_str(), model));
     }
-    line.push_str(&format!("  {}·  {}{}", tn::FAINT, tn::CYAN, crate::display::format_workspace_path(workspace_path)));
-    println!("{}{}", line, tn::RESET);
+    line.push_str(&format!("  {}·  {}{}", th().faint.as_str(), th().info.as_str(), crate::display::format_workspace_path(workspace_path)));
+    println!("{}{}", line, th().reset);
     if let Some(content) = combined_content {
         let items = LoadedContent::from_combined_content(content).to_loaded_items();
         if !items.is_empty() {
-            let list: Vec<String> = items.iter().map(|i| format!("{}✓ {}{}", tn::GREEN, tn::DIM, i)).collect();
-            println!("  {}{}", list.join("  "), tn::RESET);
+            let list: Vec<String> = items.iter().map(|i| format!("{}✓ {}{}", th().ok.as_str(), th().dim.as_str(), i)).collect();
+            println!("  {}{}", list.join("  "), th().reset);
         }
     }
-    println!("  {}what shall we build today?{}", tn::FAINT, tn::RESET);
+    println!("  {}what shall we build today?{}", th().faint.as_str(), th().reset);
     println!();
 }
 
@@ -135,7 +135,7 @@ fn check_and_exit_plan_mode_if_terminal<W: UiWriter>(
 ) -> bool {
     if *in_plan_mode && agent.is_plan_terminal() {
         if crate::pretty::is_active() {
-            crate::pretty::say("\x1b[38;2;158;206;106m✓ \x1b[38;2;86;95;137mplan complete — leaving plan mode");
+            crate::pretty::say(&format!("{}✓ {}plan complete — leaving plan mode", crate::pretty::theme::th().ok, crate::pretty::theme::th().dim));
         } else {
             output.print("\n📋 Plan complete - exiting plan mode");
         }
