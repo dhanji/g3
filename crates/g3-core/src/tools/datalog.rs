@@ -445,8 +445,55 @@ fn eval_existence(claim_values: Option<&HashSet<&str>>, expect_present: bool) ->
     }
 }
 
+/// The bare, lowercased addresses in a recipient-shaped value:
+/// `a@b.com`, `Name <a@b.com>`, and comma/semicolon-joined lists of either.
+/// Parts without an `@` are not addresses and are dropped.
+fn addresses_in(value: &str) -> Vec<String> {
+    value
+        .split(|c| c == ',' || c == ';')
+        .filter_map(|part| {
+            let part = part.trim();
+            let bare = match (part.rfind('<'), part.rfind('>')) {
+                (Some(l), Some(r)) if l < r => &part[l + 1..r],
+                _ => part,
+            };
+            let bare = bare.trim().trim_matches(|c| c == '"' || c == '\'').to_lowercase();
+            if bare.contains('@') { Some(bare) } else { None }
+        })
+        .collect()
+}
+
+/// Does blocklist `entry` catch any address inside `value`?
+///
+/// An entry WITH an `@` is a whole address (case-folded, exact). An entry
+/// WITHOUT one is a DOMAIN, matching that domain and its subdomains.
+/// ⚠️ NOT a substring test: `r@wideplay.com` must not catch
+/// `sender@wideplay.com`, nor `rethrick.com` catch `notrethrick.com`.
+/// Mirrors butler.app/email_send_api.py `_blocked_addresses`.
+fn address_blocked(value: &str, entry: &str) -> bool {
+    let e = entry.trim().to_lowercase();
+    if e.is_empty() {
+        return false;
+    }
+    addresses_in(value).iter().any(|addr| {
+        if e.contains('@') {
+            *addr == e
+        } else {
+            let domain = addr.rsplit('@').next().unwrap_or("");
+            domain == e || domain.ends_with(&format!(".{}", e))
+        }
+    })
+}
+
 /// Contains / NotContains: check whether a specific value is among the claim's facts.
 /// `expect_present = true` → Contains; `false` → NotContains.
+///
+/// NotContains is ADDRESS-AWARE on top of exact membership (a strict superset,
+/// so it can only refuse more): a value holding email addresses is also
+/// refused when `address_blocked` catches it. Exact membership alone let
+/// `R@x.com`, `Name <a@b>`, comma-joined lists and every address at a blocked
+/// domain through a recipient blocklist (red-team, 2026-11-16). Contains is
+/// deliberately left exact — loosening a POSITIVE check would pass more.
 fn eval_membership(
     claim_values: Option<&HashSet<&str>>,
     pred: &CompiledPredicate,
@@ -464,6 +511,8 @@ fn eval_membership(
                 }
             } else if found {
                 (false, format!("Contains '{}' but should not", expected))
+            } else if let Some(hit) = values.iter().find(|v| address_blocked(v, expected)) {
+                (false, format!("'{}' is blocked by '{}'", hit, expected))
             } else {
                 (true, format!("Does not contain '{}'", expected))
             }
@@ -1647,6 +1696,75 @@ mod tests {
 
         let result = execute_rules(&compiled, &facts);
         assert_eq!(result.failed_count, 1, "not_contains should fail when element present");
+    }
+
+    // ------------------------------------------------------------------------
+    // Address-aware not_contains (red-team finding, 2026-11-16): exact set
+    // membership let "R@wideplay.com", "Jess <jess@x>", comma-joined lists and
+    // every address at a blocked DOMAIN walk straight past a blocklist.
+    // ------------------------------------------------------------------------
+
+    /// Run ONE `email.to not_contains <entry>` predicate over `to`; true = refused.
+    fn to_refused(to: &str, entry: &str) -> bool {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("email_to", "email.to"));
+        rulespec.predicates.push(
+            Predicate::new("email_to", PredicateRule::NotContains, InvariantSource::Memory)
+                .with_value(YamlValue::String(entry.to_string())),
+        );
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+        let mut envelope = ActionEnvelope::new();
+        let mut email = serde_yaml::Mapping::new();
+        email.insert(YamlValue::String("to".into()), YamlValue::String(to.into()));
+        envelope.add_fact("email", YamlValue::Mapping(email));
+        let facts = extract_facts(&envelope, &compiled);
+        execute_rules(&compiled, &facts).failed_count == 1
+    }
+
+    #[test]
+    fn test_not_contains_address_exact_still_refused() {
+        assert!(to_refused("jess@example.com", "jess@example.com"));
+    }
+
+    #[test]
+    fn test_not_contains_address_is_case_insensitive() {
+        assert!(to_refused("R@WidePlay.com", "r@wideplay.com"));
+    }
+
+    #[test]
+    fn test_not_contains_address_inside_display_name() {
+        assert!(to_refused("Jess McInnes <jess@example.com>", "jess@example.com"));
+    }
+
+    #[test]
+    fn test_not_contains_address_inside_comma_list() {
+        assert!(to_refused("ari@example.org, jess@example.com", "jess@example.com"));
+        assert!(to_refused("ari@example.org;jess@example.com", "jess@example.com"));
+    }
+
+    #[test]
+    fn test_not_contains_domain_entry_blocks_every_address_there() {
+        assert!(to_refused("dhanji@rethrick.com", "rethrick.com"));
+        assert!(to_refused("x@mail.rethrick.com", "rethrick.com"));
+        assert!(to_refused("a@b.com, Someone <s@RETHRICK.com>", "rethrick.com"));
+    }
+
+    #[test]
+    fn test_not_contains_address_is_not_a_substring_test() {
+        // `sender@wideplay.com` CONTAINS "r@wideplay.com"; a substring test
+        // would refuse a legitimate stranger forever.
+        assert!(!to_refused("sender@wideplay.com", "r@wideplay.com"));
+        // A lookalike domain is not a subdomain.
+        assert!(!to_refused("x@notrethrick.com", "rethrick.com"));
+        assert!(!to_refused("ari@example.org", "jess@example.com"));
+    }
+
+    #[test]
+    fn test_not_contains_non_address_claims_keep_exact_semantics() {
+        // No '@' in the value -> the address leg never fires.
+        assert!(!to_refused("handle_csv_v2", "handle_csv"));
+        assert!(!to_refused("Handle_CSV", "handle_csv"));
+        assert!(to_refused("handle_csv", "handle_csv"));
     }
 
     #[test]

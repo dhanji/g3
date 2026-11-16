@@ -231,6 +231,48 @@ pub fn verify_token(session_id: &str, working_dir: &Path) -> Result<bool> {
     Ok(stored_token == expected_token)
 }
 
+/// Verify the `g3v1:` token of the envelope FILE at `envelope_path`, against
+/// the rulespec in `working_dir/analysis/rulespec.yaml`, with an explicit key.
+///
+/// This is what `g3 --verify-envelope <path>` runs, so that a consumer such
+/// as butler's `email_sender.py` can check the real keyed MAC instead of the
+/// `g3v1:` PREFIX — a hand-written `g3v1:FAKE` used to send mail.
+///
+/// Fail-closed: a missing/unreadable envelope or rulespec is an `Err`, and a
+/// missing, malformed or mismatched token is `Ok(false)`. Only a token that
+/// recomputes byte-for-byte over these facts and this rulespec is `Ok(true)`.
+pub fn verify_envelope_file_with_key(
+    key: &[u8],
+    envelope_path: &Path,
+    working_dir: &Path,
+) -> Result<bool> {
+    let content = std::fs::read_to_string(envelope_path)
+        .map_err(|e| anyhow!("cannot read envelope {}: {}", envelope_path.display(), e))?;
+    let envelope: ActionEnvelope = serde_yaml::from_str(&content)
+        .map_err(|e| anyhow!("cannot parse envelope {}: {}", envelope_path.display(), e))?;
+    let rulespec = read_rulespec(working_dir)?.ok_or_else(|| {
+        anyhow!("Rulespec not found at {}/analysis/rulespec.yaml", working_dir.display())
+    })?;
+    let stored = match &envelope.verified {
+        Some(t) if t.starts_with(TOKEN_PREFIX) => t.clone(),
+        _ => return Ok(false),
+    };
+    let mut clean = envelope.clone();
+    clean.verified = None;
+    let expected = mint_token(key, &clean, &rulespec);
+    // Constant-time compare: the token is a MAC.
+    let (a, b) = (stored.as_bytes(), expected.as_bytes());
+    Ok(a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0)
+}
+
+/// [`verify_envelope_file_with_key`] using the global `~/.g3/verification.key`.
+/// A missing key is an error — never a pass.
+pub fn verify_envelope_file(envelope_path: &Path, working_dir: &Path) -> Result<bool> {
+    let key = read_verification_key()?
+        .ok_or_else(|| anyhow!("Verification key not found at ~/.g3/verification.key"))?;
+    verify_envelope_file_with_key(&key, envelope_path, working_dir)
+}
+
 // ============================================================================
 // Envelope Verification
 // ============================================================================
@@ -565,6 +607,65 @@ mod tests {
 
     fn make_test_key() -> Vec<u8> {
         vec![1u8; VERIFICATION_KEY_LEN]
+    }
+
+    /// A workspace with the test rulespec on disk + a stamped envelope file.
+    fn stamped_envelope_on_disk(key: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let analysis = tmp.path().join("analysis");
+        std::fs::create_dir_all(&analysis).unwrap();
+        std::fs::write(
+            analysis.join("rulespec.yaml"),
+            serde_yaml::to_string(&make_test_rulespec()).unwrap(),
+        )
+        .unwrap();
+        let mut env = make_test_envelope();
+        env.verified = Some(mint_token(key, &env, &make_test_rulespec()));
+        let path = tmp.path().join("envelope.yaml");
+        std::fs::write(&path, serde_yaml::to_string(&env).unwrap()).unwrap();
+        (tmp, path)
+    }
+
+    #[test]
+    fn test_verify_file_accepts_genuine_token() {
+        let key = make_test_key();
+        let (tmp, path) = stamped_envelope_on_disk(&key);
+        assert!(verify_envelope_file_with_key(&key, &path, tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_verify_file_rejects_tampered_fact() {
+        let key = make_test_key();
+        let (tmp, path) = stamped_envelope_on_disk(&key);
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert!(t.contains("src/foo.rs"));
+        std::fs::write(&path, t.replace("src/foo.rs", "src/evil.rs")).unwrap();
+        assert!(!verify_envelope_file_with_key(&key, &path, tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_verify_file_rejects_forged_and_missing_token() {
+        let key = make_test_key();
+        let (tmp, path) = stamped_envelope_on_disk(&key);
+        let mut env: ActionEnvelope =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        env.verified = Some("g3v1:FAKEFAKEFA".into());
+        std::fs::write(&path, serde_yaml::to_string(&env).unwrap()).unwrap();
+        assert!(!verify_envelope_file_with_key(&key, &path, tmp.path()).unwrap());
+        env.verified = None;
+        std::fs::write(&path, serde_yaml::to_string(&env).unwrap()).unwrap();
+        assert!(!verify_envelope_file_with_key(&key, &path, tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_verify_file_rejects_other_key_and_fails_closed() {
+        let (tmp, path) = stamped_envelope_on_disk(&make_test_key());
+        assert!(!verify_envelope_file_with_key(&make_different_key(), &path, tmp.path()).unwrap());
+        // No rulespec / no envelope = an error, never a pass.
+        std::fs::remove_file(tmp.path().join("analysis/rulespec.yaml")).unwrap();
+        assert!(verify_envelope_file_with_key(&make_test_key(), &path, tmp.path()).is_err());
+        assert!(verify_envelope_file_with_key(
+            &make_test_key(), &tmp.path().join("nope.yaml"), tmp.path()).is_err());
     }
 
     fn make_different_key() -> Vec<u8> {

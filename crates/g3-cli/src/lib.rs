@@ -138,6 +138,26 @@ pub async fn run() -> Result<()> {
         std::process::exit(1);
     }
 
+    // --verify-envelope: check a g3v1 token and exit. No config, no provider —
+    // it must work for a dumb consumer (email_sender.py) under launchd.
+    if let Some(path) = cli.verify_envelope.as_ref() {
+        let workspace_dir = cli.workspace.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        match g3_core::tools::envelope::verify_envelope_file(path, &workspace_dir) {
+            Ok(true) => {
+                println!("verified: genuine g3v1 token ({})", path.display());
+                std::process::exit(0);
+            }
+            Ok(false) => {
+                eprintln!("REFUSED: envelope token is missing, forged, or the facts/rulespec changed since write_envelope ({})", path.display());
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("REFUSED: cannot verify envelope: {}", e);
+                std::process::exit(2);
+            }
+        }
+    }
+
     // Check if --list-agents was requested
     if cli.list_agents {
         let workspace_dir = cli.workspace.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());

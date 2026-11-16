@@ -162,6 +162,13 @@ pub struct Cli {
     #[arg(long)]
     pub list_agents: bool,
 
+    /// Verify the `g3v1:` token of an action envelope file against the
+    /// workspace's analysis/rulespec.yaml and ~/.g3/verification.key, then
+    /// exit: 0 = genuine, 1 = forged/tampered/missing, 2 = cannot verify.
+    /// For consumers (e.g. butler's email_sender.py) that must not trust a prefix.
+    #[arg(long, value_name = "PATH")]
+    pub verify_envelope: Option<PathBuf>,
+
     /// Skip session resumption and force a new session (for agent mode)
     #[arg(long)]
     pub new_session: bool,
