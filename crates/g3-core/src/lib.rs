@@ -3016,7 +3016,7 @@ Skip if nothing new. Be brief."#;
                                 self.tool_calls_this_turn.push(tool_call.tool.clone());
                                 self.pending_images.extend(images);
                                 precomputed_duration = Some(took);
-                                self.apply_plan_gate(working_dir.as_deref()).unwrap_or(result)
+                                self.apply_plan_gate(&tool_call.tool, working_dir.as_deref()).unwrap_or(result)
                             } else { match tokio::time::timeout(
                                 timeout_duration,
                                 // Use working_dir if set (from --codebase-fast-start)
@@ -3682,8 +3682,10 @@ Skip if nothing new. Be brief."#;
 
     /// In plan mode, the approval gate may replace a tool's result with a
     /// blocking message. Shared by the sequential and concurrent paths.
-    fn apply_plan_gate(&self, working_dir: Option<&str>) -> Option<String> {
-        if !self.in_plan_mode {
+    /// Plan tools are exempt (`tools::plan::is_plan_gate_exempt`): they touch
+    /// only g3's session state, and gating them hid the plan just written.
+    fn apply_plan_gate(&self, tool_name: &str, working_dir: Option<&str>) -> Option<String> {
+        if !self.in_plan_mode || tools::plan::is_plan_gate_exempt(tool_name) {
             return None;
         }
         let session_id = self.session_id.as_ref()?;
@@ -3788,7 +3790,7 @@ Skip if nothing new. Be brief."#;
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
 
         // Check plan approval gate after tool execution (only in plan mode)
-        if let Some(message) = self.apply_plan_gate(working_dir) {
+        if let Some(message) = self.apply_plan_gate(&tool_call.tool, working_dir) {
             // Return the blocking message instead of the tool result
             return Ok(message);
         }
