@@ -1020,6 +1020,16 @@ pub enum ApprovalGateResult {
     NotGitRepo,
 }
 
+/// Tools the plan approval gate never inspects.
+///
+/// The gate exists to stop WORKING-TREE changes without an approved plan.
+/// The plan tools only read and write g3's own session state, so gating them
+/// is pure catch-22: a `plan_write` answered with "BLOCKED — create a plan
+/// with plan_write" hides the plan the model just wrote (PR #75).
+pub fn is_plan_gate_exempt(tool_name: &str) -> bool {
+    matches!(tool_name, "plan_read" | "plan_write" | "plan_approve")
+}
+
 /// Get the set of dirty file paths from `git status --porcelain`.
 ///
 /// Returns an empty set if not a git repo or if the command fails.
@@ -1040,7 +1050,21 @@ pub fn get_dirty_files(working_dir: Option<&str>) -> HashSet<String> {
         .lines()
         .filter(|line| line.len() >= 3)
         .map(|line| line[3..].trim().to_string())
+        .filter(|path| !is_g3_artifact(path))
         .collect()
+}
+
+/// True for paths inside g3's own state dir (`.g3/` at any depth).
+///
+/// g3 keeps sessions, plans and envelopes under `<workspace>/.g3/`. In a repo
+/// that doesn't gitignore it, `git status` reports that bookkeeping as a user
+/// change — so writing a plan made the tree "dirty" and the gate then blocked
+/// work on the plan it had just been asked for. Matches whole path COMPONENTS,
+/// so `.g3x.txt` or `notes.g3` are still real files. Handles porcelain's
+/// quoted paths and `old -> new` renames (judged by the destination).
+fn is_g3_artifact(porcelain_path: &str) -> bool {
+    let dest = porcelain_path.rsplit(" -> ").next().unwrap_or(porcelain_path);
+    dest.trim_matches('"').split('/').any(|component| component == ".g3")
 }
 
 /// Check if file changes occurred without an approved plan.
@@ -1550,6 +1574,90 @@ items:\n\
         // Verify the blocking message mentions creating a plan
         if let ApprovalGateResult::Blocked { message } = result {
             assert!(message.contains("plan_write"));
+        }
+    }
+
+    /// A fresh repo with one committed file in `sub/`, so an untracked
+    /// `sub/.g3/` is reported as itself rather than collapsed into `sub/`.
+    fn repo_with_tracked_subdir() -> tempfile::TempDir {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let p = temp_dir.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(p).output().unwrap();
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::create_dir_all(p.join("sub")).unwrap();
+        std::fs::write(p.join("sub/README"), "x").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "init"]);
+        temp_dir
+    }
+
+    #[test]
+    fn test_dirty_files_ignore_g3_artifacts() {
+        // g3 writes its own session state (plan.g3.md, session.json) under
+        // `.g3/` in the WORKSPACE. In a repo that doesn't gitignore it,
+        // plan_write itself used to make the tree "dirty" and the gate then
+        // blocked the very plan it was asking for (PR #75's catch-22).
+        let repo = repo_with_tracked_subdir();
+        let p = repo.path();
+        std::fs::create_dir_all(p.join(".g3/sessions/s1")).unwrap();
+        std::fs::write(p.join(".g3/sessions/s1/plan.g3.md"), "plan").unwrap();
+        std::fs::create_dir_all(p.join("sub/.g3")).unwrap();
+        std::fs::write(p.join("sub/.g3/x"), "x").unwrap();
+        // Boundary: names that merely LOOK like .g3 are real user files.
+        std::fs::write(p.join(".g3x.txt"), "x").unwrap();
+        std::fs::write(p.join("sub/my.g3"), "x").unwrap();
+
+        let dirty = get_dirty_files(Some(p.to_str().unwrap()));
+        let mut got: Vec<_> = dirty.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec![".g3x.txt".to_string(), "sub/my.g3".to_string()]);
+    }
+
+    #[test]
+    fn test_g3_artifact_porcelain_shapes() {
+        // Renames are judged by DESTINATION: moving a file OUT of .g3/ into
+        // the tree is a real change; moving one in is g3 bookkeeping.
+        assert!(is_g3_artifact("notes.txt -> .g3/sessions/s/x"));
+        assert!(!is_g3_artifact(".g3/sessions/s/x -> notes.txt"));
+        // git quotes paths with spaces/unicode.
+        assert!(is_g3_artifact("\".g3/sessions/with space.md\""));
+        assert!(!is_g3_artifact("\"docs/with space.g3\""));
+    }
+
+    #[test]
+    fn test_approval_gate_g3_artifacts_alone_do_not_block() {
+        let repo = repo_with_tracked_subdir();
+        let p = repo.path();
+        std::fs::create_dir_all(p.join(".g3/sessions/s1")).unwrap();
+        std::fs::write(p.join(".g3/sessions/s1/plan.g3.md"), "plan").unwrap();
+        let dir = Some(p.to_str().unwrap());
+
+        let result = check_plan_approval_gate("nonexistent-session-g3-only", dir, &HashSet::new());
+        assert!(matches!(result, ApprovalGateResult::Allowed), "g3's own .g3/ dir blocked the gate");
+
+        // Negative: a real change beside it still blocks, and the message
+        // names the real file, not g3's bookkeeping.
+        std::fs::write(p.join("real.txt"), "x").unwrap();
+        match check_plan_approval_gate("nonexistent-session-g3-only", dir, &HashSet::new()) {
+            ApprovalGateResult::Blocked { message } => {
+                assert!(message.contains("real.txt"), "{message}");
+                assert!(!message.contains(".g3/"), "{message}");
+            }
+            other => panic!("a real change must still block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_only_plan_tools_are_gate_exempt() {
+        for t in ["plan_read", "plan_write", "plan_approve"] {
+            assert!(is_plan_gate_exempt(t), "{t} should be exempt");
+        }
+        for t in ["shell", "write_file", "str_replace", "read_file", "plan", "plan_writer", ""] {
+            assert!(!is_plan_gate_exempt(t), "{t} must stay gated");
         }
     }
 

@@ -591,3 +591,81 @@ struct OpenAIDeltaFunction {
     name: Option<String>,
     arguments: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    //! `convert_messages` is the whole of OpenAI's history replay. Before PR #75
+    //! it emitted `{role, content}` only, so an assistant tool call came back as
+    //! an empty assistant turn and its result as a plain user message: the model
+    //! never saw its own calls, and the API rejects a `tool` reply with no
+    //! matching `tool_calls`. Every `openai_compatible` provider (OpenRouter,
+    //! groq…) shares this function.
+    use super::*;
+    use crate::MessageToolCall;
+
+    fn assistant_call(id: &str, name: &str, input: serde_json::Value, text: &str) -> Message {
+        let mut m = Message::new(MessageRole::Assistant, text.to_string());
+        m.tool_calls = vec![MessageToolCall { id: id.into(), name: name.into(), input }];
+        m
+    }
+
+    fn tool_result(id: &str, text: &str) -> Message {
+        let mut m = Message::new(MessageRole::User, text.to_string());
+        m.tool_result_id = Some(id.into());
+        m
+    }
+
+    #[test]
+    fn assistant_tool_calls_are_replayed_as_openai_function_calls() {
+        let msgs = vec![assistant_call("call_1", "shell", json!({"command": "ls"}), "")];
+        let out = convert_messages(&msgs);
+        assert_eq!(out.len(), 1);
+        let calls = out[0]["tool_calls"].as_array().expect("tool_calls missing — call dropped on replay");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_1");
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        // OpenAI wants `arguments` as a JSON STRING, not an object.
+        let args = calls[0]["function"]["arguments"].as_str().expect("arguments must be a string");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(args).unwrap(), json!({"command": "ls"}));
+        assert_eq!(out[0]["role"], "assistant");
+    }
+
+    #[test]
+    fn empty_content_is_omitted_on_a_tool_call_turn_but_kept_when_present() {
+        let out = convert_messages(&[
+            assistant_call("call_1", "shell", json!({}), ""),
+            assistant_call("call_2", "shell", json!({}), "Let me look."),
+        ]);
+        assert!(out[0].get("content").is_none(), "empty content should be absent: {}", out[0]);
+        assert_eq!(out[1]["content"], "Let me look.");
+    }
+
+    #[test]
+    fn tool_results_use_the_tool_role_and_answer_their_call_id() {
+        let out = convert_messages(&[
+            assistant_call("call_9", "shell", json!({}), ""),
+            tool_result("call_9", "Tool result: ok"),
+        ]);
+        assert_eq!(out[1]["role"], "tool", "tool result replayed as {}", out[1]["role"]);
+        assert_eq!(out[1]["tool_call_id"], "call_9");
+        assert_eq!(out[1]["content"], "Tool result: ok");
+    }
+
+    #[test]
+    fn plain_messages_serialise_exactly_as_before() {
+        let out = convert_messages(&[
+            Message::new(MessageRole::System, "sys".into()),
+            Message::new(MessageRole::User, "hi".into()),
+            Message::new(MessageRole::Assistant, "hello".into()),
+        ]);
+        assert_eq!(
+            serde_json::Value::Array(out),
+            json!([
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ])
+        );
+    }
+}
