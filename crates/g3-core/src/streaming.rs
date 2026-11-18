@@ -208,6 +208,9 @@ pub fn is_concurrency_safe_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "shell" | "read_file" | "read_image" | "code_search" | "plan_read" | "research_status"
+            // Web research only reads the web; several questions in one
+            // batch run in parallel (the browser path just registers a job).
+            | "research"
     )
 }
 
@@ -773,6 +776,15 @@ pub fn is_connection_error(error_msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_research_runs_concurrently_but_writes_stay_barriers() {
+        assert!(is_concurrency_safe_tool("research"), "parallel web questions in one batch");
+        assert!(is_concurrency_safe_tool("research_status"));
+        for barrier in ["write_file", "str_replace", "plan_write", "webdriver_click", "load_toolset"] {
+            assert!(!is_concurrency_safe_tool(barrier), "{} must stay a barrier", barrier);
+        }
+    }
 
     #[test]
     fn test_clean_llm_tokens() {

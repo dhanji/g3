@@ -20,6 +20,7 @@ pub mod plan;
 pub mod research;
 pub mod shell;
 pub mod toolsets;
+pub mod web_research;
 pub mod webdriver;
 
 pub use executor::ToolExecutor;

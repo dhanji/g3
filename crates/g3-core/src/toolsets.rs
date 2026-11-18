@@ -39,7 +39,7 @@ const TOOLSET_REGISTRY: &[Toolset] = &[
     },
     Toolset {
         name: "research",
-        description: "Initiate web-based research on a topic. This tool is ASYNCHRONOUS - it spawns a research agent in the background and returns immediately with a research_id. Results are automatically injected into the conversation when ready.",
+        description: "Web research in seconds: ask a question, get a concise answer with cited sources (server-side web search + page fetch, no browser). Also a slow browser-driven scout for logged-in or interactive pages.",
         tool_definitions_fn: create_research_tools,
     },
 ];
@@ -314,20 +314,39 @@ fn create_webdriver_tools() -> Vec<Tool> {
     ]
 }
 
-/// Create research tools for web-based research.
+/// Create research tools.
 ///
-/// These tools enable asynchronous web research via a background scout agent.
+/// `research` answers synchronously via server-side web search by default
+/// (`tools/web_research.rs`); `browser: true` takes the async scout path,
+/// which `research_status` reports on.
 fn create_research_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "research".to_string(),
-            description: "Initiate web-based research on a topic. This tool is ASYNCHRONOUS - it spawns a research agent in the background and returns immediately with a research_id. Results are automatically injected into the conversation when ready. Use this when you need to research APIs, SDKs, libraries, approaches, bugs, or documentation. If you need the results before continuing, say so and yield the turn to the user. Check status with research_status tool.".to_string(),
+            description: "Answer a question from the web in seconds (typically 5-60s): Anthropic's server-side web search and page fetch read the sources and return a concise answer with a numbered, cited source list and a cost line. Synchronous - the answer is the tool result. Use it for APIs, SDKs, libraries, docs, versions, bugs, prices, rules, current events. Several research calls in one response run in parallel. Treat the answer as a lead: verify load-bearing claims against the cited sources. Cost: ~5-20c quick, ~50c-$1.50 deep. Set browser=true ONLY for logged-in or interactive pages, or when web search fell short: that launches a slow (~10 min) asynchronous browser scout that returns a research_id; its report is injected later (check with research_status) and ending the turn kills it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The research question or topic to investigate. Be specific about what you need to know."
+                        "description": "The question. Be specific about what you need to know, and include any context (locale, version, platform) that changes the answer."
+                    },
+                    "deep": {
+                        "type": "boolean",
+                        "description": "Multi-angle or nuanced question (comparisons, legal/medical, conflicting sources): stronger model, up to 15 searches, longer answer. Slower and ~10x the cost. Default false."
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Optional: read this specific page and answer the query from it."
+                    },
+                    "domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: restrict search to these domains (e.g. [\"docs.rs\", \"github.com\"]). Useful when results are SEO noise and the official site is missing."
+                    },
+                    "browser": {
+                        "type": "boolean",
+                        "description": "Use the slow asynchronous browser scout instead of web search. Default false."
                     }
                 },
                 "required": ["query"]
@@ -335,7 +354,7 @@ fn create_research_tools() -> Vec<Tool> {
         },
         Tool {
             name: "research_status".to_string(),
-            description: "Check the status of pending research tasks. Call without arguments to list all pending research, or with a research_id to check a specific task. Use this to see if research has completed before it's automatically injected.".to_string(),
+            description: "Check the status of pending browser research (research with browser=true). Call without arguments to list all pending research, or with a research_id to check a specific task.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -453,6 +472,17 @@ mod tests {
         let tool_names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"research"));
         assert!(tool_names.contains(&"research_status"));
+    }
+
+    #[test]
+    fn test_research_schema_exposes_web_options() {
+        let tools = create_research_tools();
+        let r = tools.iter().find(|t| t.name == "research").unwrap();
+        let props = r.input_schema["properties"].as_object().unwrap();
+        for k in ["query", "deep", "url", "domains", "browser"] {
+            assert!(props.contains_key(k), "research schema missing '{}'", k);
+        }
+        assert_eq!(r.input_schema["required"], json!(["query"]));
     }
 
     #[test]

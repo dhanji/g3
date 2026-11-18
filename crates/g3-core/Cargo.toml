@@ -52,6 +52,7 @@ datafrog = "2.0.1"
 base64 = "0.22.1"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.8"
 serial_test = "3.0"
 dirs = "5.0"

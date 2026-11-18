@@ -1,12 +1,19 @@
-//! Research tool: spawns a scout agent to perform web-based research.
+//! Research tool: answers a question from the web.
 //!
-//! The research tool is **asynchronous** - it spawns the scout agent in the background
-//! and returns immediately with a research_id. The agent can continue with other work
-//! while research is in progress. Results are automatically injected into the conversation
-//! when ready, or the agent can check status with the `research_status` tool.
+//! Two engines:
+//! - **web** (default, synchronous): Anthropic's server-side web search + fetch
+//!   (`web_research.rs`). Seconds, with cited sources; the answer IS the tool result.
+//! - **browser** (`browser: true`, asynchronous): spawns the `scout` agent, which
+//!   drives a real browser. For logged-in or interactive pages. p50 ~10 minutes;
+//!   returns a research_id immediately and results are injected when ready (or
+//!   checked with `research_status`). Ending the turn kills it.
+//!
+//! Without any Anthropic provider configured the web engine has no credentials,
+//! so `research` falls back to the browser scout and says so.
 
 use anyhow::Result;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error};
@@ -16,6 +23,10 @@ use crate::ToolCall;
 use g3_config::WebDriverBrowser;
 
 use super::executor::ToolContext;
+use super::web_research;
+
+/// Same cadence as shell's tool heartbeat (`g3_execution` HEARTBEAT_INTERVAL).
+const WEB_HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Delimiter markers for scout report extraction
 const REPORT_START_MARKER: &str = "---SCOUT_REPORT_START---";
@@ -27,15 +38,64 @@ const CONTEXT_ERROR_PATTERNS: &[&str] = &[
     "too many tokens", "exceeds the model", "context window", "max_tokens",
 ];
 
-/// Execute the research tool - spawns scout agent in background and returns immediately.
+/// Which engine a `research` call takes.
+#[derive(Debug, PartialEq)]
+enum Engine {
+    /// Server-side web search with this API key.
+    Web(String),
+    /// Browser scout; `Some(note)` when it is a fallback the agent should know about.
+    Browser(Option<String>),
+}
+
+fn choose_engine(args: &serde_json::Value, config: &g3_config::Config) -> Engine {
+    if args.get("browser").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Engine::Browser(None);
+    }
+    match web_research::resolve_api_key(config) {
+        Some(key) => Engine::Web(key),
+        None => Engine::Browser(Some(
+            "No Anthropic provider is configured, so fast web search is unavailable; \
+             falling back to the slow browser scout."
+                .to_string(),
+        )),
+    }
+}
+
+/// Execute the research tool.
 ///
-/// This is the **async** version of research. It:
+/// Default: a synchronous web-search answer (seconds). With `browser: true`, or
+/// when no Anthropic credentials exist, the asynchronous browser scout. An API
+/// failure on the web path is returned as an error — never silently converted
+/// into a 10-minute scout run.
+pub async fn execute_research<W: UiWriter>(
+    tool_call: &ToolCall,
+    ctx: &mut ToolContext<'_, W>,
+) -> Result<String> {
+    match choose_engine(&tool_call.args, ctx.config) {
+        Engine::Web(key) => {
+            let query = web_research::WebQuery::from_args(&tool_call.args)?;
+            let poster = web_research::HttpPoster::new(key)?;
+            let ui = ctx.ui_writer;
+            web_research::answer(&query, &poster, WEB_HEARTBEAT, &|s| ui.notify_tool_heartbeat(s)).await
+        }
+        Engine::Browser(note) => {
+            let placeholder = start_browser_research(tool_call, ctx)?;
+            Ok(match note {
+                Some(n) => format!("⚠️ {}\n\n{}", n, placeholder),
+                None => placeholder,
+            })
+        }
+    }
+}
+
+/// Start the browser scout in the background and return the placeholder.
+///
 /// 1. Registers a new research task with the PendingResearchManager
 /// 2. Spawns the scout agent in a background tokio task
 /// 3. Returns immediately with a placeholder message containing the research_id
 /// 4. The background task updates the manager when research completes
 /// 5. Results are injected into the conversation at the next natural break point
-pub async fn execute_research<W: UiWriter>(
+fn start_browser_research<W: UiWriter>(
     tool_call: &ToolCall,
     ctx: &mut ToolContext<'_, W>,
 ) -> Result<String> {
@@ -76,19 +136,13 @@ pub async fn execute_research<W: UiWriter>(
 
     // Return immediately with placeholder
     let placeholder = format!(
-        "🔍 **Research initiated** (id: `{}`)
-
-\
-**Query:** {}
-
-\
-Research is running in the background. You can:
-- Continue with other work - results will be automatically provided when ready
-- Check status with `research_status` tool
-- If you need the results before continuing, say so and yield the turn to the user
-
-\
-_Estimated time: 30-120 seconds depending on query complexity_",
+        "🔍 **Browser research initiated** (id: `{}`)\n\n\
+**Query:** {}\n\n\
+A browser-driving scout agent is running in the background. You can:\n\
+- Continue with other work - results will be automatically provided when ready\n\
+- Check status with `research_status` tool\n\
+- If you need the results before continuing, say so and yield the turn to the user\n\n\
+_Typical time: ~10 minutes (measured p50; up to ~25). Ending the turn kills it._",
         research_id,
         query
     );
@@ -468,6 +522,40 @@ Some trailing text"#;
         let output = "---SCOUT_REPORT_START---\n---SCOUT_REPORT_END---";
         let result = extract_report(output).unwrap();
         assert!(result.contains("empty report"));
+    }
+
+    fn config_with_anthropic(present: bool) -> g3_config::Config {
+        let mut c = g3_config::Config::default();
+        if !present {
+            c.providers.anthropic.clear();
+            c.providers.default_provider = "openai.default".into();
+        }
+        c
+    }
+
+    #[test]
+    fn test_default_engine_is_web_search_with_provider_key() {
+        let c = config_with_anthropic(true);
+        let key = c.providers.anthropic.get("default").unwrap().api_key.clone();
+        assert_eq!(choose_engine(&serde_json::json!({"query": "q"}), &c), Engine::Web(key));
+    }
+
+    #[test]
+    fn test_browser_flag_takes_scout_path_even_with_key() {
+        let c = config_with_anthropic(true);
+        assert_eq!(
+            choose_engine(&serde_json::json!({"query": "q", "browser": true}), &c),
+            Engine::Browser(None)
+        );
+    }
+
+    #[test]
+    fn test_no_anthropic_falls_back_to_scout_with_note() {
+        let c = config_with_anthropic(false);
+        match choose_engine(&serde_json::json!({"query": "q"}), &c) {
+            Engine::Browser(Some(note)) => assert!(note.contains("No Anthropic provider"), "{}", note),
+            other => panic!("expected noted browser fallback, got {:?}", other),
+        }
     }
 
     #[test]

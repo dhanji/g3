@@ -132,7 +132,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// the number that answers it.
 ///
 /// Defaults to the real API, so an unset variable changes nothing.
-fn anthropic_api_url() -> String {
+pub fn anthropic_api_url() -> String {
     match std::env::var("ANTHROPIC_BASE_URL") {
         Ok(base) if !base.trim().is_empty() => {
             format!("{}/v1/messages", base.trim_end_matches('/'))
