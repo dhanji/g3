@@ -649,36 +649,24 @@ impl UiWriter for PrettyUiWriter {
 }
 
 /// Plan tree in Tokyo Night. Mirrors the classic content; only the look differs.
+///
+/// The slim plan (2026-11-26) is `{id, description, state, notes?}`; legacy
+/// `touches`/`checks`/`evidence` are ignored by serde, and every written plan
+/// is approved, so there is no approval label any more.
 pub fn render_plan(plan_yaml: Option<&str>, plan_file_path: Option<&str>, is_write: bool) -> Vec<String> {
     #[derive(serde::Deserialize)]
     struct Plan {
         plan_id: String,
-        approved_revision: Option<u32>,
         items: Vec<Item>,
     }
     #[derive(serde::Deserialize)]
     struct Item {
         id: String,
         description: String,
+        #[serde(default)]
         state: String,
         #[serde(default)]
-        touches: Vec<String>,
-        #[serde(default)]
-        checks: Option<Checks>,
-        #[serde(default)]
-        evidence: Vec<String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Checks {
-        happy: Check,
-        #[serde(default)]
-        negative: Vec<Check>,
-        #[serde(default)]
-        boundary: Vec<Check>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Check {
-        desc: String,
+        notes: Option<String>,
     }
 
     let verb = if is_write { "plan updated" } else { "plan" };
@@ -695,18 +683,15 @@ pub fn render_plan(plan_yaml: Option<&str>, plan_file_path: Option<&str>, is_wri
         return out;
     };
     let count = |s: &str| plan.items.iter().filter(|i| i.state == s).count();
-    let (done, doing, blocked, todo) = (count("done"), count("doing"), count("blocked"), count("todo"));
-    let approved = match plan.approved_revision {
-        Some(r) => format!("{}✓ approved@{}", th().ok.as_str(), r),
-        None => format!("{}⚠ not approved", th().warn.as_str()),
-    };
+    let (done, doing, blocked) = (count("done"), count("doing"), count("blocked"));
+    let todo = plan.items.len() - done - doing - blocked;
     let bar = format!(
         "{}{}{}{}{}{}{}{}",
         th().ok.as_str(), "■".repeat(done), th().warn.as_str(), "■".repeat(doing), th().err.as_str(), "■".repeat(blocked), th().faint.as_str(), "□".repeat(todo)
     );
     out.push(format!(
-        "  {}📐 {}{}  {}{}{}  {}  {}{}/{}  {}",
-        th().accent.as_str(), th().fg.as_str(), verb, th().bold, th().info.as_str(), plan.plan_id, approved, th().dim.as_str(), done, plan.items.len(), bar
+        "  {}📐 {}{}  {}{}{}  {}{}/{}  {}",
+        th().accent.as_str(), th().fg.as_str(), verb, th().bold, th().info.as_str(), plan.plan_id, th().dim.as_str(), done, plan.items.len(), bar
     ));
     let n = plan.items.len();
     for (i, it) in plan.items.iter().enumerate() {
@@ -725,23 +710,8 @@ pub fn render_plan(plan_yaml: Option<&str>, plan_file_path: Option<&str>, is_wri
             format!("{}{}", th().fg.as_str(), it.description)
         };
         out.push(format!("    {}{} {}{} {}{}{}{} {}", th().faint.as_str(), branch, col, icon, th().reset, th().bold, th().sub.as_str(), it.id, desc));
-        if it.state == "done" {
-            if !it.evidence.is_empty() {
-                out.push(format!("    {}{}    📎 {}", th().faint.as_str(), child, it.evidence.join(", ")));
-            }
-        } else {
-            if !it.touches.is_empty() {
-                out.push(format!("    {}{}    {}→ {}", th().faint.as_str(), child, th().dim.as_str(), it.touches.join(", ")));
-            }
-            if let Some(c) = &it.checks {
-                out.push(format!("    {}{}    {}✓ {}{}", th().faint.as_str(), child, th().ok.as_str(), th().dim.as_str(), c.happy.desc));
-                for x in &c.negative {
-                    out.push(format!("    {}{}    {}✗ {}{}", th().faint.as_str(), child, th().err.as_str(), th().dim.as_str(), x.desc));
-                }
-                for x in &c.boundary {
-                    out.push(format!("    {}{}    {}◇ {}{}", th().faint.as_str(), child, th().warn.as_str(), th().dim.as_str(), x.desc));
-                }
-            }
+        if let Some(note) = it.notes.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            out.push(format!("    {}{}    {}↳ {}", th().faint.as_str(), child, th().dim.as_str(), note));
         }
     }
     if let Some(p) = plan_file_path {

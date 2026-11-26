@@ -225,12 +225,31 @@ fn one_blank_line_between_text_and_tools() {
 
 #[test]
 fn plan_tree_renders() {
+    // The slim plan (2026-11-26): {id, description, state, notes?}. Every
+    // written plan is approved, so no approval label; notes get a child line.
     let r = Rig::new(80);
-    let yaml = "plan_id: demo\nrevision: 2\napproved_revision: 2\nitems:\n  - id: I1\n    description: first thing\n    state: done\n    touches: [a]\n    evidence: [src/a.rs]\n  - id: I2\n    description: second thing\n    state: doing\n    touches: [b]\n    checks:\n      happy: {desc: works, target: t}\n      negative: [{desc: fails well, target: t}]\n      boundary: [{desc: edges, target: t}]\n";
+    let yaml = "plan_id: demo\nrevision: 2\napproved_revision: 2\nitems:\n- id: I1\n  description: first thing\n  state: done\n- id: I2\n  description: second thing\n  state: doing\n- id: I3\n  description: third thing\n  state: blocked\n  notes: waiting on design\n";
     r.w.print_plan_compact(Some(yaml), Some("/tmp/plan.yaml"), true);
     let t = r.text();
-    for want in ["plan updated", "demo", "✓ approved@2", "1/2", "I1 first thing", "📎 src/a.rs", "◐ I2 second thing", "→ b", "✓ works", "✗ fails well", "◇ edges", "📄 /tmp/plan.yaml"] {
+    for want in ["plan updated", "demo", "1/3", "I1 first thing", "◐ I2 second thing", "⊘ I3 third thing", "↳ waiting on design", "📄 /tmp/plan.yaml"] {
         assert!(t.contains(want), "missing {:?} in:\n{}", want, t);
+    }
+    for gone in ["approved", "📎", "→", "✓ ", "✗"] {
+        assert!(!t.contains(gone), "stale plan-mode chrome {:?} in:\n{}", gone, t);
+    }
+}
+
+#[test]
+fn legacy_plan_yaml_renders_without_its_ceremony() {
+    // An old plan carrying touches/checks/evidence still parses (no raw-YAML
+    // fallback) and renders as the slim tree.
+    let r = Rig::new(80);
+    let yaml = "plan_id: old\nrevision: 1\nitems:\n  - id: I1\n    description: legacy\n    state: doing\n    touches: [b]\n    checks:\n      happy: {desc: works, target: t}\n      negative: [{desc: fails well, target: t}]\n      boundary: [{desc: edges, target: t}]\n    evidence: [src/a.rs]\n";
+    r.w.print_plan_compact(Some(yaml), None, true);
+    let t = r.text();
+    assert!(t.contains("◐ I1 legacy"), "{t}");
+    for gone in ["works", "fails well", "src/a.rs", "touches:", "checks:"] {
+        assert!(!t.contains(gone), "{gone:?} leaked in:\n{t}");
     }
 }
 

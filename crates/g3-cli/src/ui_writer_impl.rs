@@ -744,164 +744,8 @@ impl UiWriter for ConsoleUiWriter {
         // Reset read_file continuation tracking
         *self.last_read_file_path.lock().unwrap() = None;
 
-        match plan_yaml {
-            None => {
-                // No plan exists
-                println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[35mempty\x1b[0m", tool_color, tool_name, width = TOOL_NAME_PADDING);
-            }
-            Some(yaml) => {
-                // Parse the YAML to extract plan details
-                #[derive(serde::Deserialize)]
-                struct PlanCompact {
-                    plan_id: String,
-                    #[allow(dead_code)]
-                    revision: u32,
-                    approved_revision: Option<u32>,
-                    items: Vec<PlanItemCompact>,
-                }
-                #[derive(serde::Deserialize)]
-                struct PlanItemCompact {
-                    id: String,
-                    description: String,
-                    state: String,
-                    touches: Vec<String>,
-                    #[serde(default)]
-                    checks: Option<ChecksCompact>,
-                    #[serde(default)]
-                    evidence: Vec<String>,
-                    #[serde(default)]
-                    #[allow(dead_code)]
-                    notes: Option<String>,
-                }
-                #[derive(serde::Deserialize)]
-                struct ChecksCompact {
-                    happy: CheckCompact,
-                    #[serde(default)]
-                    negative: Vec<CheckCompact>,
-                    #[serde(default)]
-                    boundary: Vec<CheckCompact>,
-                }
-                #[derive(serde::Deserialize, Clone)]
-                struct CheckCompact {
-                    desc: String,
-                    #[allow(dead_code)]
-                    target: String,
-                }
-
-                if let Ok(plan) = serde_yaml::from_str::<PlanCompact>(yaml) {
-                    // Count items by state for summary
-                    let done_count = plan.items.iter().filter(|i| i.state == "done").count();
-                    let doing_count = plan.items.iter().filter(|i| i.state == "doing").count();
-                    let blocked_count = plan.items.iter().filter(|i| i.state == "blocked").count();
-                    let todo_count = plan.items.iter().filter(|i| i.state == "todo").count();
-                    let total = plan.items.len();
-
-                    // Header with plan info and progress
-                    let approved_str = if let Some(rev) = plan.approved_revision {
-                        format!(" \x1b[32m✓ approved@{}\x1b[0m", rev)
-                    } else {
-                        " \x1b[33m⚠ NOT APPROVED\x1b[0m".to_string()
-                    };
-
-                    // Progress bar visualization
-                    let progress_bar = format!(
-                        "\x1b[32m{}\x1b[33m{}\x1b[31m{}\x1b[2m{}\x1b[0m",
-                        "■".repeat(done_count),
-                        "■".repeat(doing_count),
-                        "■".repeat(blocked_count),
-                        "□".repeat(todo_count)
-                    );
-
-                    println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[1;36m{}\x1b[0m{} \x1b[2m[{}/{}]\x1b[0m {}",
-                        tool_color, tool_name, plan.plan_id, approved_str, done_count, total, progress_bar, width = TOOL_NAME_PADDING);
-
-                    let items_len = plan.items.len();
-                    for (i, item) in plan.items.iter().enumerate() {
-                        let is_last_item = i == items_len - 1;
-
-                        // State indicator: □ = todo, ◐ = doing, ■ = done, ⊘ = blocked
-                        let (state_icon, state_color) = match item.state.as_str() {
-                            "todo" => ("□", "\x1b[0m"),      // default
-                            "doing" => ("◐", "\x1b[33m"),   // yellow
-                            "done" => ("■", "\x1b[32m"),    // green
-                            "blocked" => ("⊘", "\x1b[31m"), // red
-                            _ => ("?", "\x1b[0m"),
-                        };
-
-                        // Item line with tree structure
-                        let item_prefix = if is_last_item { "└" } else { "├" };
-                        let child_prefix = if is_last_item { " " } else { "│" };
-
-                        // Calculate available width for content
-                        // Item line prefix: "   X " (5) + state icon (1) + " " (1) + ID (~3) + " " (1) = ~11 chars
-                        let term_width = get_terminal_width();
-                        let item_line_overhead = 11 + item.id.chars().count();
-                        let max_desc_width = term_width.saturating_sub(item_line_overhead);
-                        let desc_display = clip_line(&item.description, max_desc_width);
-
-                        // Item line: state icon, ID, description (strikethrough if done)
-                        let desc_style = if item.state == "done" { "\x1b[9m\x1b[2m" } else { "" };
-                        let desc_reset = if item.state == "done" { "\x1b[0m" } else { "" };
-                        println!("   \x1b[2m{}\x1b[0m {}{}\x1b[0m \x1b[1m{}\x1b[0m {}{}{}",
-                            item_prefix, state_color, state_icon, item.id, desc_style, desc_display, desc_reset);
-
-                        // For done items, show evidence compactly; for others show touches and checks
-                        if item.state == "done" {
-                            // Show evidence for done items
-                            if !item.evidence.is_empty() {
-                                // Child line prefix: "   X    📎 " = 11 chars
-                                let child_content_width = term_width.saturating_sub(11);
-                                let evidence_str = item.evidence.join(", ");
-                                let evidence_display = clip_line(&evidence_str, child_content_width);
-                                println!("   \x1b[2m{}    📎 {}\x1b[0m", child_prefix, evidence_display);
-                            }
-                        } else {
-                            // Show touches for non-done items
-                            // Child line prefix: "   X    → " = 10 chars
-                            let child_content_width = term_width.saturating_sub(10);
-                            let touches_str = item.touches.join(", ");
-                            let touches_display = clip_line(&touches_str, child_content_width);
-                            println!("   \x1b[2m{}    → {}\x1b[0m", child_prefix, touches_display);
-
-                            // Show checks if present (compact format)
-                            if let Some(ref checks) = item.checks {
-                                // Check line prefix: "   X    X " = 10 chars
-                                let check_content_width = term_width.saturating_sub(10);
-                                // Happy check (always single)
-                                println!("   \x1b[2m{}    \x1b[32m✓\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&checks.happy.desc, check_content_width));
-
-                                // Negative checks (can be multiple)
-                                for neg in &checks.negative {
-                                    println!("   \x1b[2m{}    \x1b[31m✗\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&neg.desc, check_content_width));
-                                }
-
-                                // Boundary checks (can be multiple)
-                                for bnd in &checks.boundary {
-                                    println!("   \x1b[2m{}    \x1b[33m◇\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&bnd.desc, check_content_width));
-                                }
-                            }
-                        }
-                    }
-
-                    // File path link at the end
-                    if let Some(path) = plan_file_path {
-                        // Path line prefix: "   📄 " = 5 chars
-                        let path_width = get_terminal_width().saturating_sub(5);
-                        println!("   \x1b[2m📄 {}\x1b[0m", clip_line(path, path_width));
-                    }
-
-                    // Add blank line after content for readability
-                    println!();
-                } else {
-                    // Failed to parse - fall back to simple display
-                    println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m", tool_color, tool_name, width = TOOL_NAME_PADDING);
-                    let fallback_width = get_terminal_width().saturating_sub(6); // "   │  " = 6 chars
-                    for line in yaml.lines().take(20) {
-                        println!("   \x1b[2m│  {}\x1b[0m", clip_line(line, fallback_width));
-                    }
-                    println!();
-                }
-            }
+        for line in classic_plan_lines(plan_yaml, plan_file_path, tool_name, tool_color, get_terminal_width()) {
+            println!("{}", line);
         }
 
         // Clear tool state
@@ -1125,5 +969,145 @@ impl UiWriter for ConsoleUiWriter {
     fn clear_project(&self) {
         *self.project_path.lock().unwrap() = None;
         *self.project_name.lock().unwrap() = None;
+    }
+}
+
+/// Lines for the classic (non-pretty) plan tree. Pure, so it is testable —
+/// the println! version was not, and that is how a slim plan (no `touches`)
+/// silently fell back to a raw YAML dump on 2026-11-26.
+///
+/// The slim plan is `{id, description, state, notes?}`; legacy
+/// `touches`/`checks`/`evidence` are ignored by serde. Every written plan is
+/// approved, so no approval label.
+fn classic_plan_lines(
+    plan_yaml: Option<&str>,
+    plan_file_path: Option<&str>,
+    tool_name: &str,
+    tool_color: &str,
+    term_width: usize,
+) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct PlanCompact {
+        plan_id: String,
+        items: Vec<PlanItemCompact>,
+    }
+    #[derive(serde::Deserialize)]
+    struct PlanItemCompact {
+        id: String,
+        description: String,
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        notes: Option<String>,
+    }
+
+    let mut out = Vec::new();
+    let Some(yaml) = plan_yaml else {
+        out.push(format!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[35mempty\x1b[0m", tool_color, tool_name, width = TOOL_NAME_PADDING));
+        return out;
+    };
+    let Ok(plan) = serde_yaml::from_str::<PlanCompact>(yaml) else {
+        // Unparseable: fall back to the raw YAML so nothing is hidden.
+        out.push(format!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m", tool_color, tool_name, width = TOOL_NAME_PADDING));
+        let fallback_width = term_width.saturating_sub(6); // "   │  " = 6 chars
+        for line in yaml.lines().take(20) {
+            out.push(format!("   \x1b[2m│  {}\x1b[0m", clip_line(line, fallback_width)));
+        }
+        out.push(String::new());
+        return out;
+    };
+
+    let count = |st: &str| plan.items.iter().filter(|i| i.state == st).count();
+    let (done, doing, blocked) = (count("done"), count("doing"), count("blocked"));
+    let todo = plan.items.len() - done - doing - blocked;
+    let progress_bar = format!(
+        "\x1b[32m{}\x1b[33m{}\x1b[31m{}\x1b[2m{}\x1b[0m",
+        "■".repeat(done), "■".repeat(doing), "■".repeat(blocked), "□".repeat(todo)
+    );
+    out.push(format!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[2m[{}/{}]\x1b[0m {}",
+        tool_color, tool_name, plan.plan_id, done, plan.items.len(), progress_bar, width = TOOL_NAME_PADDING));
+
+    let n = plan.items.len();
+    for (i, item) in plan.items.iter().enumerate() {
+        let last = i + 1 == n;
+        // □ todo, ◐ doing, ■ done, ⊘ blocked
+        let (icon, color) = match item.state.as_str() {
+            "doing" => ("◐", "\x1b[33m"),
+            "done" => ("■", "\x1b[32m"),
+            "blocked" => ("⊘", "\x1b[31m"),
+            "todo" | "" => ("□", "\x1b[0m"),
+            _ => ("?", "\x1b[0m"),
+        };
+        let branch = if last { "└" } else { "├" };
+        let child = if last { " " } else { "│" };
+        // "   X " (5) + icon (1) + " " (1) + id + " " (1) ≈ 11 + id
+        let max_desc = term_width.saturating_sub(11 + item.id.chars().count());
+        let desc = clip_line(&item.description, max_desc);
+        let (on, off) = if item.state == "done" { ("\x1b[9m\x1b[2m", "\x1b[0m") } else { ("", "") };
+        out.push(format!("   \x1b[2m{}\x1b[0m {}{}\x1b[0m \x1b[1m{}\x1b[0m {}{}{}", branch, color, icon, item.id, on, desc, off));
+        if let Some(note) = item.notes.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+            // "   X    ↳ " = 10 chars
+            out.push(format!("   \x1b[2m{}    ↳ {}\x1b[0m", child, clip_line(note, term_width.saturating_sub(10))));
+        }
+    }
+    if let Some(path) = plan_file_path {
+        out.push(format!("   \x1b[2m📄 {}\x1b[0m", clip_line(path, term_width.saturating_sub(5))));
+    }
+    out.push(String::new());
+    out
+}
+
+#[cfg(test)]
+mod classic_plan_tests {
+    use super::classic_plan_lines;
+
+    fn plain(lines: &[String]) -> String {
+        let s = lines.join("\n");
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            if c == '\x1b' { esc = true; continue; }
+            if esc { if c == 'm' { esc = false; } continue; }
+            out.push(c);
+        }
+        out
+    }
+
+    #[test]
+    fn slim_plan_renders_as_a_tree_not_a_yaml_dump() {
+        let yaml = "plan_id: demo\nrevision: 2\napproved_revision: 2\nitems:\n- id: I1\n  description: first\n  state: done\n- id: I2\n  description: second\n  state: blocked\n  notes: waiting on design\n";
+        let t = plain(&classic_plan_lines(Some(yaml), Some("/tmp/p.md"), "plan_write", "", 80));
+        for want in ["demo", "[1/2]", "■ I1 first", "⊘ I2 second", "↳ waiting on design", "📄 /tmp/p.md"] {
+            assert!(t.contains(want), "missing {want:?} in:\n{t}");
+        }
+        assert!(!t.contains("description:"), "fell back to raw YAML:\n{t}");
+        assert!(!t.contains("approved"), "no approval label any more:\n{t}");
+    }
+
+    #[test]
+    fn legacy_plan_parses_and_drops_its_ceremony() {
+        let yaml = "plan_id: old\nrevision: 1\nitems:\n  - id: I1\n    description: legacy\n    state: doing\n    touches: [b]\n    checks: {happy: {desc: works, target: t}, negative: [], boundary: []}\n    evidence: [src/a.rs]\n";
+        let t = plain(&classic_plan_lines(Some(yaml), None, "plan_write", "", 80));
+        assert!(t.contains("◐ I1 legacy"), "{t}");
+        for gone in ["works", "src/a.rs", "→", "touches:"] {
+            assert!(!t.contains(gone), "{gone:?} leaked:\n{t}");
+        }
+    }
+
+    #[test]
+    fn unparseable_yaml_still_falls_back_and_empty_says_empty() {
+        let t = plain(&classic_plan_lines(Some("not: [a plan"), None, "plan_write", "", 80));
+        assert!(t.contains("│  not: [a plan"), "{t}");
+        let e = plain(&classic_plan_lines(None, None, "plan_write", "", 80));
+        assert!(e.contains("empty"), "{e}");
+    }
+
+    #[test]
+    fn long_description_is_clipped_to_the_terminal() {
+        let long = "x".repeat(300);
+        let yaml = format!("plan_id: w\nitems:\n- {{id: I1, description: {long}, state: todo}}\n");
+        let lines = classic_plan_lines(Some(&yaml), None, "plan_write", "", 40);
+        let item = plain(&lines[1..2]);
+        assert!(item.chars().count() <= 40, "{} chars: {item}", item.chars().count());
     }
 }
