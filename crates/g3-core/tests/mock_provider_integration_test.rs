@@ -822,18 +822,16 @@ async fn test_llm_repeats_text_before_each_tool_call() {
 }
 
 // =============================================================================
-// Plan Approval Gate Tests
+// Plan mode no longer gates writes (approval gate removed 2026-11-26)
 // =============================================================================
 
-/// Test: File changes are blocked when plan exists but is not approved
-///
-/// Scenario:
-/// 1. Create a plan (unapproved)
-/// 2. LLM tries to write a file
-/// 3. The file change should be reverted and a blocking message returned
+/// Inverse of the old `test_plan_approval_gate_blocks_unapproved_changes`:
+/// with interactive plan mode ON and a plan on disk, a write goes through
+/// and no "IMPLEMENTATION BLOCKED" message is injected. Approval is a
+/// conversation now, not a git-status gate.
 #[tokio::test]
-async fn test_plan_approval_gate_blocks_unapproved_changes() {
-    use g3_core::tools::plan::{write_plan, Plan, PlanItem, Checks, Check, PlanState};
+async fn test_plan_mode_does_not_gate_file_changes() {
+    use g3_core::tools::plan::{write_plan, Plan, PlanItem};
     use std::fs;
     
     // Create a temp directory that IS a git repo
@@ -883,7 +881,7 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
             "write_file",
             serde_json::json!({
                 "file_path": new_file_path.to_string_lossy(),
-                "content": "This should be blocked!"
+                "content": "This goes through."
             }),
         ))
         .with_default_response(MockResponse::text("I tried to write a file."));
@@ -897,55 +895,25 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
         .await
         .expect("Failed to create agent");
     
-    // Set a session ID so the plan can be found
-    let session_id = "test-approval-gate-session";
+    let session_id = "test-no-approval-gate-session";
     agent.set_session_id(session_id.to_string());
-    
-    // Set the working directory to the temp git repo
     agent.set_working_dir(temp_path.to_string_lossy().to_string());
-    
-    // Enable plan mode (required for the gate check to run)
-    agent.set_plan_mode(true, Some(&temp_path.to_string_lossy()));
-    
-    // Create an unapproved plan for this session
+    agent.set_plan_mode(true);
+
     let mut plan = Plan::new("test-plan");
-    plan.items.push(PlanItem {
-        id: "I1".to_string(),
-        description: "Test item".to_string(),
-        state: PlanState::Todo,
-        touches: vec!["src/test.rs".to_string()],
-        checks: Checks {
-            happy: Check::new("happy", "target"),
-            negative: vec![Check::new("negative", "target")],
-            boundary: vec![Check::new("boundary", "target")],
-        },
-        evidence: vec![],
-        notes: None,
-    });
-    // Note: NOT calling plan.approve() - plan is unapproved
-    
+    plan.items.push(PlanItem::new("I1", "Test item"));
     write_plan(session_id, &plan).expect("Failed to write plan");
-    
-    // Execute task - the LLM will try to write a file
-    let result = agent.execute_task(
-        "Write a new file",
-        None,  // language
-        false  // auto_execute
-    ).await;
-    
-    assert!(result.is_ok(), "Task should complete (with blocking message): {:?}", result.err());
-    
-    // The new file may or may not exist depending on whether write_file ran before the gate,
-    // but the gate must NOT delete/revert it. If it exists, that's fine.
-    // The important thing is the blocking message was returned.
-    
-    // Check that the blocking message was returned
-    let history = &agent.get_context_window().conversation_history;
-    let has_blocking_message = history
+
+    let result = agent.execute_task("Write a new file", None, false).await;
+    assert!(result.is_ok(), "Task should complete: {:?}", result.err());
+
+    assert!(new_file_path.exists(), "write_file must not be blocked or reverted");
+    let blocked = agent
+        .get_context_window()
+        .conversation_history
         .iter()
         .any(|m| m.content.contains("IMPLEMENTATION BLOCKED"));
-    
-    assert!(has_blocking_message, "Should have blocking message in context");
+    assert!(!blocked, "no approval-gate message may be injected");
 }
 
 /// Test: JSON fallback stuttered duplicate tool calls - first executes, second deduped

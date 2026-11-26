@@ -52,7 +52,7 @@ pub use skills::{Skill, discover_skills, generate_skills_prompt};
 #[cfg(test)]
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
-use tools::plan::{check_plan_approval_gate, get_dirty_files, read_plan, ApprovalGateResult};
+use tools::plan::read_plan;
 
 #[cfg(test)]
 mod tilde_expansion_tests;
@@ -264,10 +264,9 @@ pub struct Agent<W: UiWriter> {
     agent_name: Option<String>,
     /// Whether auto-memory reminders are enabled (--auto-memory flag)
     auto_memory: bool,
-    /// Whether plan mode is active (gate blocks file changes without approved plan)
+    /// Whether the interactive CLI is in plan mode (a prompt/UX flag only —
+    /// the git-status approval gate was removed 2026-11-26)
     in_plan_mode: bool,
-    /// Files that were already dirty when plan mode started (excluded from approval gate)
-    baseline_dirty_files: std::collections::HashSet<String>,
     /// Manager for async research tasks
     pending_research_manager: pending_research::PendingResearchManager,
     /// Set of toolset names that have been loaded in this session
@@ -324,7 +323,6 @@ impl<W: UiWriter> Agent<W> {
             agent_name: None,
             auto_memory: false,
             in_plan_mode: false,
-            baseline_dirty_files: std::collections::HashSet::new(),
             pending_research_manager: pending_research::PendingResearchManager::new(),
             loaded_toolsets: std::collections::HashSet::new(),
         }
@@ -1960,16 +1958,9 @@ impl<W: UiWriter> Agent<W> {
     }
 
 
-    /// Enable or disable plan mode (blocks file changes without approved plan)
-    pub fn set_plan_mode(&mut self, enabled: bool, working_dir: Option<&str>) {
+    /// Enable or disable plan mode (interactive CLI prompt state only)
+    pub fn set_plan_mode(&mut self, enabled: bool) {
         self.in_plan_mode = enabled;
-        if enabled {
-            // Capture current dirty files as baseline so the approval gate
-            // won't block on files that were already dirty before plan mode.
-            self.baseline_dirty_files = get_dirty_files(working_dir);
-        } else {
-            self.baseline_dirty_files.clear();
-        }
     }
 
     /// Check if plan mode is active
@@ -3016,7 +3007,7 @@ Skip if nothing new. Be brief."#;
                                 self.tool_calls_this_turn.push(tool_call.tool.clone());
                                 self.pending_images.extend(images);
                                 precomputed_duration = Some(took);
-                                self.apply_plan_gate(&tool_call.tool, working_dir.as_deref()).unwrap_or(result)
+                                result
                             } else { match tokio::time::timeout(
                                 timeout_duration,
                                 // Use working_dir if set (from --codebase-fast-start)
@@ -3680,21 +3671,6 @@ Skip if nothing new. Be brief."#;
         }
     }
 
-    /// In plan mode, the approval gate may replace a tool's result with a
-    /// blocking message. Shared by the sequential and concurrent paths.
-    /// Plan tools are exempt (`tools::plan::is_plan_gate_exempt`): they touch
-    /// only g3's session state, and gating them hid the plan just written.
-    fn apply_plan_gate(&self, tool_name: &str, working_dir: Option<&str>) -> Option<String> {
-        if !self.in_plan_mode || tools::plan::is_plan_gate_exempt(tool_name) {
-            return None;
-        }
-        let session_id = self.session_id.as_ref()?;
-        match check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files) {
-            ApprovalGateResult::Blocked { message } => Some(message),
-            _ => None,
-        }
-    }
-
     /// Execute a whole batch of tool calls CONCURRENTLY, if it qualifies.
     ///
     /// Returns one slot per input call (index-aligned). All slots are `None`
@@ -3788,12 +3764,6 @@ Skip if nothing new. Be brief."#;
         self.tool_calls_this_turn.push(tool_call.tool.clone());
 
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
-
-        // Check plan approval gate after tool execution (only in plan mode)
-        if let Some(message) = self.apply_plan_gate(&tool_call.tool, working_dir) {
-            // Return the blocking message instead of the tool result
-            return Ok(message);
-        }
 
         let log_str = match &result {
             Ok(s) => s.clone(),

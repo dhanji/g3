@@ -397,192 +397,51 @@ mod str_replace_execution {
 mod plan_execution {
     use super::*;
 
-    /// Test writing and reading Plan
+    /// plan_write persists a slim plan; plan_read/plan_approve no longer exist.
     #[tokio::test]
     #[serial]
-    async fn test_plan_write_and_read() {
+    async fn test_plan_write_persists_slim_plan() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
         agent.init_session_id_for_test("plan-test");
-        
-        // Write Plan
+        let sid = agent.get_session_id().unwrap().to_string();
+
         let write_call = make_tool_call(
             "plan_write",
-            serde_json::json!({
-                "plan": r#"plan_id: test-plan
-revision: 1
-items:
-  - id: I1
-    description: Task 1
-    state: todo
-    touches: ["src/test.rs"]
-    checks:
-      happy:
-        desc: Works
-        target: test
-      negative:
-        - desc: Errors
-          target: test
-      boundary:
-        - desc: Edge
-          target: test"#
-            }),
+            serde_json::json!({ "plan": "plan_id: test-plan\nitems:\n  - {id: I1, description: Task 1, state: todo}" }),
         );
-        
         let write_result = agent.execute_tool(&write_call).await.unwrap();
-        assert!(write_result.contains("✅") || write_result.to_lowercase().contains("success"),
-            "Write should succeed: {}", write_result);
-        
-        // Read Plan
-        let read_call = make_tool_call("plan_read", serde_json::json!({}));
-        let read_result = agent.execute_tool(&read_call).await.unwrap();
-        
-        assert!(read_result.contains("test-plan"), "Should contain plan id: {}", read_result);
-        assert!(read_result.contains("Task 1"), "Should contain Task 1: {}", read_result);
-    }
+        assert!(write_result.starts_with("✅"), "Write should succeed: {}", write_result);
 
-    /// Test reading empty Plan
-    #[tokio::test]
-    #[serial]
-    async fn test_plan_read_empty() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut agent = create_test_agent(&temp_dir).await;
-        agent.init_session_id_for_test("plan-empty-test");
-        
-        let read_call = make_tool_call("plan_read", serde_json::json!({}));
-        let result = agent.execute_tool(&read_call).await.unwrap();
-        
-        // Empty string is returned when no plan exists (UI already shows "empty")
-        assert!(result.is_empty() || result.contains("No plan"),
-            "Should be empty or indicate no plan: {}", result);
-    }
+        let plan = g3_core::tools::plan::read_plan(&sid).unwrap().expect("persisted");
+        assert_eq!(plan.items[0].description, "Task 1");
 
-    /// Test Plan approval
-    #[tokio::test]
-    #[serial]
-    async fn test_plan_approve() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut agent = create_test_agent(&temp_dir).await;
-        agent.init_session_id_for_test("plan-approve-test");
-        
-        // First write a plan
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": r#"plan_id: approve-test
-revision: 1
-items:
-  - id: I1
-    description: Test task
-    state: todo
-    touches: ["src/test.rs"]
-    checks:
-      happy: {desc: Works, target: test}
-      negative: [{desc: Errors, target: test}]
-      boundary: [{desc: Edge, target: test}]"#
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-        
-        // Approve the plan
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        let result = agent.execute_tool(&approve_call).await.unwrap();
-        
-        assert!(result.contains("✅") && result.contains("approved"),
-            "Should approve plan: {}", result);
+        let read = agent.execute_tool(&make_tool_call("plan_read", serde_json::json!({}))).await.unwrap();
+        assert!(read.contains("Unknown tool"), "plan_read is gone: {}", read);
     }
 }
 
 
 // =============================================================================
-// Test: plan_verify with analysis/rulespec.yaml datalog integration
+// Test: write_envelope with analysis/rulespec.yaml datalog integration
+// (independent of plans since 2026-11-26)
 // =============================================================================
 
-mod plan_verify_datalog_integration {
+mod envelope_datalog_integration {
     use super::*;
-
-    /// Helper: write a complete plan, approve it, and set up envelope.
-    /// Returns the actual session ID (which has a unique suffix).
-    async fn setup_complete_plan_with_envelope(
-        agent: &mut Agent<NullUiWriter>,
-        temp_dir: &TempDir,
-        description: &str,
-    ) -> String {
-        agent.init_session_id_for_test(description);
-        let actual_session_id = agent.get_session_id().unwrap().to_string();
-
-        // Write a plan
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": r#"plan_id: datalog-test
-revision: 1
-items:
-  - id: I1
-    description: Implement feature
-    state: todo
-    touches: ["src/lib.rs"]
-    checks:
-      happy: {desc: Works, target: lib}
-      negative: [{desc: Errors, target: lib}]
-      boundary: [{desc: Edge, target: lib}]"#
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-
-        // Approve
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        agent.execute_tool(&approve_call).await.unwrap();
-
-        // Write envelope.yaml to session dir (using actual session ID)
-        let session_dir = temp_dir
-            .path()
-            .join(".g3")
-            .join("sessions")
-            .join(&actual_session_id);
-        fs::create_dir_all(&session_dir).unwrap();
-        fs::write(
-            session_dir.join("envelope.yaml"),
-            "facts:
-  feature:
-    done: true
-    capabilities: [handle_csv, handle_tsv]
-    file: src/lib.rs
-",
-        )
-        .unwrap();
-
-        // Create a dummy evidence file
-        let src_dir = temp_dir.path().join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
-
-        actual_session_id
-    }
 
     /// Test: write_envelope compiles datalog rules on-the-fly from analysis/rulespec.yaml
     /// and writes .dl + evaluation files to session dir via verify_envelope
     #[tokio::test]
     #[serial]
-    async fn test_plan_verify_with_analysis_rulespec() {
+    async fn test_envelope_with_analysis_rulespec() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
         agent.init_session_id_for_test("datalog-rulespec-test");
         let session_id = agent.get_session_id().unwrap().to_string();
 
-        // Write a plan and approve it
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        agent.execute_tool(&approve_call).await.unwrap();
-
-        // Create a dummy evidence file
+        // A file the facts point at
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
@@ -636,35 +495,25 @@ predicates:
             "Should have extracted facts: {}", eval_content);
     }
 
-    /// Test: plan_verify works gracefully when analysis/rulespec.yaml is absent
+    /// Test: write_envelope works gracefully when analysis/rulespec.yaml is absent
     #[tokio::test]
     #[serial]
-    async fn test_plan_verify_without_rulespec() {
+    async fn test_envelope_without_rulespec() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
-
-        let session_id = setup_complete_plan_with_envelope(
-            &mut agent, &temp_dir, "datalog-no-rulespec-test"
-        ).await;
+        agent.init_session_id_for_test("datalog-no-rulespec-test");
+        let session_id = agent.get_session_id().unwrap().to_string();
 
         // Do NOT create analysis/rulespec.yaml
-
-        // Mark item done
-        let done_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 2\nitems:\n  - id: I1\n    description: Implement feature\n    state: done\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]\n    evidence: [src/lib.rs:1]\n    notes: Implemented the feature"
-            }),
+        let envelope_call = make_tool_call(
+            "write_envelope",
+            serde_json::json!({ "facts": "facts:\n  feature:\n    done: true" }),
         );
-        let result = agent.execute_tool(&done_call).await.unwrap();
-        assert!(result.contains("VERIFICATION"), "Should still verify: {}", result);
+        let result = agent.execute_tool(&envelope_call).await.unwrap();
+        assert!(result.contains("Envelope written"), "Should confirm envelope written: {}", result);
 
-        // No .dl or evaluation files should exist
-        let session_dir = temp_dir
-            .path()
-            .join(".g3")
-            .join("sessions")
-            .join(&session_id);
+        let session_dir = temp_dir.path().join(".g3").join("sessions").join(&session_id);
+        assert!(session_dir.join("envelope.yaml").exists(), "envelope written");
         assert!(!session_dir.join("rulespec.compiled.dl").exists(),
             "No .dl file should exist without rulespec");
         assert!(!session_dir.join("datalog_evaluation.txt").exists(),
@@ -674,25 +523,14 @@ predicates:
     /// Test: write_envelope with rulespec predicate that fails shows failure
     #[tokio::test]
     #[serial]
-    async fn test_plan_verify_rulespec_failure() {
+    async fn test_envelope_rulespec_failure() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
         agent.init_session_id_for_test("datalog-fail-test");
         let session_id = agent.get_session_id().unwrap().to_string();
 
-        // Write a plan and approve it
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        agent.execute_tool(&approve_call).await.unwrap();
-
-        // Create a dummy evidence file
+        // A file the facts point at
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
@@ -740,25 +578,14 @@ predicates:
     /// Test: write_envelope with facts. prefix selectors in rulespec still extracts facts
     #[tokio::test]
     #[serial]
-    async fn test_plan_verify_rulespec_with_facts_prefix_selectors() {
+    async fn test_envelope_rulespec_with_facts_prefix_selectors() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
         agent.init_session_id_for_test("datalog-facts-prefix-test");
         let session_id = agent.get_session_id().unwrap().to_string();
 
-        // Write a plan and approve it
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        agent.execute_tool(&approve_call).await.unwrap();
-
-        // Create a dummy evidence file
+        // A file the facts point at
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
@@ -802,25 +629,14 @@ predicates:
     /// Test: write_envelope with multiple claims and mixed pass/fail results
     #[tokio::test]
     #[serial]
-    async fn test_plan_verify_mixed_pass_fail() {
+    async fn test_envelope_mixed_pass_fail() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
         agent.init_session_id_for_test("datalog-mixed-test");
         let session_id = agent.get_session_id().unwrap().to_string();
 
-        // Write a plan and approve it
-        let write_call = make_tool_call(
-            "plan_write",
-            serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
-            }),
-        );
-        agent.execute_tool(&write_call).await.unwrap();
-        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
-        agent.execute_tool(&approve_call).await.unwrap();
-
-        // Create a dummy evidence file
+        // A file the facts point at
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(src_dir.join("lib.rs"), "// test file").unwrap();

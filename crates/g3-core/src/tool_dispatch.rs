@@ -32,10 +32,8 @@ pub async fn dispatch_tool<W: UiWriter>(
         "write_file" => file_ops::execute_write_file(tool_call, ctx).await,
         "str_replace" => file_ops::execute_str_replace(tool_call, ctx).await,
 
-        // Plan Mode
-        "plan_read" => plan::execute_plan_read(tool_call, ctx).await,
+        // Plan (a persisted checklist; plan_read/plan_approve removed 2026-11-26)
         "plan_write" => plan::execute_plan_write(tool_call, ctx).await,
-        "plan_approve" => plan::execute_plan_approve(tool_call, ctx).await,
 
         // Action Envelope
         "write_envelope" => envelope::execute_write_envelope(tool_call, ctx).await,

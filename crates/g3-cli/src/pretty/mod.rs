@@ -306,7 +306,7 @@ pub fn footer_line(elapsed: Duration, tools: usize, used: u32, total: u32, pct: 
 
 const COMPACT_TOOLS: &[&str] = &[
     "read_file", "write_file", "str_replace", "remember", "screenshot", "coverage", "code_search",
-    "plan_approve", "load_toolset",
+    "load_toolset",
 ];
 
 impl UiWriter for PrettyUiWriter {
@@ -580,7 +580,7 @@ impl UiWriter for PrettyUiWriter {
         // STDERR while running (envelope verification). A spinner drawn under
         // that would be left in scrollback with the stderr text glued on, so
         // for them: no status line at all.
-        if matches!(tool_name, "todo_read" | "todo_write" | "plan_read" | "plan_write" | "write_envelope") {
+        if matches!(tool_name, "todo_read" | "todo_write" | "plan_write" | "write_envelope") {
             self.scr(|s| s.suspend());
             return;
         }

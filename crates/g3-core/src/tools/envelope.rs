@@ -1,7 +1,7 @@
 //! Action Envelope tool - writes and verifies the action envelope.
 //!
-//! The `write_envelope` tool is the agent's explicit final step before
-//! completing a plan. It:
+//! The `write_envelope` tool is the deterministic gate for OUTBOUND actions
+//! (butler's email sender refuses mail without a valid `g3v1:` token). It:
 //! 1. Parses the provided YAML facts into an ActionEnvelope
 //! 2. Writes it to the session's `envelope.yaml`
 //! 3. Runs `verify_envelope()` which compiles the rulespec and executes
@@ -10,9 +10,9 @@
 //! 4. If all predicates pass, stamps the envelope with a verification token
 //!    (`verified: "g3v1:<base64>"`) that proves deterministic checks passed.
 //!
-//! This creates a clear happens-before edge: envelope creation + verification
-//! must complete before `plan_verify()` (triggered on plan completion) checks
-//! that the envelope exists.
+//! Independent of plans since 2026-11-26: code-change envelopes written at
+//! plan completion were checked against rulespecs with no code predicates,
+//! so they verified nothing.
 
 use anyhow::{anyhow, Result};
 use base64::Engine;

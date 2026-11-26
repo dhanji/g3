@@ -325,7 +325,7 @@ pub async fn handle_command<W: UiWriter>(
             if parts.len() < 2 || parts[1].trim().is_empty() {
                 output.print("Usage: /plan <description>");
                 output.print("Starts Plan Mode for a new feature. The agent will:");
-                output.print("  1. Research and draft a Plan with checks (happy/negative/boundary)");
+                output.print("  1. Research and propose a short numbered plan");
                 output.print("  2. Ask clarifying questions if needed");
                 output.print("  3. Request approval before coding");
                 output.print("");
@@ -337,11 +337,10 @@ pub async fn handle_command<W: UiWriter>(
                 // Construct the feature prompt that instructs the agent to use Plan Mode
                 let prompt = format!(
                     "I want to implement a new feature: {}\n\n\
-                    Please use Plan Mode to help me implement this:\n\
                     1. First, research the codebase to understand where this feature should live\n\
-                    2. Draft a Plan using `plan_write` with items that have all three checks (happy, negative, boundary)\n\
+                    2. Propose a short numbered plan in chat, naming the failure and edge cases you'll test\n\
                     3. Ask me any clarifying questions if needed\n\
-                    4. Then ask me to approve the plan before you start coding\n\n\
+                    4. Once I approve, record it with `plan_write` and keep item states current\n\n\
                     Do NOT start coding until I approve the plan.",
                     feature_description
                 );

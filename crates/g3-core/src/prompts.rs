@@ -53,18 +53,9 @@ Short description for providers without native calling specs:
   - Format: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"path/to/file\", \"diff\": \"--- old\\n-old text\\n+++ new\\n+new text\"}}
   - Example: {\"tool\": \"str_replace\", \"args\": {\"file_path\": \"src/main.rs\", \"diff\": \"--- old\\n-old_code();\\n+++ new\\n+new_code();\"}}
 
-- **plan_read**: Read the current Plan for this session
-  - Format: {\"tool\": \"plan_read\", \"args\": {}}
-  - Example: {\"tool\": \"plan_read\", \"args\": {}}
-
-- **plan_write**: Create or update the Plan with YAML content
+- **plan_write**: Record or update the checklist for multi-step work (after the user approves it)
   - Format: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: my-plan\\nitems: [...]\"}}
-  - Example (new plan): {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    description: Add feature\\n    state: todo\\n    touches: [src/lib.rs]\\n    checks:\\n      happy: {desc: Works, target: lib}\\n      negative:\\n        - {desc: Errors, target: lib}\\n      boundary:\\n        - {desc: Edge, target: lib}\"}}
-  - Example (update): {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    state: done\\n    evidence: [src/lib.rs:42]\\n    notes: Implemented\"}}
-
-- **plan_approve**: Approve the current plan revision (called by user)
-  - Format: {\"tool\": \"plan_approve\", \"args\": {}}
-  - Example: {\"tool\": \"plan_approve\", \"args\": {}}
+  - Example: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - {id: I1, description: Add feature, state: doing}\\n  - {id: I2, description: Handle bad input, state: todo}\"}}
 
 - **code_search**: Syntax-aware code search using tree-sitter. Supports Rust, Python, JavaScript, TypeScript.
   - Format: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"label\", \"query\": \"tree-sitter query\", \"language\": \"rust|python|javascript|typescript\", \"paths\": [\"src/\"], \"context_lines\": 0}]}}
@@ -326,6 +317,27 @@ mod tests {
         
         assert!(native.contains("# Task Management with Plan Mode"));
         assert!(non_native.contains("# Task Management with Plan Mode"));
+    }
+
+    /// The plan section was ~3.7k chars of ceremony (three-checks schema,
+    /// evidence rules, code_change envelopes) sent on every turn; slimmed
+    /// 2026-11-26. It must stay short, and must not resurrect removed tools.
+    #[test]
+    fn test_plan_section_is_slim_and_names_no_removed_tools() {
+        let native = EMBEDDED_NATIVE_PROMPT;
+        let start = native.find("# Task Management with Plan Mode").unwrap();
+        let end = native[start..].find("<!-- BEGIN AUTO-MEMORY").map_or(native.len(), |e| start + e);
+        let section = &native[start..end];
+        assert!(section.len() < 900, "plan section is {} chars:\n{}", section.len(), section);
+        for gone in ["plan_read", "plan_approve", "code_change", "happy", "evidence", "write_envelope"] {
+            assert!(!section.contains(gone), "plan section still mentions {gone}");
+        }
+        assert!(section.contains("plan_write"));
+
+        // Non-native splice still lands the tool format BEFORE the plan section.
+        let nn = get_system_prompt_for_non_native();
+        assert!(nn.find("# Tool Call Format").unwrap() < nn.find("# Task Management with Plan Mode").unwrap());
+        assert!(!nn.contains("plan_approve") && !nn.contains("plan_read"), "non-native tool list");
     }
 
     #[test]

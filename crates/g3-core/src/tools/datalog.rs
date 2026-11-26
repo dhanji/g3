@@ -6,12 +6,12 @@
 //!
 //! ## Architecture
 //!
-//! 1. **Compilation Phase** (on-the-fly at plan_verify):
+//! 1. **Compilation Phase** (on-the-fly at write_envelope):
 //!    - Parse rulespec claims and predicates
 //!    - Generate datafrog relations and rules
 //!    - Rulespec is read from `analysis/rulespec.yaml`
 //!
-//! 2. **Execution Phase** (on plan_verify):
+//! 2. **Execution Phase** (on write_envelope):
 //!    - Extract facts from action envelope using selectors
 //!    - Inject facts into datafrog relations
 //!    - Run datalog to fixed point

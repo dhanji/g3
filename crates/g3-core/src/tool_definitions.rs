@@ -176,27 +176,18 @@ fn create_core_tools() -> Vec<Tool> {
         },
     ];
 
-    // Plan Mode tools
-    tools.push(Tool {
-        name: "plan_read".to_string(),
-        description: "Read the current Plan for this session. Shows the plan structure with items, their states, checks (happy/negative/boundary), evidence, and notes. Use this to review the plan before making updates.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {},
-            "required": []
-        }),
-    });
-
-    // Action Envelope tool
+    // Action Envelope tool — the deterministic gate for OUTBOUND actions
+    // (e.g. butler's email sender verifies its `g3v1:` token). Not part of
+    // planning: code-change envelopes verified nothing (2026-11-26).
     tools.push(Tool {
         name: "write_envelope".to_string(),
-        description: "Write the action envelope for the current plan. Call this as your final step before marking the last plan item done. The envelope captures facts about completed work and is verified against analysis/rulespec.yaml if present.".to_string(),
+        description: "Write an action envelope for an outbound action (e.g. sending an email) and verify it against analysis/rulespec.yaml. Only call this when a workflow requires an envelope; on success it is stamped with a verification token the downstream sender checks.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "facts": {
                     "type": "string",
-                    "description": "The envelope facts as YAML. MUST have a top-level `facts:` key containing all fact groups. No other top-level keys are allowed except envelope metadata (e.g. `type:`). Each fact group is a named map under `facts:`. Use file paths for evidence so the validator can verify them (e.g. `src/foo.rs`, `src/foo.rs:42`, `tests/bar.rs::test_name`). Free-form notes can go alongside paths.\n\nExample:\n\nfacts:\n  csv_importer:\n    capabilities: [handle_headers, handle_tsv]\n    file: \"src/import/csv.rs\"\n    tests: [\"test_valid_csv\", \"test_missing_column\"]\n  api_changes:\n    breaking: false\n  breaking_changes: null"
+                    "description": "The envelope facts as YAML. MUST have a top-level `facts:` key containing all fact groups. No other top-level keys are allowed except envelope metadata (e.g. `type:`). Each fact group is a named map under `facts:`; the workflow that asks for the envelope defines its fields.\n\nExample:\n\nfacts:\n  email:\n    to: [\"a@example.com\"]\n    subject: \"Hello\"\n    reviewed: true"
                 }
             },
             "required": ["facts"]
@@ -205,26 +196,16 @@ fn create_core_tools() -> Vec<Tool> {
 
     tools.push(Tool {
         name: "plan_write".to_string(),
-        description: "Create or update the Plan for this session. Provide the plan as YAML with plan_id, revision, and items array.".to_string(),
+        description: "Record or update the checklist for multi-step work, AFTER the user has approved it. Send the whole plan each time; g3 keeps count. An unfinished plan cannot drop items — mark them blocked instead.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "plan": {
                     "type": "string",
-                    "description": "The plan as YAML. Must include plan_id and items array.\n\nWhen marking items done, `evidence` must be a list of verifiable file references — NOT free-form descriptions. Each entry is verified against the filesystem.\n\nAccepted evidence formats:\n- `src/foo.rs` — file path (checked: file exists)\n- `src/foo.rs:42` or `src/foo.rs:42-118` — file + line range (checked: file exists, lines in range)\n- `tests/foo.rs::test_bar` — test reference (checked: file exists, function found)\n\n❌ Do NOT put descriptions, summaries, or prose in evidence. Use `notes` for explanations."
+                    "description": "YAML: `plan_id` and `items`, each item `{id, description, state}` with state todo|doing|done|blocked and an optional one-line `notes`.\n\nExample:\n\nplan_id: csv-import\nitems:\n  - {id: I1, description: Parse CSV with headers, state: done}\n  - {id: I2, description: Reject rows with missing columns, state: doing}\n  - {id: I3, description: Wire into the importer UI, state: blocked, notes: waiting on design}"
                 }
             },
             "required": ["plan"]
-        }),
-    });
-
-    tools.push(Tool {
-        name: "plan_approve".to_string(),
-        description: "Mark the current plan revision as approved. This is called by the user (not the agent) to approve a drafted plan before implementation begins. Once approved, plan items cannot be removed (only marked as blocked). The agent should ask for approval after drafting a plan.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {},
-            "required": []
         }),
     });
 
@@ -271,18 +252,18 @@ mod tests {
     fn test_core_tools_count() {
         let tools = create_core_tools();
         // Core tools: shell, background_process, read_file, read_image,
-        // write_file, str_replace, code_search, plan_read, plan_write, plan_approve,
+        // write_file, str_replace, code_search, plan_write,
         // remember, load_toolset, write_envelope
-        // (13 total — rehydrate removed with ACD 2026-11 - research tools are now in a loadable toolset)
-        assert_eq!(tools.len(), 13);
+        // (11 total — plan_read/plan_approve removed 2026-11-26; research tools are in a loadable toolset)
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        // 13 core tools (webdriver and research are now JIT-loaded)
-        assert_eq!(tools.len(), 13);
+        // 11 core tools (webdriver and research are now JIT-loaded)
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
@@ -290,13 +271,13 @@ mod tests {
         let config = ToolConfig::new();
         let tools = create_tool_definitions(config);
         // Webdriver and research tools are now JIT-loaded, so only core tools are included
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
     fn test_removed_tools_stay_removed() {
         let names: Vec<String> = create_core_tools().into_iter().map(|t| t.name).collect();
-        for gone in ["rehydrate", "take_screenshot", "code_coverage"] {
+        for gone in ["rehydrate", "take_screenshot", "code_coverage", "plan_read", "plan_approve"] {
             assert!(!names.iter().any(|n| n == gone), "{gone} is back in the tool list");
         }
     }

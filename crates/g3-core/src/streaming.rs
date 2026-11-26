@@ -156,7 +156,6 @@ pub fn format_tool_result_summary(
             | "screenshot"
             | "coverage"
             | "code_search"
-            | "plan_approve"
             | "load_toolset"
     );
 
@@ -184,7 +183,6 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
             | "screenshot"
             | "coverage"
             | "code_search"
-            | "plan_approve"
             | "load_toolset"
     )
 }
@@ -207,7 +205,7 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
 pub fn is_concurrency_safe_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "shell" | "read_file" | "read_image" | "code_search" | "plan_read" | "research_status"
+        "shell" | "read_file" | "read_image" | "code_search" | "research_status"
             // Web research only reads the web; several questions in one
             // batch run in parallel (the browser path just registers a job).
             | "research"
@@ -217,7 +215,7 @@ pub fn is_concurrency_safe_tool(tool_name: &str) -> bool {
 pub fn is_self_handled_tool(tool_name: &str) -> bool {
     matches!(tool_name, 
         "todo_read" | "todo_write" | 
-        "plan_read" | "plan_write" |
+        "plan_write" |
         "write_envelope"
     )
 }
@@ -238,7 +236,6 @@ fn format_compact_tool_summary(tool_name: &str, tool_result: &str) -> String {
         "screenshot" => format_screenshot_summary(tool_result),
         "coverage" => format_coverage_summary(tool_result),
         "code_search" => format_code_search_summary(tool_result),
-        "plan_approve" => format_plan_approve_summary(tool_result),
         "load_toolset" => format_load_toolset_summary(tool_result),
         _ => "✅ completed".to_string(),
     }
@@ -617,25 +614,6 @@ pub fn format_code_search_summary(result: &str) -> String {
         "🔍 search complete".to_string()
     } else {
         "🔍 search complete".to_string()
-    }
-}
-
-/// Format a plan_approve result summary.
-pub fn format_plan_approve_summary(result: &str) -> String {
-    // Result formats:
-    // "✅ Plan approved at revision N. You may now begin implementation."
-    // "ℹ️ Plan already approved at revision N. Current revision: M"
-    // "❌ No plan exists to approve..."
-    if result.contains("❌") {
-        "❌ failed".to_string()
-    } else if result.contains("already approved") {
-        "ℹ️ already approved".to_string()
-    } else if let Some(pos) = result.find("revision ") {
-        let after = &result[pos + 9..];
-        let rev: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        format!("✅ approved rev {}", rev)
-    } else {
-        "✅ approved".to_string()
     }
 }
 

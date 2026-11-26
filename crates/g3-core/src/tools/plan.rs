@@ -1,19 +1,27 @@
-//! Plan Mode - Structured task planning with cognitive forcing.
+//! Plan — a short, persisted checklist for multi-step work.
 //!
-//! This module implements Plan Mode, which replaces the TODO system with a
-//! checklist-style plan that forces reasoning about:
-//! - Happy path
-//! - Negative case  
-//! - Boundary condition
+//! Slimmed 2026-11-26. This used to be "Plan Mode": a three-checks schema
+//! (happy/negative/boundary), `touches`, filesystem-verified `evidence`, a
+//! `plan_read`/`plan_approve` pair and a git-status approval gate. Measured
+//! on 2,783 butler sessions, that cost ~6 extra round trips and ~4k output
+//! tokens per planned session; the gate fired twice ever, and the evidence
+//! verifier's errors were false positives (unexpanded `~`, the wrong cwd).
 //!
-//! A task is done ONLY when all plan items are satisfied with evidence.
+//! What survives is what has a consumer:
+//! - `plan.g3.md` on disk, rendered by butler.app's plan strip and the CLI,
+//!   and readable after a context compaction;
+//! - an unfinished plan cannot silently lose an item (mark it `blocked`).
+//!
+//! Approval is a conversation (a confirm card), not a tool: the model writes
+//! the plan once the user has said yes, so every written plan is stamped
+//! approved. Old plan files with `touches`/`checks`/`evidence` still load —
+//! serde ignores the extra fields, and the next write drops them.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
-use std::path::Path;
 use tracing::debug;
 
 use crate::paths::{ensure_session_dir, get_session_logs_dir};
@@ -21,8 +29,6 @@ use crate::ui_writer::UiWriter;
 use crate::ToolCall;
 
 use super::executor::ToolContext;
-
-use super::invariants::{format_envelope_markdown, get_envelope_path, read_envelope};
 
 // ============================================================================
 // Plan Schema
@@ -64,68 +70,6 @@ impl std::str::FromStr for PlanState {
     }
 }
 
-/// A check with description and target.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Check {
-    /// Description of what this check verifies
-    pub desc: String,
-    /// Target module/function/file this check applies to
-    pub target: String,
-}
-
-impl Check {
-    pub fn new(desc: impl Into<String>, target: impl Into<String>) -> Self {
-        Self {
-            desc: desc.into(),
-            target: target.into(),
-        }
-    }
-
-    /// Validate that the check has required fields.
-    pub fn validate(&self) -> Result<()> {
-        if self.desc.trim().is_empty() {
-            return Err(anyhow!("Check description cannot be empty"));
-        }
-        if self.target.trim().is_empty() {
-            return Err(anyhow!("Check target cannot be empty"));
-        }
-        Ok(())
-    }
-}
-
-/// The three required checks for each plan item.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Checks {
-    /// Happy path check - normal successful operation
-    pub happy: Check,
-    /// Negative case checks - error handling, invalid input (at least 1 required)
-    pub negative: Vec<Check>,
-    /// Boundary condition checks - edge cases, limits (at least 1 required)
-    pub boundary: Vec<Check>,
-}
-
-impl Checks {
-    /// Validate all checks (1 happy, 1+ negative, 1+ boundary).
-    pub fn validate(&self) -> Result<()> {
-        self.happy.validate().map_err(|e| anyhow!("happy check: {}", e))?;
-        
-        if self.negative.is_empty() {
-            return Err(anyhow!("at least one negative check is required"));
-        }
-        for (i, check) in self.negative.iter().enumerate() {
-            check.validate().map_err(|e| anyhow!("negative check [{}]: {}", i, e))?;
-        }
-        
-        if self.boundary.is_empty() {
-            return Err(anyhow!("at least one boundary check is required"));
-        }
-        for (i, check) in self.boundary.iter().enumerate() {
-            check.validate().map_err(|e| anyhow!("boundary check [{}]: {}", i, e))?;
-        }
-        Ok(())
-    }
-}
-
 /// A single item in the plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanItem {
@@ -134,92 +78,60 @@ pub struct PlanItem {
     /// What will be done
     pub description: String,
     /// Current state
+    #[serde(default)]
     pub state: PlanState,
-    /// Paths/modules this affects
-    pub touches: Vec<String>,
-    /// The three required checks
-    pub checks: Checks,
-    /// Evidence when done (file:line, test names, snippets)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub evidence: Vec<String>,
-    /// Short explanation including implementation nuances
+    /// Optional one-liner: why it's blocked, what it turned out to need
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
 
 impl PlanItem {
-    /// Create a new plan item with required fields.
-    pub fn new(
-        id: impl Into<String>,
-        description: impl Into<String>,
-        touches: Vec<String>,
-        checks: Checks,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             description: description.into(),
             state: PlanState::Todo,
-            touches,
-            checks,
-            evidence: Vec::new(),
             notes: None,
         }
     }
 
-    /// Validate the plan item structure.
     pub fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(anyhow!("Item id cannot be empty"));
         }
         if self.description.trim().is_empty() {
-            return Err(anyhow!("Item description cannot be empty"));
+            return Err(anyhow!("Item '{}' has an empty description", self.id));
         }
-        if self.touches.is_empty() {
-            return Err(anyhow!("Item must specify at least one path/module in 'touches'"));
-        }
-        self.checks.validate().map_err(|e| anyhow!("Item '{}': {}", self.id, e))?;
-
-        // If done, must have evidence and notes
-        if self.state == PlanState::Done {
-            if self.evidence.is_empty() {
-                return Err(anyhow!(
-                    "Item '{}' is marked done but has no evidence",
-                    self.id
-                ));
-            }
-            if self.notes.as_ref().map(|n| n.trim().is_empty()).unwrap_or(true) {
-                return Err(anyhow!(
-                    "Item '{}' is marked done but has no notes",
-                    self.id
-                ));
-            }
-        }
-
         Ok(())
     }
 
-    /// Check if this item is terminal (done or blocked).
+    /// Done or blocked.
     pub fn is_terminal(&self) -> bool {
         matches!(self.state, PlanState::Done | PlanState::Blocked)
     }
 }
 
+fn first_revision() -> u32 {
+    1
+}
+
 /// A complete plan with metadata and items.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
-    /// Unique identifier for this plan
     pub plan_id: String,
-    /// Current revision number (increments on each write)
+    /// Owned by g3: 1 for a fresh plan, +1 per update. Whatever the model
+    /// sends is ignored (it used to be required, and omitting it — as the
+    /// prompt's own example did — was a rejected write).
+    #[serde(default = "first_revision")]
     pub revision: u32,
-    /// The revision that was approved (None if not yet approved)
+    /// Kept for butler.app's plan strip, which shows approved plans only.
+    /// Every write stamps it (see module docs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_revision: Option<u32>,
-    /// The plan items
     pub items: Vec<PlanItem>,
 }
 
 impl Plan {
-    /// Create a new plan with the given ID.
     pub fn new(plan_id: impl Into<String>) -> Self {
         Self {
             plan_id: plan_id.into(),
@@ -229,374 +141,49 @@ impl Plan {
         }
     }
 
-    /// Check if the plan has been approved.
     pub fn is_approved(&self) -> bool {
         self.approved_revision.is_some()
     }
 
-    /// Approve the current revision.
     pub fn approve(&mut self) {
         self.approved_revision = Some(self.revision);
     }
 
-    /// Check if all items are terminal (done or blocked).
+    /// All items done or blocked (and there is at least one).
     pub fn is_complete(&self) -> bool {
         !self.items.is_empty() && self.items.iter().all(|item| item.is_terminal())
     }
 
-    /// Validate the entire plan structure.
     pub fn validate(&self) -> Result<()> {
         if self.plan_id.trim().is_empty() {
             return Err(anyhow!("Plan ID cannot be empty"));
         }
-
         if self.items.is_empty() {
             return Err(anyhow!("Plan must have at least one item"));
         }
-
-        if self.items.len() > 7 {
-            // Warn but don't fail - this is a guideline
-            debug!("Plan has {} items (recommended max is 7)", self.items.len());
-        }
-
-        // Check for duplicate IDs
-        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for item in &self.items {
-            if !seen_ids.insert(&item.id) {
+            if !seen.insert(&item.id) {
                 return Err(anyhow!("Duplicate item ID: {}", item.id));
             }
             item.validate()?;
         }
-
         Ok(())
     }
 
-    /// Get a summary of the plan status.
     pub fn status_summary(&self) -> String {
-        let total = self.items.len();
-        let done = self.items.iter().filter(|i| i.state == PlanState::Done).count();
-        let doing = self.items.iter().filter(|i| i.state == PlanState::Doing).count();
-        let blocked = self.items.iter().filter(|i| i.state == PlanState::Blocked).count();
-        let todo = self.items.iter().filter(|i| i.state == PlanState::Todo).count();
-
-        let approved_str = if let Some(rev) = self.approved_revision {
-            format!(" (approved at rev {})", rev)
-        } else {
-            " (NOT APPROVED)".to_string()
-        };
-
+        let count = |s: PlanState| self.items.iter().filter(|i| i.state == s).count();
         format!(
-            "Plan '{}' rev {}{}: {}/{} done, {} doing, {} blocked, {} todo",
-            self.plan_id, self.revision, approved_str, done, total, doing, blocked, todo
+            "Plan '{}' rev {}: {}/{} done, {} doing, {} blocked, {} todo",
+            self.plan_id,
+            self.revision,
+            count(PlanState::Done),
+            self.items.len(),
+            count(PlanState::Doing),
+            count(PlanState::Blocked),
+            count(PlanState::Todo),
         )
     }
-}
-
-// ============================================================================
-// Evidence Verification Types
-// ============================================================================
-
-/// Type of evidence that can be verified.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvidenceType {
-    /// Code location: file path with optional line range (e.g., "src/foo.rs:42-118")
-    CodeLocation {
-        file_path: String,
-        start_line: Option<u32>,
-        end_line: Option<u32>,
-    },
-    /// Test reference: file path with test function name (e.g., "tests/foo.rs::test_bar")
-    TestReference {
-        file_path: String,
-        test_name: String,
-    },
-    /// Unknown format - will be skipped with a warning
-    Unknown(String),
-}
-
-/// Result of verifying a single piece of evidence.
-#[derive(Debug, Clone)]
-pub enum VerificationStatus {
-    /// Evidence verified successfully
-    Verified,
-    /// Warning - evidence may be invalid but not blocking
-    Warning(String),
-    /// Error - evidence is definitely invalid
-    Error(String),
-    /// Skipped - couldn't verify (e.g., unknown format)
-    Skipped(String),
-}
-
-impl VerificationStatus {
-    pub fn is_ok(&self) -> bool {
-        matches!(self, VerificationStatus::Verified | VerificationStatus::Skipped(_))
-    }
-
-    pub fn is_warning_or_error(&self) -> bool {
-        matches!(self, VerificationStatus::Warning(_) | VerificationStatus::Error(_))
-    }
-}
-
-/// Result of verifying a single evidence string.
-#[derive(Debug, Clone)]
-pub struct EvidenceVerification {
-    /// The original evidence string
-    pub evidence: String,
-    /// Parsed evidence type
-    pub evidence_type: EvidenceType,
-    /// Verification result
-    pub status: VerificationStatus,
-}
-
-/// Result of verifying all evidence for a plan item.
-#[derive(Debug, Clone)]
-pub struct ItemVerification {
-    /// Item ID
-    pub item_id: String,
-    /// Item description (for display)
-    pub description: String,
-    /// Results for each piece of evidence
-    pub evidence_results: Vec<EvidenceVerification>,
-    /// Whether the item had no evidence (warning condition)
-    pub missing_evidence: bool,
-}
-
-/// Result of verifying an entire plan.
-#[derive(Debug, Clone)]
-pub struct PlanVerification {
-    /// Plan ID
-    pub plan_id: String,
-    /// Results for each verified item
-    pub item_results: Vec<ItemVerification>,
-    /// Count of items that were skipped (blocked state)
-    pub skipped_count: usize,
-}
-
-impl PlanVerification {
-    /// Check if all verifications passed (no errors or warnings).
-    pub fn all_passed(&self) -> bool {
-        self.item_results.iter().all(|item| {
-            !item.missing_evidence
-                && item.evidence_results.iter().all(|e| e.status.is_ok())
-        })
-    }
-
-    /// Count total warnings and errors.
-    pub fn count_issues(&self) -> (usize, usize) {
-        let mut warnings = 0;
-        let mut errors = 0;
-        for item in &self.item_results {
-            if item.missing_evidence {
-                warnings += 1;
-            }
-            for ev in &item.evidence_results {
-                match &ev.status {
-                    VerificationStatus::Warning(_) => warnings += 1,
-                    VerificationStatus::Error(_) => errors += 1,
-                    _ => {}
-                }
-            }
-        }
-        (warnings, errors)
-    }
-}
-
-/// Parse an evidence string into an EvidenceType.
-pub fn parse_evidence(evidence: &str) -> EvidenceType {
-    let evidence = evidence.trim();
-    
-    // Check for test reference format: "path/to/file.rs::test_name"
-    if let Some(idx) = evidence.find("::") {
-        let file_path = evidence[..idx].to_string();
-        let test_name = evidence[idx + 2..].to_string();
-        return EvidenceType::TestReference { file_path, test_name };
-    }
-    
-    // Check for code location format: "path/to/file.rs:42" or "path/to/file.rs:42-118"
-    if let Some(idx) = evidence.rfind(':') {
-        let file_path = evidence[..idx].to_string();
-        let line_part = &evidence[idx + 1..];
-        
-        // Try to parse line range (e.g., "42-118" or just "42")
-        if let Some((start, end)) = parse_line_range(line_part) {
-            return EvidenceType::CodeLocation {
-                file_path,
-                start_line: Some(start),
-                end_line: end,
-            };
-        }
-    }
-    
-    // Check if it looks like a file path (contains . or /)
-    if evidence.contains('.') || evidence.contains('/') {
-        return EvidenceType::CodeLocation {
-            file_path: evidence.to_string(),
-            start_line: None,
-            end_line: None,
-        };
-    }
-    
-    // Unknown format
-    EvidenceType::Unknown(evidence.to_string())
-}
-
-/// Parse a line range string like "42" or "42-118".
-/// Returns (start_line, optional_end_line).
-fn parse_line_range(s: &str) -> Option<(u32, Option<u32>)> {
-    if let Some(dash_idx) = s.find('-') {
-        let start_str = &s[..dash_idx];
-        let end_str = &s[dash_idx + 1..];
-        let start = start_str.parse::<u32>().ok()?;
-        let end = end_str.parse::<u32>().ok()?;
-        Some((start, Some(end)))
-    } else {
-        let line = s.parse::<u32>().ok()?;
-        Some((line, None))
-    }
-}
-
-/// Verify a code location evidence (file exists, line numbers valid).
-/// 
-/// # Arguments
-/// * `file_path` - Path to the file (relative to working_dir or absolute)
-/// * `start_line` - Optional start line number (1-indexed)
-/// * `end_line` - Optional end line number (1-indexed)
-/// * `working_dir` - Working directory for resolving relative paths
-pub fn verify_code_location(
-    file_path: &str,
-    start_line: Option<u32>,
-    end_line: Option<u32>,
-    working_dir: Option<&str>,
-) -> VerificationStatus {
-    use std::path::Path;
-    
-    // Resolve the file path
-    let resolved_path = if Path::new(file_path).is_absolute() {
-        PathBuf::from(file_path)
-    } else {
-        match working_dir {
-            Some(dir) => PathBuf::from(dir).join(file_path),
-            None => PathBuf::from(file_path),
-        }
-    };
-    
-    // Check if file exists
-    if !resolved_path.exists() {
-        return VerificationStatus::Error(format!("File not found: {}", file_path));
-    }
-    
-    // If no line numbers specified, file existence is enough
-    if start_line.is_none() {
-        return VerificationStatus::Verified;
-    }
-    
-    // Read file and count lines
-    let content = match std::fs::read_to_string(&resolved_path) {
-        Ok(c) => c,
-        Err(e) => return VerificationStatus::Error(format!("Cannot read file {}: {}", file_path, e)),
-    };
-    
-    let line_count = content.lines().count() as u32;
-    let check_line = end_line.unwrap_or_else(|| start_line.unwrap());
-    
-    if check_line > line_count {
-        return VerificationStatus::Warning(format!(
-            "Line {} exceeds file length ({} lines) in {}",
-            check_line, line_count, file_path
-        ));
-    }
-    
-    VerificationStatus::Verified
-}
-
-/// Verify a test reference evidence (test function exists in file).
-/// 
-/// This checks that the test file exists and contains a function with the given name.
-/// It does NOT run the test - just verifies it exists.
-/// 
-/// # Arguments
-/// * `file_path` - Path to the test file (relative to working_dir or absolute)
-/// * `test_name` - Name of the test function to find
-/// * `working_dir` - Working directory for resolving relative paths
-pub fn verify_test_reference(
-    file_path: &str,
-    test_name: &str,
-    working_dir: Option<&str>,
-) -> VerificationStatus {
-    use std::path::Path;
-    
-    // Resolve the file path
-    let resolved_path = if Path::new(file_path).is_absolute() {
-        PathBuf::from(file_path)
-    } else {
-        match working_dir {
-            Some(dir) => PathBuf::from(dir).join(file_path),
-            None => PathBuf::from(file_path),
-        }
-    };
-    
-    // Check if file exists
-    if !resolved_path.exists() {
-        return VerificationStatus::Error(format!("Test file not found: {}", file_path));
-    }
-    
-    // Read file content
-    let content = match std::fs::read_to_string(&resolved_path) {
-        Ok(c) => c,
-        Err(e) => return VerificationStatus::Error(format!("Cannot read test file {}: {}", file_path, e)),
-    };
-    
-    // Look for the test function
-    //
-    // Rust was the only language handled here, which meant every Python and
-    // JS test reference in a plan raised a "not found" warning for a test that
-    // was sitting right there in the file. A checker that cries wolf on
-    // correct evidence trains the reader to ignore it, which is strictly worse
-    // than not checking at all -- so each supported language gets its own
-    // definition form.
-    //
-    // Matching is deliberately narrow: a DEFINITION, not a mention. Requiring
-    // the open paren is what stops `def test_foo_bar` from verifying a claim
-    // about `test_foo`, and stops a call site or a docstring from passing as a
-    // definition.
-    let definition_patterns = [
-        format!("fn {}(", test_name),        // Rust
-        format!("def {}(", test_name),       // Python
-        format!("function {}(", test_name),  // JS/TS function declaration
-        format!("{} = function", test_name), // JS function expression
-        format!("{} = (", test_name),        // JS arrow function
-        format!("{}: (", test_name),         // TS method signature / object member
-        format!("func {}(", test_name),      // Go
-        format!("void {}(", test_name),      // Java/C/C++
-    ];
-
-    if definition_patterns.iter().any(|p| content.contains(p.as_str())) {
-        return VerificationStatus::Verified;
-    }
-
-    // Test frameworks that name a case with a STRING rather than an
-    // identifier: `test('does the thing', ...)`, `it("...")`, `describe(...)`.
-    // Here the name is data, so the quotes are what make it a declaration and
-    // not a passing reference.
-    for keyword in ["test", "it", "describe", "bench"] {
-        for quote in ['\'', '"', '`'] {
-            let pattern = format!("{}({}{}{}", keyword, quote, test_name, quote);
-            if content.contains(&pattern) {
-                return VerificationStatus::Verified;
-            }
-        }
-    }
-    
-    // Check for #[test] attribute near the function name as a fallback
-    // This handles cases where the function might be named differently
-    if content.contains(test_name) && content.contains("#[test]") {
-        return VerificationStatus::Verified;
-    }
-    
-    VerificationStatus::Warning(format!(
-        "Test function '{}' not found in {}",
-        test_name, file_path
-    ))
 }
 
 // ============================================================================
@@ -614,28 +201,17 @@ pub fn read_plan(session_id: &str) -> Result<Option<Plan>> {
     if !path.exists() {
         return Ok(None);
     }
-
     let content = std::fs::read_to_string(&path)?;
-    
-    // Extract YAML from markdown code block
     let yaml_content = extract_yaml_from_markdown(&content)?;
-    
     let plan: Plan = serde_yaml::from_str(&yaml_content)?;
     Ok(Some(plan))
 }
 
 /// Write a plan to the session's plan.g3.md file.
 pub fn write_plan(session_id: &str, plan: &Plan) -> Result<()> {
-    // Validate before writing
     plan.validate()?;
-
     let _ = ensure_session_dir(session_id)?;
-    let path = get_plan_path(session_id);
-
-    // Format as markdown with YAML code block
-    let content = format_plan_as_markdown(plan);
-    
-    std::fs::write(&path, content)?;
+    std::fs::write(get_plan_path(session_id), format_plan_as_markdown(plan))?;
     Ok(())
 }
 
@@ -645,16 +221,13 @@ fn extract_yaml_from_markdown(content: &str) -> Result<String> {
 
     if let Some(start_idx) = content.find(start_marker) {
         let yaml_start = start_idx + start_marker.len();
-        // Find closing ``` that appears at the start of a line.
-        // A simple .find("```") would match backticks embedded inside YAML
-        // string values (e.g., descriptions containing code fences), truncating
-        // the YAML and causing parse errors.
+        // Find the closing ``` at the START of a line. A plain .find("```")
+        // matched backticks inside YAML string values and truncated the plan.
         let remainder = &content[yaml_start..];
         for (i, line) in remainder.split('\n').enumerate() {
             if i > 0 && line.starts_with("```") {
                 let offset: usize = remainder.split('\n').take(i).map(|l| l.len() + 1).sum();
-                let yaml = remainder[..offset].trim();
-                return Ok(yaml.to_string());
+                return Ok(remainder[..offset].trim().to_string());
             }
         }
     }
@@ -666,198 +239,19 @@ fn extract_yaml_from_markdown(content: &str) -> Result<String> {
 /// Format a plan as markdown with embedded YAML.
 fn format_plan_as_markdown(plan: &Plan) -> String {
     let yaml = serde_yaml::to_string(plan).unwrap_or_else(|_| "# Error serializing plan".to_string());
-    
-    let mut md = String::new();
-    md.push_str(&format!("# Plan: {}\n\n", plan.plan_id));
-    md.push_str(&format!("**Status**: {}\n\n", plan.status_summary()));
-    md.push_str("## Plan Data\n\n");
-    md.push_str("```yaml\n");
-    md.push_str(&yaml);
-    md.push_str("```\n");
-    
-    md
+    format!(
+        "# Plan: {}\n\n**Status**: {}\n\n## Plan Data\n\n```yaml\n{}```\n",
+        plan.plan_id,
+        plan.status_summary(),
+        yaml
+    )
 }
 
 // ============================================================================
-// Plan Verification
+// Tool Implementation
 // ============================================================================
 
-/// Verify a single piece of evidence.
-fn verify_single_evidence(evidence: &str, working_dir: Option<&str>) -> EvidenceVerification {
-    let evidence_type = parse_evidence(evidence);
-    
-    let status = match &evidence_type {
-        EvidenceType::CodeLocation { file_path, start_line, end_line } => {
-            verify_code_location(file_path, *start_line, *end_line, working_dir)
-        }
-        EvidenceType::TestReference { file_path, test_name } => {
-            verify_test_reference(file_path, test_name, working_dir)
-        }
-        EvidenceType::Unknown(s) => {
-            VerificationStatus::Skipped(format!("Unknown evidence format: {}", s))
-        }
-    };
-    
-    EvidenceVerification {
-        evidence: evidence.to_string(),
-        evidence_type,
-        status,
-    }
-}
-
-/// Verify a completed plan. Called when all items are done/blocked.
-/// 
-/// Returns a PlanVerification with results for each done item's evidence.
-/// Blocked items are skipped (counted but not verified).
-pub fn plan_verify(plan: &Plan, working_dir: Option<&str>) -> PlanVerification {
-    let mut item_results = Vec::new();
-    let mut skipped_count = 0;
-    
-    for item in &plan.items {
-        match item.state {
-            PlanState::Blocked => {
-                skipped_count += 1;
-                continue;
-            }
-            PlanState::Done => {
-                // Verify this item's evidence
-                let missing_evidence = item.evidence.is_empty();
-                let evidence_results: Vec<EvidenceVerification> = item
-                    .evidence
-                    .iter()
-                    .map(|e| verify_single_evidence(e, working_dir))
-                    .collect();
-                
-                item_results.push(ItemVerification {
-                    item_id: item.id.clone(),
-                    description: item.description.clone(),
-                    evidence_results,
-                    missing_evidence,
-                });
-            }
-            // Skip todo/doing items - they shouldn't be in a complete plan
-            _ => {}
-        }
-    }
-    
-    PlanVerification {
-        plan_id: plan.plan_id.clone(),
-        item_results,
-        skipped_count,
-    }
-}
-
-
-/// Format verification results as a string for display.
-/// Uses loud formatting for warnings and errors.
-/// If session_id is provided, also checks that envelope.yaml exists at the expected path.
-pub fn format_verification_results(verification: &PlanVerification, session_id: Option<&str>, _working_dir: Option<&Path>) -> String {
-    let mut output = String::new();
-    let (warnings, errors) = verification.count_issues();
-    
-    output.push_str("\n");
-    output.push_str(&"═".repeat(60));
-    output.push_str("\n");
-    output.push_str("📋 PLAN VERIFICATION RESULTS\n");
-    output.push_str(&"═".repeat(60));
-    output.push_str("\n\n");
-    
-    for item in &verification.item_results {
-        output.push_str(&format!("[{}] {}\n", item.item_id, item.description));
-        
-        if item.missing_evidence {
-            output.push_str("  ⚠️  WARNING: No evidence provided for done item!\n");
-        }
-        
-        for ev in &item.evidence_results {
-            let status_str = match &ev.status {
-                VerificationStatus::Verified => "✅".to_string(),
-                VerificationStatus::Warning(msg) => format!("⚠️  WARNING: {}", msg),
-                VerificationStatus::Error(msg) => format!("❌ ERROR: {}", msg),
-                VerificationStatus::Skipped(msg) => format!("⏭️  SKIPPED: {}", msg),
-            };
-            output.push_str(&format!("  {} {}\n", status_str, ev.evidence));
-        }
-        output.push_str("\n");
-    }
-    
-    if verification.skipped_count > 0 {
-        output.push_str(&format!("ℹ️  {} blocked item(s) skipped\n\n", verification.skipped_count));
-    }
-    
-    // Summary line
-    if errors > 0 || warnings > 0 {
-        output.push_str(&format!("⚠️  VERIFICATION COMPLETE: {} error(s), {} warning(s)\n", errors, warnings));
-    } else {
-        output.push_str("✅ VERIFICATION COMPLETE: All evidence validated\n");
-    }
-    
-    // Print envelope location and run datalog verification if session_id provided
-    if let Some(sid) = session_id {
-        output.push_str("\n");
-        output.push_str("📜 ARTIFACTS\n");
-
-        let envelope_path = get_envelope_path(sid);
-        let envelope_status = if envelope_path.exists() { "✅" } else { "⚠️  (not found)" };
-        output.push_str(&format!("  {} Envelope: {}\n", envelope_status, envelope_path.display()));
-
-        output.push_str("\n");
-
-    }
-    
-    output.push_str(&"═".repeat(60));
-    output.push_str("\n");
-    
-    output
-}
-
-// ============================================================================
-// Tool Implementations
-// ============================================================================
-
-/// Execute the `plan_read` tool.
-pub async fn execute_plan_read<W: UiWriter>(
-    _tool_call: &ToolCall,
-    ctx: &mut ToolContext<'_, W>,
-) -> Result<String> {
-    debug!("Processing plan_read tool call");
-
-    let session_id = match ctx.session_id {
-        Some(id) => id,
-        None => return Ok("❌ No active session - plans are session-scoped.".to_string()),
-    };
-
-    let plan_path = get_plan_path(session_id);
-    let plan_path_str = plan_path.to_string_lossy().to_string();
-
-    match read_plan(session_id)? {
-        Some(plan) => {
-            let yaml = serde_yaml::to_string(&plan)?;
-            ctx.ui_writer.print_plan_compact(Some(&yaml), Some(&plan_path_str), false);
-            
-            // Build output with plan
-            let mut output = format!(
-                "📋 {}\n\n```yaml\n{}```",
-                plan.status_summary(),
-                yaml
-            );
-            
-            // Append envelope if present
-            match read_envelope(session_id) {
-                Ok(Some(envelope)) => output.push_str(&format_envelope_markdown(&envelope)),
-                _ => output.push_str("\n_No envelope generated._\n"),
-            }
-            
-            Ok(output)
-        }
-        None => {
-            ctx.ui_writer.print_plan_compact(None, None, false);
-            Ok("No plan exists yet. Use plan_write to create one.".to_string())
-        }
-    }
-}
-
-/// Execute the `plan_write` tool.
+/// Execute the `plan_write` tool: create, update or replace the plan.
 pub async fn execute_plan_write<W: UiWriter>(
     tool_call: &ToolCall,
     ctx: &mut ToolContext<'_, W>,
@@ -869,1008 +263,154 @@ pub async fn execute_plan_write<W: UiWriter>(
         None => return Ok("❌ No active session - plans are session-scoped.".to_string()),
     };
 
-    // Get the plan content from args
     let plan_yaml = match tool_call.args.get("plan").and_then(|v| v.as_str()) {
         Some(p) => p,
         None => return Ok("❌ Missing 'plan' argument. Provide the plan as YAML.".to_string()),
     };
 
-    // Parse the YAML
     let mut plan: Plan = match serde_yaml::from_str(plan_yaml) {
         Ok(p) => p,
         Err(e) => return Ok(format!("❌ Invalid plan YAML: {}", e)),
     };
 
-    // Load existing plan to check if this is a new plan or an update
-    let existing_plan = read_plan(session_id)?;
-
-    if let Some(existing) = existing_plan {
-        if existing.is_complete() {
-            // Existing plan is fully complete (all items done/blocked).
-            // Treat the incoming plan as a fresh plan — don't carry over
-            // approved_revision or enforce item preservation.
-            debug!(
-                "Existing plan '{}' is complete — allowing fresh plan '{}'",
-                existing.plan_id, plan.plan_id
-            );
-        } else {
-            // Preserve approved_revision from existing plan
-            plan.approved_revision = existing.approved_revision;
-            // Increment revision
-            plan.revision = existing.revision + 1;
-
-            // If plan was approved, ensure checks are not removed
-            if existing.is_approved() {
-                // Verify all existing item IDs still exist
-                for existing_item in &existing.items {
-                    if !plan.items.iter().any(|i| i.id == existing_item.id) {
-                        return Ok(format!(
-                            "❌ Cannot remove item '{}' from approved plan. Items can only be marked blocked, not removed.",
-                            existing_item.id
-                        ));
-                    }
-                }
+    plan.revision = 1;
+    if let Some(existing) = read_plan(session_id)? {
+        // A finished plan makes way for a fresh one; an unfinished one is
+        // being updated, and may not silently lose scope.
+        if !existing.is_complete() {
+            let dropped: Vec<&str> = existing
+                .items
+                .iter()
+                .filter(|old| !plan.items.iter().any(|i| i.id == old.id))
+                .map(|old| old.id.as_str())
+                .collect();
+            if !dropped.is_empty() {
+                return Ok(format!(
+                    "❌ Cannot drop item(s) {} from an unfinished plan. Mark them `blocked` (with a note saying why) instead.",
+                    dropped.join(", ")
+                ));
             }
+            plan.revision = existing.revision + 1;
         }
     }
 
-    // Validate the plan
     if let Err(e) = plan.validate() {
         return Ok(format!("❌ Plan validation failed: {}", e));
     }
 
-    // Auto-approve in non-interactive (autonomous) mode
-    if ctx.is_autonomous && !plan.is_approved() {
-        plan.approve();
-        debug!("Auto-approved plan in autonomous mode at revision {}", plan.revision);
-    }
-
-    // Write the plan
+    plan.approve();
     if let Err(e) = write_plan(session_id, &plan) {
         return Ok(format!("❌ Failed to write plan: {}", e));
     }
 
-    // Display the plan in compact format
     let plan_path = get_plan_path(session_id);
-    let plan_path_str = plan_path.to_string_lossy().to_string();
     let yaml = serde_yaml::to_string(&plan)?;
-    ctx.ui_writer.print_plan_compact(Some(&yaml), Some(&plan_path_str), true);
+    ctx.ui_writer
+        .print_plan_compact(Some(&yaml), Some(&plan_path.to_string_lossy()), true);
 
-    // Read and format envelope if it exists
-    let envelope_section = match read_envelope(session_id) {
-        Ok(Some(envelope)) => format_envelope_markdown(&envelope),
-        Ok(None) => "\n_No envelope generated._\n".to_string(),
-        Err(_) => "\n_No envelope generated._\n".to_string(),
-    };
-
-    // Check if plan is now complete and trigger verification
-    if plan.is_complete() && plan.is_approved() {
-        let verification = plan_verify(&plan, ctx.working_dir);
-        let verification_output = format_verification_results(&verification, ctx.session_id, ctx.working_dir.map(std::path::Path::new));
-        return Ok(format!(
-            "✅ Plan updated: {}\n{}\n{}",
-            plan.status_summary(),
-            verification_output,
-            envelope_section
-        ));
-    }
-
-    Ok(format!(
-        "✅ Plan updated: {}\n{}",
-        plan.status_summary(),
-        envelope_section
-    ))
-}
-
-/// Execute the `plan_approve` tool.
-pub async fn execute_plan_approve<W: UiWriter>(
-    _tool_call: &ToolCall,
-    ctx: &mut ToolContext<'_, W>,
-) -> Result<String> {
-    debug!("Processing plan_approve tool call");
-
-    let session_id = match ctx.session_id {
-        Some(id) => id,
-        None => return Ok("❌ No active session - plans are session-scoped.".to_string()),
-    };
-
-    // Load existing plan
-    let mut plan = match read_plan(session_id)? {
-        Some(p) => p,
-        None => return Ok("❌ No plan exists to approve. Use plan_write first.".to_string()),
-    };
-
-    if plan.is_approved() {
-        return Ok(format!(
-            "ℹ️ Plan already approved at revision {}. Current revision: {}",
-            plan.approved_revision.unwrap(),
-            plan.revision
-        ));
-    }
-
-    // Approve the plan
-    plan.approve();
-
-    // Write back
-    if let Err(e) = write_plan(session_id, &plan) {
-        return Ok(format!("❌ Failed to save approved plan: {}", e));
-    }
-
-    Ok(format!(
-        "✅ Plan approved at revision {}. You may now begin implementation.",
-        plan.revision
-    ))
-}
-
-// ============================================================================
-// Plan Approval Gate
-// ============================================================================
-
-/// Result of checking the plan approval gate after a tool execution.
-#[derive(Debug)]
-pub enum ApprovalGateResult {
-    /// No plan exists, or plan is approved - allow the operation
-    Allowed,
-    /// Plan exists but not approved, and new files were changed - blocked (warn only, never revert)
-    Blocked {
-        /// Message to inject into the conversation
-        message: String,
-    },
-    /// Not a git repository - skip the check
-    NotGitRepo,
-}
-
-/// Tools the plan approval gate never inspects.
-///
-/// The gate exists to stop WORKING-TREE changes without an approved plan.
-/// The plan tools only read and write g3's own session state, so gating them
-/// is pure catch-22: a `plan_write` answered with "BLOCKED — create a plan
-/// with plan_write" hides the plan the model just wrote (PR #75).
-pub fn is_plan_gate_exempt(tool_name: &str) -> bool {
-    matches!(tool_name, "plan_read" | "plan_write" | "plan_approve")
-}
-
-/// Get the set of dirty file paths from `git status --porcelain`.
-///
-/// Returns an empty set if not a git repo or if the command fails.
-/// Each entry is the file path as reported by git (relative to repo root).
-pub fn get_dirty_files(working_dir: Option<&str>) -> HashSet<String> {
-    let dir = working_dir.unwrap_or(".");
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(dir)
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => return HashSet::new(),
-    };
-
-    output
-        .lines()
-        .filter(|line| line.len() >= 3)
-        .map(|line| line[3..].trim().to_string())
-        .filter(|path| !is_g3_artifact(path))
-        .collect()
-}
-
-/// True for paths inside g3's own state dir (`.g3/` at any depth).
-///
-/// g3 keeps sessions, plans and envelopes under `<workspace>/.g3/`. In a repo
-/// that doesn't gitignore it, `git status` reports that bookkeeping as a user
-/// change — so writing a plan made the tree "dirty" and the gate then blocked
-/// work on the plan it had just been asked for. Matches whole path COMPONENTS,
-/// so `.g3x.txt` or `notes.g3` are still real files. Handles porcelain's
-/// quoted paths and `old -> new` renames (judged by the destination).
-fn is_g3_artifact(porcelain_path: &str) -> bool {
-    let dest = porcelain_path.rsplit(" -> ").next().unwrap_or(porcelain_path);
-    dest.trim_matches('"').split('/').any(|component| component == ".g3")
-}
-
-/// Check if file changes occurred without an approved plan.
-///
-/// This function should be called after each tool execution when in plan mode.
-/// It checks `git status --porcelain` for changes (excluding any files that were
-/// already dirty at baseline), and if a plan exists but isn't approved, returns a
-/// blocking message. **Never reverts or deletes files.**
-pub fn check_plan_approval_gate(
-    session_id: &str,
-    working_dir: Option<&str>,
-    baseline_dirty: &HashSet<String>,
-) -> ApprovalGateResult {
-    let dir = working_dir.unwrap_or(".");
-
-    // Check if this is a git repository
-    let git_check = std::process::Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(dir)
-        .output();
-
-    if git_check.is_err() || !git_check.unwrap().status.success() {
-        return ApprovalGateResult::NotGitRepo;
-    }
-
-    // Get current dirty files, excluding baseline
-    let current_dirty = get_dirty_files(working_dir);
-    let new_dirty: Vec<&String> = current_dirty
-        .iter()
-        .filter(|f| !baseline_dirty.contains(*f))
-        .collect();
-
-    // Check if a plan exists and whether it's approved
-    let plan = match read_plan(session_id) {
-        Ok(Some(plan)) => plan,
-        Ok(None) => {
-            if new_dirty.is_empty() {
-                return ApprovalGateResult::Allowed;
-            }
-
-            let files_list = new_dirty
-                .iter()
-                .map(|f| format!("  - {}", f))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            return ApprovalGateResult::Blocked {
-                message: format!(
-                    "⚠️ IMPLEMENTATION BLOCKED\n\n\
-                     File changes detected without a plan:\n\
-                     {}\n\n\
-                     Before implementing, you must:\n\
-                     1. Create a plan with `plan_write`\n\
-                     2. Get the plan approved by the user\n\n\
-                     Do not attempt to implement until the plan is approved.",
-                    files_list
-                ),
-            };
-        }
-        Err(_) => return ApprovalGateResult::Allowed, // Can't read plan, allow (error case)
-    };
-
-    if plan.is_approved() {
-        return ApprovalGateResult::Allowed;
-    }
-
-    if new_dirty.is_empty() {
-        return ApprovalGateResult::Allowed;
-    }
-
-    let files_list = new_dirty
-        .iter()
-        .map(|f| format!("  - {}", f))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let message = format!(
-        "⚠️ IMPLEMENTATION BLOCKED\n\n\
-         File changes detected without an approved plan:\n\
-         {}\n\n\
-         Before implementing, you must:\n\
-         1. Create a plan with `plan_write`\n\
-         2. Request the user's explicit approval or edits to plan\n\n\
-         Do not attempt to implement until the plan is approved.",
-        files_list
-    );
-
-    ApprovalGateResult::Blocked {
-        message,
-    }
+    Ok(format!("✅ Plan updated: {}", plan.status_summary()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_test_check() -> Check {
-        Check::new("Test description", "test::target")
+    fn plan_with(states: &[PlanState]) -> Plan {
+        let mut plan = Plan::new("test");
+        for (i, s) in states.iter().enumerate() {
+            let mut item = PlanItem::new(format!("I{}", i + 1), "do a thing");
+            item.state = *s;
+            plan.items.push(item);
+        }
+        plan
     }
 
-    fn make_test_checks() -> Checks {
-        Checks {
-            happy: make_test_check(),
-            negative: vec![make_test_check()],
-            boundary: vec![make_test_check()],
+    #[test]
+    fn test_plan_state_display_and_parse() {
+        assert_eq!(PlanState::Blocked.to_string(), "blocked");
+        assert_eq!("DOING".parse::<PlanState>().unwrap(), PlanState::Doing);
+        assert!("finished".parse::<PlanState>().is_err());
+    }
+
+    #[test]
+    fn test_validation() {
+        assert!(Plan::new("empty").validate().is_err(), "no items");
+        assert!(plan_with(&[PlanState::Done]).validate().is_ok(), "done needs no evidence");
+
+        let mut dup = plan_with(&[PlanState::Todo, PlanState::Todo]);
+        dup.items[1].id = "I1".into();
+        assert!(dup.validate().is_err(), "duplicate id");
+
+        let mut blank = plan_with(&[PlanState::Todo]);
+        blank.items[0].description = "  ".into();
+        assert!(blank.validate().is_err(), "blank description");
+    }
+
+    #[test]
+    fn test_is_complete() {
+        assert!(!Plan::new("none").is_complete(), "an empty plan is not complete");
+        assert!(!plan_with(&[PlanState::Done, PlanState::Doing]).is_complete());
+        assert!(plan_with(&[PlanState::Done, PlanState::Blocked]).is_complete());
+    }
+
+    #[test]
+    fn test_minimal_yaml_defaults() {
+        let plan: Plan = serde_yaml::from_str("plan_id: p\nitems:\n  - {id: I1, description: x}\n").unwrap();
+        assert_eq!(plan.revision, 1);
+        assert_eq!(plan.items[0].state, PlanState::Todo);
+        assert!(plan.approved_revision.is_none());
+    }
+
+    #[test]
+    fn test_legacy_fields_ignored_and_dropped_on_write() {
+        let legacy = "plan_id: p\nrevision: 3\nitems:\n  - id: I1\n    description: x\n    state: done\n    touches: [a]\n    checks: {happy: {desc: w, target: t}, negative: [], boundary: []}\n    evidence: [a.rs:1]\n    notes: ok\n";
+        let plan: Plan = serde_yaml::from_str(legacy).unwrap();
+        assert_eq!(plan.items[0].notes.as_deref(), Some("ok"));
+        let out = serde_yaml::to_string(&plan).unwrap();
+        for gone in ["touches", "checks", "evidence"] {
+            assert!(!out.contains(gone), "{gone} survived a rewrite: {out}");
         }
     }
 
-    fn make_test_item(id: &str) -> PlanItem {
-        PlanItem::new(
-            id,
-            "Test item description",
-            vec!["src/test.rs".to_string()],
-            make_test_checks(),
-        )
-    }
-
     #[test]
-    fn test_plan_state_display() {
-        assert_eq!(PlanState::Todo.to_string(), "todo");
-        assert_eq!(PlanState::Doing.to_string(), "doing");
-        assert_eq!(PlanState::Done.to_string(), "done");
-        assert_eq!(PlanState::Blocked.to_string(), "blocked");
-    }
-
-    #[test]
-    fn test_plan_state_from_str() {
-        assert_eq!("todo".parse::<PlanState>().unwrap(), PlanState::Todo);
-        assert_eq!("DOING".parse::<PlanState>().unwrap(), PlanState::Doing);
-        assert_eq!("Done".parse::<PlanState>().unwrap(), PlanState::Done);
-        assert!("invalid".parse::<PlanState>().is_err());
-    }
-
-    #[test]
-    fn test_check_validation() {
-        let valid = Check::new("desc", "target");
-        assert!(valid.validate().is_ok());
-
-        let empty_desc = Check::new("", "target");
-        assert!(empty_desc.validate().is_err());
-
-        let empty_target = Check::new("desc", "");
-        assert!(empty_target.validate().is_err());
-    }
-
-    #[test]
-    fn test_checks_validation_multiple_negative_and_boundary() {
-        // Multiple negative and boundary checks should validate
-        let checks = Checks {
-            happy: make_test_check(),
-            negative: vec![
-                Check::new("Invalid input", "parse::input"),
-                Check::new("Missing file", "io::read"),
-                Check::new("Network error", "net::connect"),
-            ],
-            boundary: vec![
-                Check::new("Empty input", "parse::input"),
-                Check::new("Max size input", "parse::input"),
-            ],
-        };
-        assert!(checks.validate().is_ok());
-    }
-
-    #[test]
-    fn test_checks_validation_empty_negative_fails() {
-        let checks = Checks {
-            happy: make_test_check(),
-            negative: vec![],  // Empty - should fail
-            boundary: vec![make_test_check()],
-        };
-        let err = checks.validate().unwrap_err();
-        assert!(err.to_string().contains("at least one negative check"));
-    }
-
-    #[test]
-    fn test_checks_validation_empty_boundary_fails() {
-        let checks = Checks {
-            happy: make_test_check(),
-            negative: vec![make_test_check()],
-            boundary: vec![],  // Empty - should fail
-        };
-        let err = checks.validate().unwrap_err();
-        assert!(err.to_string().contains("at least one boundary check"));
-    }
-
-    #[test]
-    fn test_checks_validation_single_of_each_passes() {
-        // Minimum case: exactly 1 of each
-        let checks = make_test_checks();
-        assert!(checks.validate().is_ok());
-        assert_eq!(checks.negative.len(), 1);
-        assert_eq!(checks.boundary.len(), 1);
-    }
-
-    #[test]
-    fn test_plan_item_validation() {
-        let item = make_test_item("I1");
-        assert!(item.validate().is_ok());
-
-        // Done item without evidence should fail
-        let mut done_item = make_test_item("I2");
-        done_item.state = PlanState::Done;
-        assert!(done_item.validate().is_err());
-
-        // Done item with evidence but no notes should fail
-        done_item.evidence = vec!["src/test.rs:42".to_string()];
-        assert!(done_item.validate().is_err());
-
-        // Done item with evidence and notes should pass
-        done_item.notes = Some("Implementation notes".to_string());
-        assert!(done_item.validate().is_ok());
-    }
-
-    #[test]
-    fn test_plan_validation() {
-        let mut plan = Plan::new("test-plan");
-        
-        // Empty plan should fail
-        assert!(plan.validate().is_err());
-
-        // Plan with item should pass
-        plan.items.push(make_test_item("I1"));
-        assert!(plan.validate().is_ok());
-
-        // Duplicate IDs should fail
-        plan.items.push(make_test_item("I1"));
-        assert!(plan.validate().is_err());
-    }
-
-    #[test]
-    fn test_plan_is_complete() {
-        let mut plan = Plan::new("test");
-        plan.items.push(make_test_item("I1"));
-        plan.items.push(make_test_item("I2"));
-
-        assert!(!plan.is_complete());
-
-        plan.items[0].state = PlanState::Done;
-        plan.items[0].evidence = vec!["test".to_string()];
-        plan.items[0].notes = Some("notes".to_string());
-        assert!(!plan.is_complete());
-
-        plan.items[1].state = PlanState::Blocked;
-        assert!(plan.is_complete());
-    }
-
-    #[test]
-    fn test_plan_approval() {
-        let mut plan = Plan::new("test");
-        plan.items.push(make_test_item("I1"));
-
-        assert!(!plan.is_approved());
-        assert_eq!(plan.approved_revision, None);
-
-        plan.approve();
-        assert!(plan.is_approved());
-        assert_eq!(plan.approved_revision, Some(1));
+    fn test_status_summary() {
+        let s = plan_with(&[PlanState::Done, PlanState::Doing, PlanState::Blocked, PlanState::Todo]).status_summary();
+        assert_eq!(s, "Plan 'test' rev 1: 1/4 done, 1 doing, 1 blocked, 1 todo");
     }
 
     #[test]
     fn test_yaml_extraction() {
-        let md = r#"# Plan: test
-
-**Status**: ...
-
-## Plan Data
-
-```yaml
-plan_id: test
-revision: 1
-items: []
-```
-"#;
-
-        let yaml = extract_yaml_from_markdown(md).unwrap();
-        assert!(yaml.contains("plan_id: test"));
+        let md = "# Plan: test\n\n## Plan Data\n\n```yaml\nplan_id: test\nrevision: 1\nitems: []\n```\n";
+        assert!(extract_yaml_from_markdown(md).unwrap().contains("plan_id: test"));
     }
 
     #[test]
     fn test_yaml_extraction_with_backticks_in_values() {
-        // This is the exact bug: YAML values containing ``` caused
-        // extract_yaml_from_markdown to truncate at the embedded backticks
-        // instead of finding the real closing fence.
-        let md = "# Plan: test\n\n## Plan Data\n\n\
-```yaml\n\
-plan_id: test\n\
-revision: 1\n\
-items:\n\
-  - id: I1\n\
-    description: 'Fix the ```yaml parsing issue with ```'\n\
-    state: todo\n\
-    touches:\n\
-      - src/plan.rs\n\
-    checks:\n\
-      happy:\n\
-        desc: Works\n\
-        target: plan\n\
-      negative:\n\
-        - desc: Fails gracefully\n\
-          target: plan\n\
-      boundary:\n\
-        - desc: Edge case\n\
-          target: plan\n\
-```\n";
-
+        // A ``` inside a YAML value must not be taken for the closing fence.
+        let md = "## Plan Data\n\n```yaml\nplan_id: test\nitems:\n  - id: I1\n    description: 'Fix the ```yaml parsing issue with ```'\n    state: todo\n```\n";
         let yaml = extract_yaml_from_markdown(md).unwrap();
-        // Must contain the full YAML, not truncated at the embedded backticks
-        assert!(yaml.contains("plan_id: test"), "should contain plan_id");
-        assert!(yaml.contains("description:"), "should contain description field");
-        assert!(yaml.contains("state: todo"), "should contain state field");
-        assert!(yaml.contains("checks:"), "should contain checks");
+        assert!(yaml.contains("state: todo"), "truncated at embedded backticks: {yaml}");
     }
 
     #[test]
     fn test_yaml_extraction_no_code_block_fallback() {
-        let raw_yaml = "plan_id: test\nrevision: 1\nitems: []\n";
-        let yaml = extract_yaml_from_markdown(raw_yaml).unwrap();
-        assert_eq!(yaml, raw_yaml);
+        let raw = "plan_id: test\nrevision: 1\nitems: []\n";
+        assert_eq!(extract_yaml_from_markdown(raw).unwrap(), raw);
     }
 
     #[test]
     fn test_yaml_extraction_closing_fence_no_trailing_newline() {
         let md = "```yaml\nplan_id: test\nrevision: 1\nitems: []\n```";
-        let yaml = extract_yaml_from_markdown(md).unwrap();
-        assert!(yaml.contains("plan_id: test"));
+        assert!(extract_yaml_from_markdown(md).unwrap().contains("plan_id: test"));
     }
 
     #[test]
-    fn test_plan_serialization_roundtrip() {
-        let mut plan = Plan::new("test-plan");
-        plan.items.push(make_test_item("I1"));
+    fn test_markdown_roundtrip() {
+        let mut plan = plan_with(&[PlanState::Doing]);
         plan.approve();
-
-        let yaml = serde_yaml::to_string(&plan).unwrap();
-        let parsed: Plan = serde_yaml::from_str(&yaml).unwrap();
-
-        assert_eq!(parsed.plan_id, plan.plan_id);
-        assert_eq!(parsed.revision, plan.revision);
-        assert_eq!(parsed.approved_revision, plan.approved_revision);
-        assert_eq!(parsed.items.len(), plan.items.len());
-    }
-
-    // ========================================================================
-    // Evidence Parsing Tests
-    // ========================================================================
-
-    #[test]
-    fn test_parse_evidence_code_location_with_line_range() {
-        let evidence = "src/foo.rs:42-118";
-        match parse_evidence(evidence) {
-            EvidenceType::CodeLocation { file_path, start_line, end_line } => {
-                assert_eq!(file_path, "src/foo.rs");
-                assert_eq!(start_line, Some(42));
-                assert_eq!(end_line, Some(118));
-            }
-            _ => panic!("Expected CodeLocation"),
-        }
-    }
-
-    #[test]
-    fn test_parse_evidence_code_location_single_line() {
-        let evidence = "src/bar.rs:99";
-        match parse_evidence(evidence) {
-            EvidenceType::CodeLocation { file_path, start_line, end_line } => {
-                assert_eq!(file_path, "src/bar.rs");
-                assert_eq!(start_line, Some(99));
-                assert_eq!(end_line, None);
-            }
-            _ => panic!("Expected CodeLocation"),
-        }
-    }
-
-    #[test]
-    fn test_parse_evidence_code_location_file_only() {
-        let evidence = "src/lib.rs";
-        match parse_evidence(evidence) {
-            EvidenceType::CodeLocation { file_path, start_line, end_line } => {
-                assert_eq!(file_path, "src/lib.rs");
-                assert_eq!(start_line, None);
-                assert_eq!(end_line, None);
-            }
-            _ => panic!("Expected CodeLocation"),
-        }
-    }
-
-    #[test]
-    fn test_parse_evidence_test_reference() {
-        let evidence = "tests/integration.rs::test_happy_path";
-        match parse_evidence(evidence) {
-            EvidenceType::TestReference { file_path, test_name } => {
-                assert_eq!(file_path, "tests/integration.rs");
-                assert_eq!(test_name, "test_happy_path");
-            }
-            _ => panic!("Expected TestReference"),
-        }
-    }
-
-    #[test]
-    fn test_parse_evidence_unknown_format() {
-        let evidence = "some random text";
-        match parse_evidence(evidence) {
-            EvidenceType::Unknown(s) => {
-                assert_eq!(s, "some random text");
-            }
-            _ => panic!("Expected Unknown"),
-        }
-    }
-
-    #[test]
-    fn test_parse_evidence_whitespace_trimmed() {
-        let evidence = "  src/foo.rs:42  ";
-        match parse_evidence(evidence) {
-            EvidenceType::CodeLocation { file_path, start_line, .. } => {
-                assert_eq!(file_path, "src/foo.rs");
-                assert_eq!(start_line, Some(42));
-            }
-            _ => panic!("Expected CodeLocation"),
-        }
-    }
-
-    // ========================================================================
-    // Verification Tests
-    // ========================================================================
-
-    #[test]
-    fn test_verify_code_location_file_exists() {
-        // Use Cargo.toml which should always exist in the workspace
-        let status = verify_code_location("Cargo.toml", None, None, None);
-        assert!(matches!(status, VerificationStatus::Verified));
-    }
-
-    #[test]
-    fn test_verify_code_location_file_not_found() {
-        let status = verify_code_location("nonexistent_file_xyz.rs", None, None, None);
-        match status {
-            VerificationStatus::Error(msg) => {
-                assert!(msg.contains("not found"));
-            }
-            _ => panic!("Expected Error"),
-        }
-    }
-
-    #[test]
-    fn test_verify_code_location_line_out_of_range() {
-        // Cargo.toml exists but probably doesn't have 999999 lines
-        let status = verify_code_location("Cargo.toml", Some(1), Some(999999), None);
-        match status {
-            VerificationStatus::Warning(msg) => {
-                assert!(msg.contains("exceeds file length"));
-            }
-            _ => panic!("Expected Warning, got {:?}", status),
-        }
-    }
-
-    #[test]
-    fn test_verify_test_reference_file_not_found() {
-        let status = verify_test_reference("nonexistent_test.rs", "test_foo", None);
-        match status {
-            VerificationStatus::Error(msg) => {
-                assert!(msg.contains("not found"));
-            }
-            _ => panic!("Expected Error"),
-        }
-    }
-
-    #[test]
-    fn test_verification_status_helpers() {
-        assert!(VerificationStatus::Verified.is_ok());
-        assert!(VerificationStatus::Skipped("reason".to_string()).is_ok());
-        assert!(!VerificationStatus::Warning("warn".to_string()).is_ok());
-        assert!(!VerificationStatus::Error("err".to_string()).is_ok());
-
-        assert!(!VerificationStatus::Verified.is_warning_or_error());
-        assert!(VerificationStatus::Warning("warn".to_string()).is_warning_or_error());
-        assert!(VerificationStatus::Error("err".to_string()).is_warning_or_error());
-    }
-
-    #[test]
-    fn test_approval_gate_no_plan_no_changes() {
-        // With a non-existent session and no uncommitted changes, it should allow.
-        // We use a temp dir that's a fresh git repo with no changes.
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()), &HashSet::new());
-        assert!(matches!(result, ApprovalGateResult::Allowed));
-    }
-
-    #[test]
-    fn test_approval_gate_no_plan_with_changes() {
-        // With a non-existent session but uncommitted changes, it should block.
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        // Create an untracked file to simulate changes
-        std::fs::write(temp_dir.path().join("new_file.txt"), "test content").unwrap();
-        
-        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()), &HashSet::new());
-        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
-        
-        // Verify the blocking message mentions creating a plan
-        if let ApprovalGateResult::Blocked { message } = result {
-            assert!(message.contains("plan_write"));
-        }
-    }
-
-    /// A fresh repo with one committed file in `sub/`, so an untracked
-    /// `sub/.g3/` is reported as itself rather than collapsed into `sub/`.
-    fn repo_with_tracked_subdir() -> tempfile::TempDir {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let p = temp_dir.path();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").args(args).current_dir(p).output().unwrap();
-        };
-        git(&["init"]);
-        git(&["config", "user.email", "t@t"]);
-        git(&["config", "user.name", "t"]);
-        std::fs::create_dir_all(p.join("sub")).unwrap();
-        std::fs::write(p.join("sub/README"), "x").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "init"]);
-        temp_dir
-    }
-
-    #[test]
-    fn test_dirty_files_ignore_g3_artifacts() {
-        // g3 writes its own session state (plan.g3.md, session.json) under
-        // `.g3/` in the WORKSPACE. In a repo that doesn't gitignore it,
-        // plan_write itself used to make the tree "dirty" and the gate then
-        // blocked the very plan it was asking for (PR #75's catch-22).
-        let repo = repo_with_tracked_subdir();
-        let p = repo.path();
-        std::fs::create_dir_all(p.join(".g3/sessions/s1")).unwrap();
-        std::fs::write(p.join(".g3/sessions/s1/plan.g3.md"), "plan").unwrap();
-        std::fs::create_dir_all(p.join("sub/.g3")).unwrap();
-        std::fs::write(p.join("sub/.g3/x"), "x").unwrap();
-        // Boundary: names that merely LOOK like .g3 are real user files.
-        std::fs::write(p.join(".g3x.txt"), "x").unwrap();
-        std::fs::write(p.join("sub/my.g3"), "x").unwrap();
-
-        let dirty = get_dirty_files(Some(p.to_str().unwrap()));
-        let mut got: Vec<_> = dirty.into_iter().collect();
-        got.sort();
-        assert_eq!(got, vec![".g3x.txt".to_string(), "sub/my.g3".to_string()]);
-    }
-
-    #[test]
-    fn test_g3_artifact_porcelain_shapes() {
-        // Renames are judged by DESTINATION: moving a file OUT of .g3/ into
-        // the tree is a real change; moving one in is g3 bookkeeping.
-        assert!(is_g3_artifact("notes.txt -> .g3/sessions/s/x"));
-        assert!(!is_g3_artifact(".g3/sessions/s/x -> notes.txt"));
-        // git quotes paths with spaces/unicode.
-        assert!(is_g3_artifact("\".g3/sessions/with space.md\""));
-        assert!(!is_g3_artifact("\"docs/with space.g3\""));
-    }
-
-    #[test]
-    fn test_approval_gate_g3_artifacts_alone_do_not_block() {
-        let repo = repo_with_tracked_subdir();
-        let p = repo.path();
-        std::fs::create_dir_all(p.join(".g3/sessions/s1")).unwrap();
-        std::fs::write(p.join(".g3/sessions/s1/plan.g3.md"), "plan").unwrap();
-        let dir = Some(p.to_str().unwrap());
-
-        let result = check_plan_approval_gate("nonexistent-session-g3-only", dir, &HashSet::new());
-        assert!(matches!(result, ApprovalGateResult::Allowed), "g3's own .g3/ dir blocked the gate");
-
-        // Negative: a real change beside it still blocks, and the message
-        // names the real file, not g3's bookkeeping.
-        std::fs::write(p.join("real.txt"), "x").unwrap();
-        match check_plan_approval_gate("nonexistent-session-g3-only", dir, &HashSet::new()) {
-            ApprovalGateResult::Blocked { message } => {
-                assert!(message.contains("real.txt"), "{message}");
-                assert!(!message.contains(".g3/"), "{message}");
-            }
-            other => panic!("a real change must still block, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_only_plan_tools_are_gate_exempt() {
-        for t in ["plan_read", "plan_write", "plan_approve"] {
-            assert!(is_plan_gate_exempt(t), "{t} should be exempt");
-        }
-        for t in ["shell", "write_file", "str_replace", "read_file", "plan", "plan_writer", ""] {
-            assert!(!is_plan_gate_exempt(t), "{t} must stay gated");
-        }
-    }
-
-    #[test]
-    fn test_approval_gate_not_git_repo() {
-        // /tmp is typically not a git repo
-        let result = check_plan_approval_gate("any-session", Some("/tmp"), &HashSet::new());
-        assert!(matches!(result, ApprovalGateResult::NotGitRepo));
-    }
-
-    #[test]
-    fn test_approval_gate_warns_without_reverting() {
-        // Dirty files should appear in the warning message but NOT be deleted/reverted.
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        // Create an untracked file
-        let file_path = temp_dir.path().join("should_survive.txt");
-        std::fs::write(&file_path, "precious content").unwrap();
-
-        let result = check_plan_approval_gate(
-            "nonexistent-session-xyz",
-            Some(temp_dir.path().to_str().unwrap()),
-            &HashSet::new(),
-        );
-        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
-
-        // The file must still exist on disk — gate must NOT delete it
-        assert!(file_path.exists(), "Gate must not delete untracked files");
-        assert_eq!(
-            std::fs::read_to_string(&file_path).unwrap(),
-            "precious content"
-        );
-    }
-
-    #[test]
-    fn test_approval_gate_excludes_baseline() {
-        // Files in the baseline set should be excluded from the gate check.
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        // Create a file that will be in the baseline
-        std::fs::write(temp_dir.path().join("pre_existing.txt"), "old content").unwrap();
-
-        // Baseline includes this file
-        let baseline: HashSet<String> = ["pre_existing.txt".to_string()].into_iter().collect();
-
-        let result = check_plan_approval_gate(
-            "nonexistent-session-xyz",
-            Some(temp_dir.path().to_str().unwrap()),
-            &baseline,
-        );
-        // Only baseline files are dirty → should be Allowed
-        assert!(matches!(result, ApprovalGateResult::Allowed));
-    }
-
-    #[test]
-    fn test_approval_gate_blocks_new_files_with_baseline() {
-        // Baseline files are excluded, but new files should still trigger blocking.
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        // Pre-existing file (in baseline)
-        std::fs::write(temp_dir.path().join("pre_existing.txt"), "old").unwrap();
-        // New file (not in baseline)
-        std::fs::write(temp_dir.path().join("new_file.txt"), "new").unwrap();
-
-        let baseline: HashSet<String> = ["pre_existing.txt".to_string()].into_iter().collect();
-
-        let result = check_plan_approval_gate(
-            "nonexistent-session-xyz",
-            Some(temp_dir.path().to_str().unwrap()),
-            &baseline,
-        );
-        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
-
-        if let ApprovalGateResult::Blocked { message } = result {
-            // Should mention the new file but NOT the baseline file
-            assert!(message.contains("new_file.txt"), "Should mention new file");
-            assert!(!message.contains("pre_existing.txt"), "Should NOT mention baseline file");
-        }
-
-        // Both files must still exist
-        assert!(temp_dir.path().join("pre_existing.txt").exists());
-        assert!(temp_dir.path().join("new_file.txt").exists());
-    }
-
-    #[test]
-    fn test_get_dirty_files_returns_file_paths() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .unwrap();
-        std::fs::write(temp_dir.path().join("a.txt"), "a").unwrap();
-        std::fs::write(temp_dir.path().join("b.txt"), "b").unwrap();
-
-        let dirty = get_dirty_files(Some(temp_dir.path().to_str().unwrap()));
-        assert!(dirty.contains("a.txt"));
-        assert!(dirty.contains("b.txt"));
-        assert!(!dirty.contains("c.txt"));
-    }
-
-    #[test]
-    fn test_get_dirty_files_non_git_repo() {
-        // Non-git directory should return empty set without error
-        let temp_dir = tempfile::tempdir().unwrap();
-        let dirty = get_dirty_files(Some(temp_dir.path().to_str().unwrap()));
-        assert!(dirty.is_empty());
-    }
-
-    // ---------------------------------------------------------------------
-    // verify_test_reference: a plan's test evidence, across languages.
-    //
-    // This only ever understood Rust's `fn name`, so every Python test named
-    // as evidence in a plan produced a "not found" warning for a function
-    // sitting plainly in the file. A checker that cries wolf on CORRECT
-    // evidence is worse than no checker: the reader learns to skip its output,
-    // and a real rotted reference then hides among the noise.
-    // ---------------------------------------------------------------------
-
-    fn write_and_verify(name: &str, filename: &str, body: &str) -> VerificationStatus {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(filename);
-        std::fs::write(&path, body).unwrap();
-        verify_test_reference(path.to_str().unwrap(), name, None)
-    }
-
-    fn is_verified(status: &VerificationStatus) -> bool {
-        matches!(status, VerificationStatus::Verified)
-    }
-
-    #[test]
-    fn test_verify_test_reference_finds_a_python_def() {
-        let src = "import unittest\n\n\
-                   class T(unittest.TestCase):\n\
-                   \x20   def test_the_thing(self):\n\
-                   \x20       self.assertTrue(True)\n";
-        assert!(is_verified(&write_and_verify("test_the_thing", "t.py", src)));
-    }
-
-    #[test]
-    fn test_verify_test_reference_finds_definitions_in_every_supported_language() {
-        let cases = [
-            ("t.rs", "fn test_a() { assert!(true); }", "test_a"),
-            ("t.py", "def test_a():\n    pass\n", "test_a"),
-            ("t.js", "function test_a() { return 1; }", "test_a"),
-            ("t.js", "const test_a = function () { return 1; };", "test_a"),
-            ("t.js", "const test_a = (x) => x;", "test_a"),
-            ("t.go", "func test_a(t *testing.T) {}", "test_a"),
-            ("T.java", "public void test_a() {}", "test_a"),
-            // String-named cases: the name is data, so the quotes are what
-            // distinguish a declaration from a passing mention.
-            ("t.js", "test('test_a', () => { expect(1).toBe(1); });", "test_a"),
-            ("t.js", "it(\"test_a\", async () => {});", "test_a"),
-            ("t.ts", "describe(`test_a`, () => {});", "test_a"),
-        ];
-        for (filename, body, name) in cases {
-            let status = write_and_verify(name, filename, body);
-            assert!(is_verified(&status), "{}: {:?} -> {:?}", filename, body, status);
-        }
-    }
-
-    #[test]
-    fn test_verify_test_reference_warns_when_the_test_is_absent() {
-        // The discriminating half. Without this, "everything verifies" would
-        // pass every case above -- which is exactly the failure mode of a
-        // checker loosened until it stops complaining.
-        let src = "def test_something_else():\n    pass\n";
-        let status = write_and_verify("test_the_thing", "t.py", src);
-        assert!(matches!(status, VerificationStatus::Warning(_)),
-                "an absent test verified anyway: {:?}", status);
-    }
-
-    #[test]
-    fn test_verify_test_reference_does_not_accept_a_mere_mention() {
-        // A call site, a comment or a string is not a definition. Accepting
-        // one would let a DELETED test keep verifying from the docstring that
-        // still names it.
-        let src = "# see test_the_thing for the real check\n\
-                   def other():\n    test_the_thing()\n";
-        let status = write_and_verify("test_the_thing", "t.py", src);
-        assert!(matches!(status, VerificationStatus::Warning(_)),
-                "a bare mention passed as a definition: {:?}", status);
-    }
-
-    #[test]
-    fn test_verify_test_reference_does_not_match_a_longer_name() {
-        // `def test_foo_bar(` must NOT verify a claim about `test_foo`: the
-        // open paren is what makes the match a whole name. This is the boundary
-        // that a naive `contains(name)` gets wrong, silently, forever.
-        let src = "def test_foo_bar():\n    pass\n";
-        let status = write_and_verify("test_foo", "t.py", src);
-        assert!(matches!(status, VerificationStatus::Warning(_)),
-                "test_foo_bar verified a claim about test_foo: {:?}", status);
-    }
-
-    #[test]
-    fn test_verify_test_reference_errors_on_a_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nope.py");
-        let status = verify_test_reference(path.to_str().unwrap(), "test_a", None);
-        assert!(matches!(status, VerificationStatus::Error(_)),
-                "a missing file was not an error: {:?}", status);
+        let md = format_plan_as_markdown(&plan);
+        let parsed: Plan = serde_yaml::from_str(&extract_yaml_from_markdown(&md).unwrap()).unwrap();
+        assert_eq!(parsed.approved_revision, Some(1));
+        assert_eq!(parsed.items[0].state, PlanState::Doing);
     }
 }

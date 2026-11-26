@@ -607,7 +607,7 @@ mod tool_execution_integration {
         );
     }
 
-    /// CHARACTERIZATION: Plan tools work through agent
+    /// CHARACTERIZATION: plan_write works through agent (legacy shape accepted)
     #[tokio::test]
     #[serial]
     async fn plan_tools_work() {
@@ -650,18 +650,13 @@ items:
             write_result
         );
 
-        // Read Plan
-        let read_call = ToolCall {
-            tool: "plan_read".to_string(),
-            id: String::new(),
-            args: serde_json::json!({}),
-        };
-        let read_result = agent.execute_tool(&read_call).await.unwrap();
-        assert!(
-            read_result.contains("test-plan"),
-            "Should read back plan: {}",
-            read_result
-        );
+        // A legacy-shaped plan (checks/touches) is still accepted, and
+        // persisted in the slim shape (plan_read was removed 2026-11-26).
+        let sid = agent.get_session_id().unwrap().to_string();
+        let plan = g3_core::tools::plan::read_plan(&sid).unwrap().expect("persisted");
+        assert_eq!(plan.plan_id, "test-plan");
+        let md = std::fs::read_to_string(g3_core::tools::plan::get_plan_path(&sid)).unwrap();
+        assert!(!md.contains("checks:"), "legacy fields dropped on write: {}", md);
     }
 }
 
