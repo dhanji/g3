@@ -99,14 +99,19 @@ impl WebQuery {
             Some(url) if !url.is_empty() => format!("Fetch {} and answer from it: {}", url, query),
             _ => query.to_string(),
         };
-        // Accept a JSON array or a comma-separated string — models produce both.
+        // Accept a JSON array, a JSON array sent as TEXT, or a comma-separated
+        // string — all three reach us. Whatever the shape, strip brackets and
+        // quotes so only bare hostnames go upstream (Anthropic 400s otherwise).
         let domains: Vec<String> = match args.get("domains") {
             Some(Value::Array(a)) => a.iter().filter_map(|d| d.as_str()).map(String::from).collect(),
-            Some(Value::String(s)) => s.split(',').map(String::from).collect(),
+            Some(Value::String(s)) => match serde_json::from_str::<Vec<String>>(s.trim()) {
+                Ok(v) => v,
+                Err(_) => s.split(',').map(String::from).collect(),
+            },
             _ => Vec::new(),
         }
         .into_iter()
-        .map(|d| d.trim().to_string())
+        .map(|d| d.trim().trim_matches(|c| matches!(c, '[' | ']' | '"' | '\'')).trim().to_string())
         .filter(|d| !d.is_empty())
         .collect();
         Ok(Self {
@@ -505,6 +510,16 @@ mod tests {
     fn domains_accept_array_or_comma_string() {
         assert_eq!(q(json!({"query": "x", "domains": ["a.com", " b.org "]})).domains, vec!["a.com", "b.org"]);
         assert_eq!(q(json!({"query": "x", "domains": "a.com, ,b.org"})).domains, vec!["a.com", "b.org"]);
+    }
+
+    #[test]
+    fn domains_accept_a_json_array_sent_as_a_string() {
+        // Seen live 2026-11-28: the tool loop delivered `domains` as the TEXT
+        // '["ato.gov.au"]', which reached Anthropic as one hostname -> HTTP 400.
+        assert_eq!(q(json!({"query": "x", "domains": "[\"ato.gov.au\"]"})).domains, vec!["ato.gov.au"]);
+        assert_eq!(q(json!({"query": "x", "domains": "[\"a.com\", \"b.org\"]"})).domains, vec!["a.com", "b.org"]);
+        // malformed JSON-ish text still yields bare hostnames, never brackets/quotes
+        assert_eq!(q(json!({"query": "x", "domains": "[\"a.com\", 'b.org'"})).domains, vec!["a.com", "b.org"]);
     }
 
     #[test]
