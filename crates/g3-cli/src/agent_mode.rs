@@ -234,10 +234,17 @@ pub async fn run_agent_mode(
                 if full_restore {
                     output.print("   ✅ Full context restored from previous session");
                 } else {
-                    output.print("   ⚠️ Restored from summary (context was > 80%)");
+                    output.print("   ⚠️ Restored from summary (transcript unreadable)");
                 }
             }
             Err(e) => {
+                // An explicit --resume that restores nothing must NOT carry on
+                // in a blank, forked session: butler.app would answer the
+                // user's message ("confirm") with no idea what it confirms.
+                if flags.resume.is_some() {
+                    eprintln!("Error: could not resume session '{}': {}", incomplete_session.session_id, e);
+                    std::process::exit(1);
+                }
                 output.print(&format!("   ⚠️ Could not restore context: {}", e));
             }
         }

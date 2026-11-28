@@ -12,89 +12,16 @@
 //! exchanges and stitching chains together.
 //!
 //! The fix is one line — adopt `continuation.session_id` — but *only* on the
-//! full-restore path. See `summary_only_must_not_continue_in_place` below for
-//! why that asymmetry is load-bearing.
+//! full-restore path. The restore-path tests (in place at ANY context %, and
+//! the summary-only fallback never adopting the id) live, against a real
+//! Agent, in `resume_high_context_test.rs`. The old <80% gate encoded here was
+//! itself the bug that stranded a chat at 81% (2026-11-28).
 //!
 //! ## What is verified here
 //!
-//! 1. The two restore paths are distinguished by `can_restore_full_context()`
-//!    (the <80% rule), which is what gates id adoption.
-//! 2. Summary-only restore must NOT adopt the id, or a full transcript gets
-//!    overwritten by a summary.
-//! 3. `save_context_window` writes atomically, because in-place rewrites now
+//! 1. `save_context_window` writes atomically, because in-place rewrites now
 //!    happen underneath concurrent readers (butler.app polls session.json
 //!    while a turn streams).
-
-use g3_core::session_continuation::SessionContinuation;
-
-// ── Path selection ──────────────────────────────────────────────────────────
-
-fn continuation_at(pct: f32) -> SessionContinuation {
-    SessionContinuation {
-        version: "1.0".to_string(),
-        is_agent_mode: true,
-        agent_name: Some("butler".to_string()),
-        created_at: "2026-08-13T00:00:00+00:00".to_string(),
-        session_id: "butler_testsession".to_string(),
-        description: Some("test".to_string()),
-        summary: Some("a summary".to_string()),
-        session_log_path: "/nonexistent/session.json".to_string(),
-        context_percentage: pct,
-        todo_snapshot: None,
-        working_directory: "/tmp".to_string(),
-    }
-}
-
-#[test]
-fn low_context_takes_the_full_restore_path() {
-    // The full-restore path is the ONLY one allowed to continue in place,
-    // because it holds the entire transcript in memory.
-    assert!(continuation_at(1.0).can_restore_full_context());
-    assert!(continuation_at(79.9).can_restore_full_context());
-}
-
-#[test]
-fn high_context_falls_back_to_summary_only() {
-    // At >=80% g3 restores from a summary. Continuing in place here would
-    // overwrite a complete transcript with a summary — silent history loss.
-    assert!(!continuation_at(80.0).can_restore_full_context());
-    assert!(!continuation_at(88.7).can_restore_full_context());
-}
-
-#[test]
-fn summary_only_must_not_continue_in_place() {
-    // Documents the invariant as an executable assertion: the decision to reuse
-    // the session id must be equivalent to "can restore full context".
-    // If someone "simplifies" restore_from_continuation by hoisting the
-    // session_id assignment to the top of the function, this is the tripwire.
-    for pct in [0.0f32, 50.0, 79.999] {
-        let c = continuation_at(pct);
-        assert!(
-            c.can_restore_full_context(),
-            "{}% should continue in place",
-            pct
-        );
-    }
-    for pct in [80.0f32, 95.0, 100.0] {
-        let c = continuation_at(pct);
-        assert!(
-            !c.can_restore_full_context(),
-            "{}% must NOT continue in place (would clobber the transcript)",
-            pct
-        );
-    }
-}
-
-#[test]
-fn missing_session_log_cannot_take_the_in_place_path() {
-    // Full restore additionally requires the log to exist. A resume pointed at
-    // a stillborn/corrupt dir must not adopt that id and rewrite it.
-    let c = continuation_at(1.0);
-    let log_exists = std::path::Path::new(&c.session_log_path).exists();
-    assert!(!log_exists, "fixture must point at a nonexistent log");
-    // Effective guard in production is `can_restore_full_context() && exists()`.
-    assert!(c.can_restore_full_context() && !log_exists);
-}
 
 // ── Atomicity of session.json writes ────────────────────────────────────────
 

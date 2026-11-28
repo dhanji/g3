@@ -75,11 +75,6 @@ impl SessionContinuation {
         }
     }
 
-    /// Check if the context can be fully restored (< 80% used)
-    pub fn can_restore_full_context(&self) -> bool {
-        self.context_percentage < 80.0
-    }
-
     /// Check if this session has incomplete TODO items
     pub fn has_incomplete_todos(&self) -> bool {
         match &self.todo_snapshot {
@@ -716,30 +711,6 @@ mod tests {
         
         assert_eq!(continuation.version, CONTINUATION_VERSION);
         assert_eq!(continuation.session_id, "test_session_123");
-        assert!(continuation.can_restore_full_context());
-    }
-
-    #[test]
-    fn test_can_restore_full_context() {
-        let mut continuation = SessionContinuation::new(
-            false,
-            None,
-            "test".to_string(),
-            None,
-            None,
-            "path".to_string(),
-            50.0,
-            None,
-            ".".to_string(),
-        );
-        
-        assert!(continuation.can_restore_full_context()); // 50% < 80%
-        
-        continuation.context_percentage = 80.0;
-        assert!(!continuation.can_restore_full_context()); // 80% >= 80%
-        
-        continuation.context_percentage = 95.0;
-        assert!(!continuation.can_restore_full_context()); // 95% >= 80%
     }
 
     #[test]

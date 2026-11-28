@@ -47,39 +47,6 @@ fn test_session_continuation_creation() {
         Some("Task completed successfully".to_string())
     );
     assert_eq!(continuation.context_percentage, 45.0);
-    assert!(continuation.can_restore_full_context()); // 45% < 80%
-}
-
-#[test]
-fn test_can_restore_full_context_threshold() {
-    // This test doesn't need file system access
-    let test_cases = vec![
-        (0.0, true),
-        (50.0, true),
-        (79.9, true),
-        (80.0, false),
-        (80.1, false),
-        (95.0, false),
-        (100.0, false),
-    ];
-
-    for (percentage, expected) in test_cases {
-        let continuation = SessionContinuation::new(false, None, 
-            "test".to_string(),
-            None,
-            None,
-            "path".to_string(),
-            percentage,
-            None,
-            ".".to_string(),
-        );
-        assert_eq!(
-            continuation.can_restore_full_context(),
-            expected,
-            "Failed for percentage {}",
-            percentage
-        );
-    }
 }
 
 #[test]

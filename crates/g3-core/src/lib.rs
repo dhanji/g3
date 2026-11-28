@@ -2182,8 +2182,16 @@ Skip if nothing new. Be brief."#;
 
         let session_log_path = PathBuf::from(&continuation.session_log_path);
 
-        // If context < 80%, try to restore full context
-        if continuation.can_restore_full_context() && session_log_path.exists() {
+        // Restore the FULL transcript whenever it is readable — at ANY context
+        // percentage. This used to require < 80%, and above that fell back to
+        // summary + TODO; butler.app sessions carry no summary, so a turn that
+        // ended at 81% restored NOTHING and every resume forked a blank chat
+        // (2026-11-28, "API Key Rotation"). Compaction only runs inside a turn,
+        // so the session could never get back under 80%: permanently stuck.
+        // A large history is safe to load — ensure_context_capacity() thins and
+        // compacts before the turn's first request is streamed.
+        // Test: tests/resume_high_context_test.rs.
+        if session_log_path.exists() {
             // Load the session log
             let json = std::fs::read_to_string(&session_log_path)?;
             let session_data: serde_json::Value = serde_json::from_str(&json)?;
@@ -2348,8 +2356,8 @@ Skip if nothing new. Be brief."#;
         // complete transcript with a summary plus a couple of new turns —
         // silent, irreversible history loss. Leaving session_id as None means
         // execute_task() mints a fresh dir and the original stays intact.
-        // This path triggers when context >= 80% (see can_restore_full_context)
-        // or when the session log is missing/unreadable.
+        // This path triggers only when the session log is missing or has no
+        // conversation_history.
         let mut context_msg = String::new();
         if let Some(ref summary) = continuation.summary {
             context_msg.push_str(&format!("Previous session summary:\n{}\n\n", summary));
@@ -2358,7 +2366,18 @@ Skip if nothing new. Be brief."#;
             context_msg.push_str(&format!("Current TODO state:\n{}\n", todo));
         }
 
-        if !context_msg.is_empty() {
+        // Nothing to restore at all: refuse rather than answer the user's
+        // message in an empty chat that has silently forked from theirs — the
+        // "confirm what?" failure. The caller decides whether to abort.
+        if context_msg.is_empty() {
+            anyhow::bail!(
+                "session {} has no readable transcript and no summary to resume from ({})",
+                continuation.session_id,
+                session_log_path.display()
+            );
+        }
+
+        {
             self.context_window.add_message(Message {
                 role: MessageRole::User,
                 id: String::new(),
