@@ -10,7 +10,8 @@
 //! HTTP call, 5–60 seconds, with citations.
 //!
 //! This is a port of butler's `tools/ask_web.py`, which ran in production for
-//! two weeks before being moved here. Keep the two in step (PRICES especially).
+//! two weeks before being moved here. That script was deleted 2026-11-28: this
+//! is now the only engine.
 //!
 //! DESIGN: a SEPARATE API call, not web search enabled on the main
 //! conversation. Each search drops ~10k tokens of results into the context;
@@ -44,7 +45,7 @@ const FETCH_BETA: &str = "web-fetch-2025-09-10";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// USD per million tokens (input, output). Kept in step with butler's
-/// `tools/ask_web.py` PRICES. An unknown model is priced at the MOST expensive
+/// `tools/token_cost.py` PRICES. An unknown model is priced at the MOST expensive
 /// row: under-reporting a bill is the error nobody notices.
 const PRICES: &[(&str, f64, f64)] = &[
     ("claude-opus-5", 5.00, 25.00),
